@@ -418,7 +418,11 @@ function detectAssetType(mime) {
   return 'other';
 }
 
-async function processUpload(file, ownerId, source) {
+function safeParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+async function processUpload(file, ownerId, source, extra = {}) {
   const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
   const existing = db.prepare('SELECT id FROM assets WHERE file_hash = ?').get(hash);
   if (existing) {
@@ -452,10 +456,14 @@ async function processUpload(file, ownerId, source) {
   }
 
   const assetType = detectAssetType(file.mimetype);
+  const { source_tool = null, prompt = null, seed = null, model_name = null, job_id = null, metadata = null } = extra;
+  const metadataJson = metadata !== null && metadata !== undefined ? JSON.stringify(metadata) : null;
+
   db.prepare(
     `INSERT INTO assets (id, title, filename, original_name, mime_type, file_size, file_hash, asset_type,
-       width, height, duration, storage_path, thumbnail_path, uploaded_by, source, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       width, height, duration, storage_path, thumbnail_path, uploaded_by, source, status,
+       source_tool, prompt, seed, model_name, job_id, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     file.originalname,
@@ -472,8 +480,26 @@ async function processUpload(file, ownerId, source) {
     thumbnailPath,
     ownerId || null,
     source || 'admin',
-    'ready'
+    'ready',
+    source_tool,
+    prompt,
+    Number.isFinite(seed) ? seed : null,
+    model_name,
+    job_id,
+    metadataJson
   );
+
+  // Mark manifest write and trigger async regeneration (non-blocking)
+  try {
+    require('./lib/manifest').markAssetForManifestWrite(db, id, 'create');
+    setImmediate(() => {
+      require('./lib/manifest').writeManifestIndex(db, STORAGE_DIR).catch((e) => {
+        console.warn('[manifest] write failed', e.message);
+      });
+    });
+  } catch (e) {
+    console.warn('[manifest] mark failed', e.message);
+  }
 
   return { duplicate: false, asset: db.prepare('SELECT * FROM assets WHERE id = ?').get(id) };
 }
@@ -512,9 +538,17 @@ app.get('/api/v1/assets/:id', (req, res) => {
 
 app.post('/api/v1/assets/upload', authRequired, upload.array('files', 20), async (req, res) => {
   if (!req.files || !req.files.length) return res.status(400).json({ detail: 'No files' });
+  const extra = {
+    source_tool: req.body.source_tool || null,
+    prompt: req.body.prompt || null,
+    seed: req.body.seed ? parseInt(req.body.seed, 10) : null,
+    model_name: req.body.model_name || null,
+    job_id: req.body.job_id || null,
+    metadata: req.body.metadata ? safeParse(req.body.metadata) : null,
+  };
   const results = [];
   for (const file of req.files) {
-    const r = await processUpload(file, req.user.id, 'admin');
+    const r = await processUpload(file, req.user.id, 'admin', extra);
     results.push(r.asset);
   }
   res.status(201).json({ items: results, count: results.length });
@@ -619,9 +653,17 @@ app.get('/api/public/v1/delivery/assets', apiKeyRequired('read'), (req, res) => 
 
 app.post('/api/public/v1/delivery/upload', apiKeyRequired('upload'), upload.array('files', 20), async (req, res) => {
   if (!req.files || !req.files.length) return res.status(400).json({ detail: 'No files' });
+  const extra = {
+    source_tool: req.body.source_tool || null,
+    prompt: req.body.prompt || null,
+    seed: req.body.seed ? parseInt(req.body.seed, 10) : null,
+    model_name: req.body.model_name || null,
+    job_id: req.body.job_id || null,
+    metadata: req.body.metadata ? safeParse(req.body.metadata) : null,
+  };
   const results = [];
   for (const file of req.files) {
-    const r = await processUpload(file, null, 'public');
+    const r = await processUpload(file, null, 'public', extra);
     results.push(r.asset);
   }
   res.status(201).json({ items: results, count: results.length });
@@ -665,10 +707,14 @@ app.use((err, _req, res, _next) => {
 });
 
 // --- Start ---
-app.listen(PORT, HOST, () => {
-  console.log(`\nDAM backend listening on http://localhost:${PORT}`);
-  console.log(`  API:    /api/v1/* (admin JWT)`);
-  console.log(`  Public: /api/public/v1/* (API Key)`);
-  console.log(`  Static: /storage/*  (uploaded files)`);
-  console.log(`  Admin:  admin / Admin@123456\n`);
-});
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`\nDAM backend listening on http://localhost:${PORT}`);
+    console.log(`  API:    /api/v1/* (admin JWT)`);
+    console.log(`  Public: /api/public/v1/* (API Key)`);
+    console.log(`  Static: /storage/*  (uploaded files)`);
+    console.log(`  Admin:  admin / Admin@123456\n`);
+  });
+}
+
+module.exports = app;
