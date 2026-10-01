@@ -747,6 +747,116 @@ app.get('/api/v1/stats', authRequired, (_req, res) => {
   res.json({ total, images, videos, total_size: totalSize, recent });
 });
 
+// --- Dashboard stats ---
+// Task 20 fix R1: Dashboard.tsx (Task 18) calls
+//   useApi<DashboardData>('/stats/dashboard')
+// which resolves via frontend/src/api/client.ts:8 (baseURL '/api/v1') to
+// /api/v1/stats/dashboard. The legacy `/api/v1/stats` route (above) only
+// returns the compact {total,images,videos,total_size,recent} shape, so
+// the Dashboard would render the "加载失败" branch (see
+// frontend/src/pages/Dashboard.tsx:105-119). This new handler returns
+// the full DashboardData contract from frontend/src/types/index.ts:124-140.
+app.get('/api/v1/stats/dashboard', authRequired, (_req, res) => {
+  // --- Summary counts (single statement each; prepared once per call) ---
+  const summary = {
+    total_assets: db.prepare('SELECT COUNT(*) AS c FROM assets').get().c,
+    image_count: db
+      .prepare("SELECT COUNT(*) AS c FROM assets WHERE asset_type = 'image'")
+      .get().c,
+    video_count: db
+      .prepare("SELECT COUNT(*) AS c FROM assets WHERE asset_type = 'video'")
+      .get().c,
+    total_size_bytes: db
+      .prepare('SELECT COALESCE(SUM(file_size), 0) AS s FROM assets')
+      .get().s,
+    storage_used_gb: 0, // patched below after total_size_bytes is known
+    today_uploads: db
+      .prepare("SELECT COUNT(*) AS c FROM assets WHERE date(created_at) = date('now')")
+      .get().c,
+    week_uploads: db
+      .prepare("SELECT COUNT(*) AS c FROM assets WHERE created_at >= datetime('now', '-7 days')")
+      .get().c,
+    month_uploads: db
+      .prepare("SELECT COUNT(*) AS c FROM assets WHERE created_at >= datetime('now', '-30 days')")
+      .get().c,
+    tag_count: db.prepare('SELECT COUNT(*) AS c FROM tags').get().c,
+    category_count: db.prepare('SELECT COUNT(*) AS c FROM categories').get().c,
+    user_count: db.prepare('SELECT COUNT(*) AS c FROM users').get().c,
+  };
+  summary.storage_used_gb = summary.total_size_bytes / (1024 ** 3);
+
+  // --- Upload trend: last 7 calendar days (local), oldest first ---
+  // Build the date list in JS using local-date arithmetic (matches
+  // SQLite's date('now') which is also local). Each day gets its own
+  // prepared query to avoid any string interpolation (CLAUDE.md SQL
+  // injection discipline).
+  const trendDates = [];
+  const now = new Date();
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    trendDates.push(`${yyyy}-${mm}-${dd}`);
+  }
+  const dayCountStmt = db.prepare(
+    "SELECT COUNT(*) AS c FROM assets WHERE date(created_at) = ?"
+  );
+  const upload_trend = trendDates.map((date) => ({
+    date,
+    count: dayCountStmt.get(date).c,
+  }));
+
+  // --- Recent assets (last 10), reshaped into the legacy Asset shape
+  // expected by Dashboard.tsx (Task 18). The frontend type `Asset.id` is
+  // `number` but the backend PK is TEXT (nanoid) — see report note: this
+  // mismatch is silently accepted at runtime because the route handler
+  // for /api/v1/assets/:id (server.js:589) reads req.params.id directly,
+  // and useApi<Asset>('/assets/:id') forwards the string unchanged.
+  function toLegacyAsset(row) {
+    const thumb = row.thumbnail_path ? `/storage/${row.thumbnail_path}` : null;
+    const storage = row.storage_path ? `/storage/${row.storage_path}` : null;
+    const originalName = row.original_name || '';
+    const lastDot = originalName.lastIndexOf('.');
+    const fileExt =
+      lastDot > 0 && lastDot < originalName.length - 1
+        ? originalName.slice(lastDot + 1).toLowerCase()
+        : '';
+    return {
+      id: row.id,
+      asset_code: row.id,
+      title: row.title,
+      description: row.description ?? null,
+      asset_type: row.asset_type,
+      mime_type: row.mime_type,
+      file_ext: fileExt,
+      file_size: row.file_size,
+      storage_path: row.storage_path,
+      thumbnail_path: row.thumbnail_path,
+      thumbnail_url: thumb,
+      preview_url: thumb || storage,
+      original_url: storage,
+      source: row.source,
+      status: 'active',
+      is_public: false,
+      tag_names: [],
+      view_count: 0,
+      download_count: 0,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  const recentRows = db
+    .prepare(
+      'SELECT id, title, description, original_name, mime_type, file_size, asset_type, storage_path, thumbnail_path, source, created_at, updated_at FROM assets ORDER BY created_at DESC LIMIT 10'
+    )
+    .all();
+  const recent_assets = recentRows.map(toLegacyAsset);
+
+  res.json({ summary, upload_trend, recent_assets });
+});
+
 // --- Public delivery API ---
 app.get('/api/public/v1/delivery/assets', apiKeyRequired('read'), (req, res) => {
   const { q, asset_type, page = 1, page_size = 20 } = req.query;
