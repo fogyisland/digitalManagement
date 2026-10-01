@@ -553,7 +553,7 @@ async function processUpload(file, ownerId, source, extra = {}) {
 }
 
 app.get('/api/v1/assets', (req, res) => {
-  const { q, asset_type, category_id, page = 1, page_size = 20 } = req.query;
+  const { q, asset_type, category_id, source_tool, job_id, page = 1, page_size = 20 } = req.query;
   const where = [];
   const params = [];
   if (q) {
@@ -569,6 +569,14 @@ app.get('/api/v1/assets', (req, res) => {
     where.push('category_id = ?');
     params.push(category_id);
   }
+  if (source_tool) {
+    where.push('source_tool = ?');
+    params.push(source_tool);
+  }
+  if (job_id) {
+    where.push('job_id = ?');
+    params.push(job_id);
+  }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = db.prepare(`SELECT COUNT(*) AS c FROM assets ${whereSql}`).get(...params).c;
   const offset = (parseInt(page) - 1) * parseInt(page_size);
@@ -582,6 +590,26 @@ app.get('/api/v1/assets/:id', (req, res) => {
   const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
   if (!asset) return res.status(404).json({ detail: 'Not found' });
   res.json(asset);
+});
+
+app.get('/api/v1/assets/:id/manifest', (req, res) => {
+  const a = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
+  if (!a) return res.status(404).json({ code: 'NOT_FOUND', message: 'Asset not found', request_id: nanoid() });
+  res.json({
+    id: a.id,
+    title: a.title,
+    asset_type: a.asset_type,
+    source_tool: a.source_tool,
+    job_id: a.job_id,
+    prompt: a.prompt,
+    seed: a.seed,
+    model_name: a.model_name,
+    metadata: a.metadata_json ? safeParse(a.metadata_json) : null,
+    original_path: `originals/${a.id}${path.extname(a.original_name || '') || ''}`,
+    thumbnail_path: a.thumbnail_path || null,
+    public_url: `${process.env.APP_BASE_URL || ''}/storage/${a.id}${path.extname(a.original_name || '')}`,
+    created_at: a.created_at,
+  });
 });
 
 app.post('/api/v1/assets/upload', authRequired, upload.array('files', 20), async (req, res) => {
