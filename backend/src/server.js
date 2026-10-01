@@ -715,6 +715,19 @@ app.use((err, _req, res, _next) => {
   res.status(err.status || 500).json({ detail: err.message || 'Internal error' });
 });
 
+// --- Startup: replay pending manifest writes + ensure index.json exists ---
+const {
+  replayPendingManifestWrites,
+  writeManifestIndex,
+} = require('./lib/manifest');
+fs.mkdirSync(path.join(STORAGE_DIR, 'manifests'), { recursive: true });
+replayPendingManifestWrites(db, STORAGE_DIR).catch((e) => {
+  console.warn('[manifest] replay failed', e.message);
+});
+writeManifestIndex(db, STORAGE_DIR).catch((e) => {
+  console.warn('[manifest] initial write failed', e.message);
+});
+
 // --- Start ---
 if (require.main === module) {
   app.listen(PORT, HOST, () => {
