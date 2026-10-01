@@ -28,6 +28,9 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'dam.d
 const STORAGE_DIR = process.env.STORAGE_DIR || path.join(__dirname, '..', 'storage');
 const ROOT_DIR = path.join(__dirname, '..', '..');
 
+// Webhook dispatch (Task 6) — hoisted to module scope for hot paths.
+const webhookLib = require('./lib/webhook');
+
 // --- Bootstrap ---
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
@@ -430,6 +433,38 @@ function safeParse(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+/**
+ * Fan-out an asset event to every active webhook endpoint. Fire-and-forget:
+ * each dispatch runs on its own promise chain so the calling HTTP request
+ * does not block on slow / dead receivers. All dispatch failures are logged
+ * via the webhook lib itself (recordLog + console.error). Here we only
+ * surface synchronous precondition failures (DB query errors).
+ *
+ * @param {string} event short event name (e.g. "asset.created")
+ * @param {Object} asset full asset row from the DB
+ */
+function emitAssetEvent(event, asset) {
+  let endpoints;
+  try {
+    endpoints = db
+      .prepare("SELECT id, url, secret FROM webhook_endpoints WHERE is_active = 1")
+      .all();
+  } catch (e) {
+    console.error('[webhook] failed to list active endpoints', {
+      event,
+      assetId: asset && asset.id,
+      err: e.message,
+    });
+    return;
+  }
+  if (!endpoints.length) return;
+  for (const ep of endpoints) {
+    webhookLib
+      .dispatch(db, ep, event, asset)
+      .catch((e) => console.warn('[webhook] dispatch err', { event, endpointId: ep.id, err: e.message }));
+  }
+}
+
 async function processUpload(file, ownerId, source, extra = {}) {
   const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
   const existing = db.prepare('SELECT id FROM assets WHERE file_hash = ?').get(hash);
@@ -509,7 +544,12 @@ async function processUpload(file, ownerId, source, extra = {}) {
     console.warn('[manifest] mark failed', e.message);
   }
 
-  return { duplicate: false, asset: db.prepare('SELECT * FROM assets WHERE id = ?').get(id) };
+  const newAsset = db.prepare('SELECT * FROM assets WHERE id = ?').get(id);
+  // Notify webhook subscribers. Fire-and-forget: do not block the upload
+  // response on remote receivers.
+  emitAssetEvent('asset.created', newAsset);
+
+  return { duplicate: false, asset: newAsset };
 }
 
 app.get('/api/v1/assets', (req, res) => {
@@ -569,7 +609,9 @@ app.put('/api/v1/assets/:id', authRequired, (req, res) => {
   db.prepare(
     `UPDATE assets SET title = COALESCE(?, title), description = ?, category_id = ?, updated_at = datetime('now') WHERE id = ?`
   ).run(title || null, description !== undefined ? description : asset.description, category_id !== undefined ? category_id : asset.category_id, req.params.id);
-  res.json(db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id));
+  const updated = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
+  emitAssetEvent('asset.updated', updated);
+  res.json(updated);
 });
 
 app.delete('/api/v1/assets/:id', authRequired, (req, res) => {
@@ -582,6 +624,9 @@ app.delete('/api/v1/assets/:id', authRequired, (req, res) => {
     console.warn('[delete] file removal failed:', e.message);
   }
   db.prepare('DELETE FROM assets WHERE id = ?').run(req.params.id);
+  // Send the event with the snapshot we read BEFORE the delete — callers
+  // downstream may want the metadata of what was removed.
+  emitAssetEvent('asset.deleted', asset);
   res.status(204).end();
 });
 
@@ -621,6 +666,44 @@ app.post('/api/v1/api-keys', authRequired, (req, res) => {
 
 app.delete('/api/v1/api-keys/:id', authRequired, (req, res) => {
   db.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').run(req.params.id);
+  res.status(204).end();
+});
+
+// --- Webhooks ---
+// Admin-only CRUD. The webhook secret is shown EXACTLY ONCE in the POST
+// response body; subsequent GETs never return it. DELETE is a soft-disable
+// (is_active=0) so we keep history but stop emitting events.
+app.get('/api/v1/webhooks', authRequired, (_req, res) => {
+  const rows = db
+    .prepare("SELECT id, name, url, is_active, created_at FROM webhook_endpoints ORDER BY created_at DESC")
+    .all();
+  res.json(rows.map((r) => ({ ...r, is_active: !!r.is_active })));
+});
+
+app.post('/api/v1/webhooks', authRequired, (req, res) => {
+  const { name, url } = req.body || {};
+  if (!name || !url) {
+    return res.status(400).json({ code: 'BAD_INPUT', message: 'name/url required', request_id: nanoid() });
+  }
+  if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+    return res.status(400).json({ code: 'BAD_INPUT', message: 'url must be http(s)', request_id: nanoid() });
+  }
+  const id = nanoid();
+  const secret = crypto.randomBytes(24).toString('hex');
+  db.prepare('INSERT INTO webhook_endpoints (id, name, url, secret) VALUES (?, ?, ?, ?)').run(id, name, url, secret);
+  res.status(201).json({
+    id,
+    name,
+    url,
+    secret,
+    warning: 'Save this secret now. It will not be shown again.',
+  });
+});
+
+app.delete('/api/v1/webhooks/:id', authRequired, (req, res) => {
+  // Soft-disable: keep the row for history + signature verification, but
+  // stop emitting new events.
+  db.prepare('UPDATE webhook_endpoints SET is_active = 0 WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
