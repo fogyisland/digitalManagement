@@ -128,15 +128,6 @@ CREATE INDEX IF NOT EXISTS idx_assets_hash ON assets(file_hash);
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type);
 CREATE INDEX IF NOT EXISTS idx_assets_created ON assets(created_at);
 
-ALTER TABLE assets ADD COLUMN source_tool TEXT;
-ALTER TABLE assets ADD COLUMN prompt TEXT;
-ALTER TABLE assets ADD COLUMN seed INTEGER;
-ALTER TABLE assets ADD COLUMN model_name TEXT;
-ALTER TABLE assets ADD COLUMN job_id TEXT;
-ALTER TABLE assets ADD COLUMN metadata_json TEXT;
-CREATE INDEX IF NOT EXISTS idx_assets_job_id ON assets(job_id);
-CREATE INDEX IF NOT EXISTS idx_assets_source_tool ON assets(source_tool);
-
 CREATE TABLE IF NOT EXISTS webhook_endpoints (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -167,6 +158,40 @@ CREATE TABLE IF NOT EXISTS manifest_writes (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
+
+// --- Schema migration (idempotent ALTER TABLE + indexes) ---
+// better-sqlite3 has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, and
+// `CREATE INDEX IF NOT EXISTS` on a column that does not yet exist throws
+// `SqliteError: no such column`. Running raw ALTER every boot would crash the
+// second boot (and any boot after the Task 20 smoke seed populated these
+// columns) with `SqliteError: duplicate column name: source_tool`. We therefore
+// introspect existing columns first and ADD only what is missing, then create
+// the dependent indexes. We deliberately do NOT wrap these in try/catch — that
+// would silently swallow real errors like disk-full / permission-denied.
+const ASSETS_COLUMN_DEFS = [
+  'source_tool TEXT',
+  'prompt TEXT',
+  'seed INTEGER',
+  'model_name TEXT',
+  'job_id TEXT',
+  'metadata_json TEXT',
+];
+const ASSETS_INDEX_SQL = [
+  'CREATE INDEX IF NOT EXISTS idx_assets_job_id ON assets(job_id)',
+  'CREATE INDEX IF NOT EXISTS idx_assets_source_tool ON assets(source_tool)',
+];
+const existingAssetColumns = new Set(
+  db.prepare("PRAGMA table_info(assets)").all().map((c) => c.name)
+);
+for (const def of ASSETS_COLUMN_DEFS) {
+  const colName = def.split(/\s+/)[0];
+  if (existingAssetColumns.has(colName)) continue;
+  db.exec(`ALTER TABLE assets ADD COLUMN ${def}`);
+  existingAssetColumns.add(colName);
+}
+for (const sql of ASSETS_INDEX_SQL) {
+  db.exec(sql);
+}
 
 // --- Seed default admin + sample data ---
 const adminCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
