@@ -56,20 +56,22 @@ function signPayload(secret, body) {
 
 /**
  * Constant-time comparison of two hex strings of equal length.
- * Returns false immediately if lengths differ (constant-time only matters
- * when they match — we never reveal byte-level info).
+ *
+ * Returns false immediately if lengths differ. When lengths match, both
+ * inputs are decoded to bytes via Buffer.from(..., 'hex') (which is
+ * non-throwing in Node — invalid chars are silently dropped, so the
+ * post-decode byte length is a stricter check than the input length). We
+ * compare buffers with crypto.timingSafeEqual to avoid leaking prefix-match
+ * timing information to a network attacker probing signatures.
  */
 function timingSafeHexEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (a.length !== b.length) return false;
-  let bufA; let bufB;
-  try {
-    bufA = Buffer.from(a, 'hex');
-    bufB = Buffer.from(b, 'hex');
-  } catch (_e) {
-    return false;
-  }
-  if (bufA.length !== bufB.length) return false;
+  // Buffer.from(str, 'hex') does not throw on bad input; it drops invalid
+  // chars. So the byte-length check below is the real authority.
+  const bufA = Buffer.from(a, 'hex');
+  const bufB = Buffer.from(b, 'hex');
+  if (bufA.length !== bufB.length || bufA.length === 0) return false;
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
