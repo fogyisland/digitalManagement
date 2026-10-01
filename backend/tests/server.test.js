@@ -4,27 +4,54 @@ const path = require('path');
 const http = require('http');
 const assert = require('assert');
 
-const tmp = path.join(__dirname, 'tmp.db');
-try { fs.unlinkSync(tmp); } catch {}
-const db = new Database(tmp);
-const schemaPath = path.join(__dirname, '..', 'src', 'server.js');
-const src = fs.readFileSync(schemaPath, 'utf8');
-const m = src.match(/db\.exec\(`([\s\S]*?)`\);/);
-db.exec(m[1]);
+// --- Step 1: Schema check ----------------------------------------------------
+// Require the real server module with an isolated DB so it runs the full init
+// path (CREATE TABLE block + idempotent ALTER TABLE loop + indexes + seed).
+// We previously parsed `src/server.js` with a regex over `db.exec(\`...\`);`,
+// but R2 split the schema into two blocks (initial CREATE + idempotent ALTER),
+// so the regex captured only the first block and missed the columns added by
+// migration. Using the real module exercises both blocks — if either is broken,
+// the schema check fails. The required module leaves its `db` connection open
+// for the lifetime of the Node process; we close it explicitly below before
+// the upload + 413 + webhook tests spin up fresh server processes on different
+// DB paths.
+const schemaDbPath = path.join(__dirname, 'test-schema.db');
+try { fs.unlinkSync(schemaDbPath); } catch {}
+try { fs.unlinkSync(schemaDbPath + '-shm'); } catch {}
+try { fs.unlinkSync(schemaDbPath + '-wal'); } catch {}
+process.env.DB_PATH = schemaDbPath;
+process.env.JWT_SECRET = 'test-secret-key';
+process.env.STORAGE_DIR = path.join(__dirname, 'test-schema-storage');
+try { fs.rmSync(process.env.STORAGE_DIR, { recursive: true, force: true }); } catch {}
 
-const cols = db.prepare("PRAGMA table_info(assets)").all().map(c => c.name);
+// server.js's init also seeds default categories/tags and logs to stdout.
+// We only care about schema correctness here, so we silence the module load
+// by overriding console.log for the require() call and restoring it after.
+const _origLog = console.log;
+console.log = () => {};
+require('../src/server');
+console.log = _origLog;
+
+const schemaDb = new Database(schemaDbPath, { readonly: true });
+const cols = schemaDb.prepare("PRAGMA table_info(assets)").all().map(c => c.name);
 ['source_tool','prompt','seed','model_name','job_id','metadata_json'].forEach(c => {
   if (!cols.includes(c)) throw new Error('missing column: ' + c);
 });
 
-const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(t=>t.name);
+const tables = schemaDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(t=>t.name);
 ['webhook_endpoints','webhook_logs','manifest_writes'].forEach(t => {
   if (!tables.includes(t)) throw new Error('missing table: ' + t);
 });
 
+schemaDb.close();
+try { fs.unlinkSync(schemaDbPath); } catch {}
+try { fs.unlinkSync(schemaDbPath + '-shm'); } catch {}
+try { fs.unlinkSync(schemaDbPath + '-wal'); } catch {}
+try { fs.rmSync(process.env.STORAGE_DIR, { recursive: true, force: true }); } catch {}
+// Drop the require cache so the upload test below can spin up its own
+// server instance on a different DB path.
+delete require.cache[require.resolve('../src/server')];
 console.log('schema OK');
-db.close();
-fs.unlinkSync(tmp);
 
 // --- Step 4: Upload endpoint test ---
 // Start a temporary server with isolated DB + storage
