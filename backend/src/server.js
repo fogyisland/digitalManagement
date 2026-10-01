@@ -124,6 +124,45 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_assets_hash ON assets(file_hash);
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type);
 CREATE INDEX IF NOT EXISTS idx_assets_created ON assets(created_at);
+
+ALTER TABLE assets ADD COLUMN source_tool TEXT;
+ALTER TABLE assets ADD COLUMN prompt TEXT;
+ALTER TABLE assets ADD COLUMN seed INTEGER;
+ALTER TABLE assets ADD COLUMN model_name TEXT;
+ALTER TABLE assets ADD COLUMN job_id TEXT;
+ALTER TABLE assets ADD COLUMN metadata_json TEXT;
+CREATE INDEX IF NOT EXISTS idx_assets_job_id ON assets(job_id);
+CREATE INDEX IF NOT EXISTS idx_assets_source_tool ON assets(source_tool);
+
+CREATE TABLE IF NOT EXISTS webhook_endpoints (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS webhook_logs (
+  id TEXT PRIMARY KEY,
+  endpoint_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS manifest_writes (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT,
+  op TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // --- Seed default admin + sample data ---
