@@ -23,8 +23,8 @@ export default function AssetUploader({ onUploaded }: Props) {
   const [allTags, setAllTags] = useState<string[]>([])
 
   useEffect(() => {
-    categoriesApi.tree().then(setCategories).catch(() => {})
-    tagsApi.all().then((tags) => setAllTags(tags.map(t => t.name))).catch(() => {})
+    categoriesApi.tree().then((tags: Array<{ id?: number; name: string }>) => setCategories(tags)).catch(() => {})
+    tagsApi.all().then((tags: Array<{ name: string }>) => setAllTags(tags.map((t: { name: string }) => t.name))).catch(() => {})
   }, [])
 
   const flatCategories = (() => {
