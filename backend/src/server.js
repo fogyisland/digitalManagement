@@ -803,20 +803,12 @@ if (fs.existsSync(FRONTEND_DIST)) {
   });
   console.log('[static] serving frontend from', FRONTEND_DIST);
 } else {
-  // Demo page (no-build UI) — talks to live backend
-  const DEMO_HTML = path.join(ROOT_DIR, 'frontend', 'demo.html');
-  if (fs.existsSync(DEMO_HTML)) {
-    app.get('/', (_req, res) => res.sendFile(DEMO_HTML));
-    app.get(/^(?!\/api|\/storage).*/, (_req, res) => res.sendFile(DEMO_HTML));
-    console.log('[static] serving demo UI from', DEMO_HTML);
-  } else {
-    app.get('/', (_req, res) => {
-      res.send(`<html><body style="font-family:sans-serif;padding:40px">
-        <h1>DAM backend is running</h1>
-        <p>Frontend build not found at <code>${FRONTEND_DIST}</code>.</p>
-      </body></html>`);
-    });
-  }
+  app.get('/', (_req, res) => {
+    res.status(503).type('html').send(`<!doctype html><meta charset="utf-8"><title>DAM</title>
+      <style>body{font:14px -apple-system,sans-serif;background:#0d1117;color:#f0f6fc;padding:48px;max-width:640px;margin:0 auto;}</style>
+      <h1>DAM frontend is not built</h1>
+      <p>Run <code>cd frontend && npm install && npm run build</code>, then restart the backend.</p>`);
+  });
 }
 
 // --- Error handler ---
