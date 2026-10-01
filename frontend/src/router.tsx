@@ -42,6 +42,8 @@ export const router = createBrowserRouter([
       { path: 'library', element: lazyPage(Library) },
       { path: 'library/:id', element: lazyPage(AssetDetail) },
       { path: 'import', element: lazyPage(Import) },
+      // Back-compat: the legacy /assets/upload route now lands on /import.
+      { path: 'assets/upload', element: <Navigate to="/import" replace /> },
       { path: 'jobs', element: lazyPage(Jobs) },
       { path: 'organize', element: lazyPage(Organize) },
       { path: 'integrations', element: lazyPage(Integrations) },

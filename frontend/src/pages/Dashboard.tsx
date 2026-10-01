@@ -1,168 +1,351 @@
-import { useEffect, useState } from 'react'
-import { Card, Col, Row, Skeleton, Tag } from 'antd'
+/**
+ * Dashboard — Task 18.
+ *
+ * Visual language:
+ *   - 4 large number cards (total / images / videos / size)
+ *   - recent 10 assets as a compact mono-typed row list
+ *   - no gradient glows, no all-caps eyebrows; uses `tokens` only
+ *
+ * Data fetch goes through `useApi<DashboardData>` so it shares the
+ * cache + loading contract with Library/Organize/Jobs. We still read
+ * `summary` defensively (the legacy shape had extra fields we no longer
+ * render) and trim the recent list to 10 for the compact row.
+ */
+import { useMemo } from 'react';
+import { Skeleton, Space, Typography } from 'antd';
 import {
   AppstoreOutlined,
   PictureOutlined,
   PlayCircleOutlined,
-  CloudUploadOutlined,
   HddOutlined,
-  TeamOutlined,
-  FolderOutlined,
-  TagsOutlined,
-} from '@ant-design/icons'
-import { Line } from '@ant-design/charts'
-import { statsApi } from '@/api/stats'
-import { useNavigate } from 'react-router-dom'
-import type { DashboardData } from '@/types'
-import { formatBytes } from '@/utils/format'
-import AssetGrid from '@/components/asset/AssetGrid'
+} from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
+import { useApi } from '@/api/hooks';
+import type { Asset, DashboardData } from '@/types';
+import { tokens } from '@/theme/tokens';
+import { formatBytes, formatDate } from '@/utils/format';
 
-export default function Dashboard() {
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const navigate = useNavigate()
+const { Text, Title } = Typography;
 
-  useEffect(() => {
-    statsApi.dashboard().then(setData).finally(() => setLoading(false))
-  }, [])
+interface NumberCard {
+  key: string;
+  label: string;
+  value: string;
+  hint: string;
+  icon: React.ReactNode;
+}
 
-  if (loading || !data) {
-    return <Skeleton active paragraph={{ rows: 8 }} />
+function previewUrl(asset: Pick<Asset, 'thumbnail_url' | 'preview_url' | 'original_url'>): string | null {
+  const raw = asset.thumbnail_url || asset.preview_url || asset.original_url;
+  if (!raw) return null;
+  if (/^https?:\/\//.test(raw)) return raw;
+  const normalized = raw.startsWith('/') ? raw : `/storage/${raw}`;
+  return normalized.replace(/^\/api\/v1\/storage\//, '/storage/');
+}
+
+export default function Dashboard(): JSX.Element {
+  const navigate = useNavigate();
+  const state = useApi<DashboardData>('/stats/dashboard');
+
+  const summary = state.data?.summary;
+  const recentAssets = useMemo(
+    () => (state.data?.recent_assets ?? []).slice(0, 10),
+    [state.data?.recent_assets],
+  );
+
+  const cards: NumberCard[] = useMemo(() => {
+    if (!summary) return [];
+    return [
+      {
+        key: 'total',
+        label: '总资产',
+        value: summary.total_assets.toLocaleString(),
+        hint: `图片 ${summary.image_count.toLocaleString()} · 视频 ${summary.video_count.toLocaleString()}`,
+        icon: <AppstoreOutlined />,
+      },
+      {
+        key: 'images',
+        label: '图片',
+        value: summary.image_count.toLocaleString(),
+        hint: `${summary.total_assets > 0 ? Math.round((summary.image_count / summary.total_assets) * 100) : 0}% 占总量`,
+        icon: <PictureOutlined />,
+      },
+      {
+        key: 'videos',
+        label: '视频',
+        value: summary.video_count.toLocaleString(),
+        hint: `${summary.total_assets > 0 ? Math.round((summary.video_count / summary.total_assets) * 100) : 0}% 占总量`,
+        icon: <PlayCircleOutlined />,
+      },
+      {
+        key: 'size',
+        label: '存储占用',
+        value: `${summary.storage_used_gb.toFixed(2)} GB`,
+        hint: formatBytes(summary.total_size_bytes),
+        icon: <HddOutlined />,
+      },
+    ];
+  }, [summary]);
+
+  if (state.loading && !state.data) {
+    return (
+      <div
+        style={{
+          padding: tokens.space[5],
+          background: tokens.color.panel,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.lg,
+        }}
+      >
+        <Skeleton active paragraph={{ rows: 6 }} />
+      </div>
+    );
   }
 
-  const { summary, upload_trend, recent_assets } = data
-
-  const stats = [
-    {
-      label: '总资产数',
-      value: summary.total_assets.toLocaleString(),
-      extra: `图片 ${summary.image_count} · 视频 ${summary.video_count}`,
-      icon: <AppstoreOutlined />,
-      bg: 'bg-primary',
-    },
-    {
-      label: '存储占用',
-      value: `${summary.storage_used_gb} GB`,
-      extra: `${formatBytes(summary.total_size_bytes)}`,
-      icon: <HddOutlined />,
-      bg: 'bg-blue',
-    },
-    {
-      label: '今日上传',
-      value: summary.today_uploads.toLocaleString(),
-      extra: `本周 ${summary.week_uploads} · 本月 ${summary.month_uploads}`,
-      icon: <CloudUploadOutlined />,
-      bg: 'bg-green',
-    },
-    {
-      label: '分类 / 标签',
-      value: `${summary.category_count} / ${summary.tag_count}`,
-      extra: '已建立的分类与标签',
-      icon: <TagsOutlined />,
-      bg: 'bg-orange',
-    },
-    {
-      label: '注册用户',
-      value: summary.user_count.toLocaleString(),
-      extra: '系统使用者',
-      icon: <TeamOutlined />,
-      bg: 'bg-purple',
-    },
-    {
-      label: '图片 / 视频',
-      value: `${summary.image_count} / ${summary.video_count}`,
-      extra: '按类型分布',
-      icon: <PictureOutlined />,
-      bg: 'bg-blue',
-    },
-  ]
-
-  const chartData = upload_trend.map((d) => ({ date: d.date.slice(5), count: d.count }))
+  if (state.error || !summary) {
+    return (
+      <div
+        style={{
+          padding: tokens.space[5],
+          background: tokens.color.panel,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.lg,
+          color: tokens.color.danger,
+        }}
+      >
+        加载失败：{state.error?.message ?? '仪表盘数据不可用'}
+      </div>
+    );
+  }
 
   return (
-    <div>
-      <div className="page-header">
-        <div>
-          <h2 className="page-title">仪表盘</h2>
-          <div className="page-subtitle">系统整体状况一览</div>
-        </div>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
+      <header>
+        <Title
+          level={2}
+          style={{
+            margin: 0,
+            color: tokens.color.text,
+            fontWeight: 600,
+            letterSpacing: '-0.01em',
+          }}
+        >
+          仪表盘
+        </Title>
+        <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
+          资产库整体状态 · 数据更新于 {formatDate(new Date().toISOString())}
+        </Text>
+      </header>
 
-      {/* Stats grid */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        {stats.map((s, i) => (
-          <Col xs={24} sm={12} md={8} lg={8} xl={4} key={i}>
-            <div className={`stat-card ${s.bg}`}>
-              <div className="stat-label">{s.label}</div>
-              <div className="stat-value">{s.value}</div>
-              <div className="stat-extra">{s.extra}</div>
-              <div className="stat-icon">{s.icon}</div>
-            </div>
-          </Col>
-        ))}
-      </Row>
-
-      {/* Chart + Recent */}
-      <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col xs={24} lg={14}>
-          <Card title="近 7 天上传趋势" bordered={false} style={{ borderRadius: 10 }}>
-            <Line
-              data={chartData}
-              xField="date"
-              yField="count"
-              smooth
-              point={{ size: 4, shape: 'circle' }}
-              height={260}
-              color="#1677ff"
-              area={{ style: { fill: 'l(270) 0:#1677ff 1:#ffffff20' } }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} lg={10}>
-          <Card
-            title="快速入口"
-            bordered={false}
-            style={{ borderRadius: 10, height: '100%' }}
-          >
-            <Row gutter={[12, 12]}>
-              {[
-                { label: '上传资产', icon: <CloudUploadOutlined />, bg: '#1677ff', to: '/assets/upload' },
-                { label: '资产库', icon: <AppstoreOutlined />, bg: '#722ed1', to: '/assets' },
-                { label: '分类管理', icon: <FolderOutlined />, bg: '#13c2c2', to: '/categories' },
-                { label: 'API Key', icon: <TagsOutlined />, bg: '#fa8c16', to: '/api-keys' },
-              ].map((q) => (
-                <Col span={12} key={q.to}>
-                  <div
-                    onClick={() => navigate(q.to)}
-                    style={{
-                      padding: 20,
-                      borderRadius: 10,
-                      background: `linear-gradient(135deg, ${q.bg}22 0%, ${q.bg}11 100%)`,
-                      border: `1px solid ${q.bg}33`,
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.transform = 'translateY(-2px)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.transform = 'translateY(0)')}
-                  >
-                    <div style={{ fontSize: 24, color: q.bg, marginBottom: 8 }}>{q.icon}</div>
-                    <div style={{ fontSize: 14, fontWeight: 500 }}>{q.label}</div>
-                  </div>
-                </Col>
-              ))}
-            </Row>
-          </Card>
-        </Col>
-      </Row>
-
-      <Card
-        title="最近上传"
-        bordered={false}
-        style={{ borderRadius: 10 }}
-        extra={<a onClick={() => navigate('/assets')}>查看全部 →</a>}
+      {/* Four large number cards */}
+      <section
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: tokens.space[4],
+        }}
       >
-        <AssetGrid assets={recent_assets} />
-      </Card>
+        {cards.map((c) => (
+          <div
+            key={c.key}
+            style={{
+              background: tokens.color.panel,
+              border: `1px solid ${tokens.color.border}`,
+              borderLeft: `2px solid ${tokens.color.accent}`,
+              borderRadius: tokens.radius.lg,
+              padding: tokens.space[4],
+              display: 'flex',
+              flexDirection: 'column',
+              gap: tokens.space[2],
+            }}
+          >
+            <Space size="small" align="center">
+              <span
+                aria-hidden
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 32,
+                  height: 32,
+                  borderRadius: tokens.radius.sm,
+                  background: 'rgba(245, 165, 36, 0.12)',
+                  color: tokens.color.accent,
+                  fontSize: 16,
+                }}
+              >
+                {c.icon}
+              </span>
+              <Text
+                style={{
+                  color: tokens.color.textMuted,
+                  fontSize: 12,
+                  textTransform: 'none',
+                  letterSpacing: 0,
+                }}
+              >
+                {c.label}
+              </Text>
+            </Space>
+            <div
+              style={{
+                fontSize: 32,
+                fontWeight: 600,
+                color: tokens.color.text,
+                lineHeight: 1.1,
+                fontFamily: tokens.font.mono,
+                letterSpacing: '-0.02em',
+              }}
+            >
+              {c.value}
+            </div>
+            <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+              {c.hint}
+            </Text>
+          </div>
+        ))}
+      </section>
+
+      {/* Recent 10 assets — compact mono-typed row list */}
+      <section
+        style={{
+          background: tokens.color.panel,
+          border: `1px solid ${tokens.color.border}`,
+          borderRadius: tokens.radius.lg,
+          padding: tokens.space[4],
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: tokens.space[3],
+          }}
+        >
+          <Title
+            level={4}
+            style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}
+          >
+            最近 10 条资产
+          </Title>
+          <a
+            href="/library"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate('/library');
+            }}
+            style={{ color: tokens.color.accent, fontSize: 13, textDecoration: 'none' }}
+          >
+            查看全部 →
+          </a>
+        </div>
+
+        {recentAssets.length === 0 ? (
+          <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
+            暂无最近上传的资产
+          </Text>
+        ) : (
+          <Space direction="vertical" size="small" style={{ width: '100%' }}>
+            {recentAssets.map((asset) => {
+              const preview = previewUrl(asset);
+              const isVideo = asset.asset_type === 'video';
+              return (
+                <div
+                  key={asset.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => navigate(`/library/${asset.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate(`/library/${asset.id}`);
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: tokens.space[3],
+                    padding: `${tokens.space[2]}px ${tokens.space[3]}px`,
+                    background: tokens.color.bgAlt,
+                    border: `1px solid ${tokens.color.border}`,
+                    borderRadius: tokens.radius.md,
+                    cursor: 'pointer',
+                    transition: 'border-color 120ms ease, background 120ms ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = tokens.color.borderStrong;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = tokens.color.border;
+                  }}
+                >
+                  <div
+                    aria-hidden
+                    style={{
+                      width: 36,
+                      height: 36,
+                      flexShrink: 0,
+                      borderRadius: tokens.radius.sm,
+                      background: tokens.color.bg,
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: tokens.color.textMuted,
+                    }}
+                  >
+                    {preview ? (
+                      <img
+                        src={preview}
+                        alt={asset.title}
+                        loading="lazy"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                        }}
+                      />
+                    ) : isVideo ? (
+                      <PlayCircleOutlined />
+                    ) : (
+                      <PictureOutlined />
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <Text
+                      strong
+                      ellipsis
+                      style={{
+                        display: 'block',
+                        color: tokens.color.text,
+                        fontSize: 13,
+                      }}
+                      title={asset.title}
+                    >
+                      {asset.title || asset.asset_code || '(无标题)'}
+                    </Text>
+                    <Text
+                      style={{
+                        display: 'block',
+                        color: tokens.color.textMuted,
+                        fontSize: 11,
+                        fontFamily: tokens.font.mono,
+                      }}
+                    >
+                      {asset.asset_type}
+                      {' · '}
+                      {formatBytes(asset.file_size)}
+                      {' · '}
+                      {formatDate(asset.created_at)}
+                    </Text>
+                  </div>
+                </div>
+              );
+            })}
+          </Space>
+        )}
+      </section>
     </div>
-  )
+  );
 }
