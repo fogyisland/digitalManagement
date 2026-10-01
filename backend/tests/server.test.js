@@ -158,6 +158,99 @@ const server = serverApp.listen(port, '127.0.0.1', async () => {
   }
 });
 
+// --- Step 5: 413 large file rejection test ---
+// Reconfigure to a small limit so we can trigger LIMIT_FILE_SIZE without sending huge payloads.
+server.close(() => {
+  // Use a fresh DB path so server.js re-runs its full schema (includes ALTER TABLE ADD COLUMN)
+  // without colliding with the first-test DB that better-sqlite3 still has open.
+  const testDbPath413 = path.join(__dirname, 'test-upload-413.db');
+  const testStoragePath413 = path.join(__dirname, 'test-storage-413');
+  try { fs.unlinkSync(testDbPath413); } catch {}
+  try { fs.unlinkSync(testDbPath413 + '-shm'); } catch {}
+  try { fs.unlinkSync(testDbPath413 + '-wal'); } catch {}
+  try { fs.rmSync(testStoragePath413, { recursive: true, force: true }); } catch {}
+
+  process.env.DB_PATH = testDbPath413;
+  process.env.STORAGE_DIR = testStoragePath413;
+
+  const smallLimitMb = 1; // 1 MiB
+  process.env.UPLOAD_MAX_FILE_SIZE_MB = String(smallLimitMb);
+  // Re-require server.js with new env so the new limit is honored.
+  delete require.cache[require.resolve('../src/server')];
+  const serverApp413 = require('../src/server');
+
+  const port413 = 18000 + Math.floor(Math.random() * 1000);
+  const server413 = serverApp413.listen(port413, '127.0.0.1', async () => {
+    try {
+      const testDb = new Database(testDbPath413);
+      const admin = testDb.prepare("SELECT id FROM users WHERE username='admin'").get();
+      testDb.close();
+
+      const token = jwt.sign({ sub: admin.id, role: 'admin' }, 'test-secret-key', { expiresIn: '1h' });
+
+      // Build a payload larger than 1 MiB (slightly over to be safe).
+      const oversizedPayload = Buffer.alloc((smallLimitMb * 1024 * 1024) + (64 * 1024), 0x41); // 1 MiB + 64 KiB
+
+      const boundary = '----testboundary413' + Date.now();
+      const parts = [];
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from('Content-Disposition: form-data; name="files"; filename="big.bin"\r\n'));
+      parts.push(Buffer.from('Content-Type: application/octet-stream\r\n\r\n'));
+      parts.push(oversizedPayload);
+      parts.push(Buffer.from('\r\n'));
+      parts.push(Buffer.from(`--${boundary}\r\n`));
+      parts.push(Buffer.from('Content-Disposition: form-data; name="source_tool"\r\n\r\n'));
+      parts.push(Buffer.from('comfyui'));
+      parts.push(Buffer.from('\r\n'));
+      parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+      const body = Buffer.concat(parts);
+
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: port413,
+        path: '/api/v1/assets/upload',
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+          'Authorization': `Bearer ${token}`,
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try {
+            assert.strictEqual(res.statusCode, 413, `expected 413, got ${res.statusCode}: ${data}`);
+            const parsed = JSON.parse(data);
+            assert.strictEqual(parsed.code, 'FILE_TOO_LARGE', `expected code=FILE_TOO_LARGE, got ${parsed.code}`);
+            assert.ok(parsed.request_id, 'expected request_id to be set');
+            console.log('413 file size limit OK');
+            cleanup(server413, testDbPath413, testStoragePath413);
+          } catch (e) {
+            console.error('TEST FAILED (413):', e.message);
+            cleanup(server413, testDbPath413, testStoragePath413);
+            process.exit(1);
+          }
+        });
+      });
+
+      req.on('error', (e) => {
+        console.error('REQUEST ERROR (413):', e.message);
+        cleanup(server413, testDbPath413, testStoragePath413);
+        process.exit(1);
+      });
+
+      req.write(body);
+      req.end();
+    } catch (e) {
+      console.error('TEST SETUP ERROR (413):', e.message);
+      cleanup(server413, testDbPath413, testStoragePath413);
+      process.exit(1);
+    }
+  });
+});
+
 function cleanup(server, dbPath, storagePath) {
   server.close(() => {
     try { fs.unlinkSync(dbPath); } catch {}

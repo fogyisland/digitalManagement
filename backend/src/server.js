@@ -406,10 +406,18 @@ app.post('/api/v1/tags', authRequired, (req, res) => {
 });
 
 // --- Assets ---
+const MAX_FILE_SIZE = (parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '2048', 10)) * 1024 * 1024;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 200 * 1024 * 1024 },
+  limits: { fileSize: MAX_FILE_SIZE },
 });
+
+function uploadErrorHandler(err, _req, res, next) {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ code: 'FILE_TOO_LARGE', message: `File exceeds ${MAX_FILE_SIZE} bytes`, request_id: nanoid() });
+  }
+  next(err);
+}
 
 function detectAssetType(mime) {
   if (!mime) return 'other';
@@ -701,6 +709,7 @@ if (fs.existsSync(FRONTEND_DIST)) {
 }
 
 // --- Error handler ---
+app.use(uploadErrorHandler);
 app.use((err, _req, res, _next) => {
   console.error('[error]', err);
   res.status(err.status || 500).json({ detail: err.message || 'Internal error' });
