@@ -106,3 +106,118 @@ export const assetsApi = {
   completeUpload: (session_id: string, meta: { title?: string; description?: string; category_id?: number; tag_names?: string }) =>
     apiPost<Asset>('/api/v1/upload/complete', { session_id, ...meta }),
 }
+
+/* ============================================================================
+   Task 14 — Import API surface
+   ----------------------------------------------------------------------------
+   The legacy `assetsApi` above talks to a missing `http/apiGet/...` wrapper
+   module and is kept untouched per the "no blind refactor" rule. The new
+   entrypoints below ride the shared `apiClient` (baseURL `/api/v1`, 401 ->
+   /login redirect) and return shapes the UI can consume directly.
+   ============================================================================ */
+
+import { apiClient } from './client';
+import type { Asset as DtoAsset } from '@/types/dto';
+
+export interface UploadAssetMeta {
+  title?: string;
+  description?: string;
+  prompt?: string;
+  seed?: number | null;
+  model_name?: string;
+  job_id?: string;
+  source_tool?: 'manual' | 'comfyui' | 'admin' | string | null;
+  metadata_json?: string | null;
+}
+
+/**
+ * Build the multipart payload expected by `POST /assets/upload`.
+ *
+ * The caller owns the `files` (plural — matches the backend's
+ * `upload.array('files', 20)`) entry; everything else is optional and only
+ * appended when truthy so we never send empty strings.
+ */
+export function buildUploadFormData(files: File[], meta: UploadAssetMeta): FormData {
+  const form = new FormData();
+  for (const f of files) form.append('files', f);
+  if (meta.title) form.append('title', meta.title);
+  if (meta.description) form.append('description', meta.description);
+  if (meta.prompt) form.append('prompt', meta.prompt);
+  if (meta.seed !== undefined && meta.seed !== null && Number.isFinite(meta.seed)) {
+    form.append('seed', String(meta.seed));
+  }
+  if (meta.model_name) form.append('model_name', meta.model_name);
+  if (meta.job_id) form.append('job_id', meta.job_id);
+  if (meta.source_tool) form.append('source_tool', meta.source_tool);
+  if (meta.metadata_json && meta.metadata_json.trim().length > 0) {
+    form.append('metadata_json', meta.metadata_json);
+  }
+  return form;
+}
+
+/**
+ * `POST /assets/upload` — multipart upload + ComfyUI metadata fields.
+ *
+ * Backend response shape: `{ items: Asset[], count: number }`. We unwrap to
+ * the array; callers that need a single asset use `uploadAssetOne`.
+ */
+export async function uploadAsset(form: FormData): Promise<DtoAsset[]> {
+  const r = await apiClient.post<{ items?: DtoAsset[] } | DtoAsset[]>(
+    '/assets/upload',
+    form,
+    { headers: { 'content-type': 'multipart/form-data' } },
+  );
+  const data = r.data;
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.items)) return data.items;
+  return [];
+}
+
+/** Convenience wrapper — returns the first uploaded asset, or null. */
+export async function uploadAssetOne(form: FormData): Promise<DtoAsset | null> {
+  const items = await uploadAsset(form);
+  return items.length > 0 ? items[0] : null;
+}
+
+/**
+ * `POST /assets/import-url` — import an asset by external URL.
+ *
+ * Concern parked: as of this task's baseline, no route by that name exists
+ * on the backend. The call will surface a 404 in the UI until the backend
+ * ships a matching handler; the wrapper is here so the page can land and
+ * the route can be wired without touching the page code.
+ */
+export async function importUrlByUrl(form: {
+  url: string;
+  title?: string;
+  source_tool?: string | null;
+}): Promise<DtoAsset> {
+  const r = await apiClient.post<DtoAsset>('/assets/import-url', form);
+  return r.data;
+}
+
+/**
+ * `GET /jobs/by-comfyui/:job_id` — look up an existing job by the upstream
+ * ComfyUI identifier.
+ *
+ * Concern parked: backend currently has no `jobs` table or `/jobs/...`
+ * routes (only the asset-level `job_id` column). The endpoint is expected
+ * to be added when the jobs dashboard lands; until then, this will 404 and
+ * the UI surfaces the error gracefully.
+ */
+export async function lookupComfyUiJob(jobId: string): Promise<DtoAsset | null> {
+  const r = await apiClient.get<DtoAsset | null>(`/jobs/by-comfyui/${encodeURIComponent(jobId)}`);
+  return r.data ?? null;
+}
+
+/**
+ * `POST /assets/from-comfyui/:job_id` — register a placeholder asset from
+ * a known ComfyUI job.
+ *
+ * Concern parked: backend has no such route today. Same rationale as
+ * `importUrlByUrl` above — keep the surface ready, surface 404 in UI.
+ */
+export async function registerAssetByComfyJob(jobId: string): Promise<DtoAsset> {
+  const r = await apiClient.post<DtoAsset>(`/assets/from-comfyui/${encodeURIComponent(jobId)}`, {});
+  return r.data;
+}
