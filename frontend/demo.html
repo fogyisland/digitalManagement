@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
+<title>DAM · 数字资产管理系统</title>
+<script>window.DAM_VERSION = '2026-09-29-18-07';</script>
+<style>
+  :root{
+    --bg:#0b1220; --panel:#111a2e; --panel-2:#0e1628; --border:#1e2a44;
+    --text:#e6ecff; --muted:#7a8aae; --primary:#5b8cff; --primary-2:#7aa0ff;
+    --success:#34d399; --warn:#fbbf24; --danger:#f87171;
+    --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:radial-gradient(1200px 600px at 80% -10%, #1a2547 0%, transparent 60%), var(--bg); color:var(--text); font:14px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei";}
+  a{color:var(--primary);text-decoration:none}
+  button{font:inherit;cursor:pointer}
+  input,select,textarea{font:inherit;color:inherit}
+
+  /* Layout */
+  .app{display:grid;grid-template-columns:240px 1fr;min-height:100vh}
+  .sidebar{background:var(--panel);border-right:1px solid var(--border);padding:18px 14px;position:sticky;top:0;height:100vh}
+  .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 18px;border-bottom:1px solid var(--border);margin-bottom:14px}
+  .brand-logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#5b8cff,#a78bfa);display:grid;place-items:center;color:#fff;font-weight:700;font-size:16px;box-shadow:var(--shadow)}
+  .brand-name{font-weight:600;font-size:15px}
+  .brand-sub{color:var(--muted);font-size:11px;margin-top:2px}
+  .nav{display:flex;flex-direction:column;gap:2px}
+  .nav a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;color:#bcd0ff;cursor:pointer}
+  .nav a:hover{background:rgba(91,140,255,.08)}
+  .nav a.active{background:rgba(91,140,255,.16);color:#fff}
+  .nav-icon{width:18px;text-align:center;opacity:.9}
+  .sidebar-foot{position:absolute;bottom:14px;left:14px;right:14px;color:var(--muted);font-size:12px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;background:rgba(91,140,255,.16);color:#bcd0ff;font-size:11px}
+
+  .main{display:flex;flex-direction:column;min-width:0}
+  .topbar{display:flex;align-items:center;gap:14px;padding:14px 22px;background:var(--panel-2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+  .crumbs{color:var(--muted)}
+  .crumbs b{color:var(--text)}
+  .spacer{flex:1}
+  .topbar .user{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--panel);border:1px solid var(--border);border-radius:999px}
+  .avatar{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#5b8cff,#a78bfa);display:grid;place-items:center;color:#fff;font-size:12px;font-weight:700}
+
+  .page{padding:22px;flex:1}
+  .h-row{display:flex;align-items:flex-end;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+  .h-title{font-size:22px;font-weight:600;margin:0}
+  .h-sub{color:var(--muted);font-size:13px;margin-top:4px}
+
+  /* Cards */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:var(--shadow)}
+  .card .lbl{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
+  .card .num{font-size:28px;font-weight:700;margin-top:6px;letter-spacing:-.5px}
+  .card .delta{font-size:12px;color:var(--success);margin-top:6px}
+  .card .iconbox{float:right;width:36px;height:36px;border-radius:9px;background:rgba(91,140,255,.16);display:grid;place-items:center;color:#bcd0ff}
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .panel-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border)}
+  .panel-head h3{margin:0;font-size:15px;font-weight:600}
+  .panel-body{padding:16px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
+  .thumb{background:var(--panel-2);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:transform .15s ease, box-shadow .15s ease;cursor:pointer}
+  .thumb:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:#2c3e64}
+  .thumb .img{aspect-ratio:1/1;background:#0a1325;display:grid;place-items:center;color:var(--muted);font-size:12px;overflow:hidden}
+  .thumb .img img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb .meta{padding:10px}
+  .thumb .ttl{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .thumb .sub{color:var(--muted);font-size:11px;margin-top:3px;display:flex;gap:6px;align-items:center}
+
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);transition:.15s}
+  .btn:hover{border-color:#2c3e64;background:#14213d}
+  .btn.primary{background:linear-gradient(135deg,#5b8cff,#7aa0ff);border-color:transparent;color:#fff}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost{background:transparent}
+  .btn.danger{background:#3b1320;border-color:#5e1c30;color:#fecaca}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+
+  .input,.select{padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);outline:none;min-width:0}
+  .input:focus,.select:focus{border-color:var(--primary)}
+  .input::placeholder{color:var(--muted)}
+
+  .empty{padding:60px 20px;text-align:center;color:var(--muted)}
+  .empty .ico{font-size:48px;margin-bottom:10px;opacity:.5}
+
+  /* Table */
+  table{width:100%;border-collapse:separate;border-spacing:0}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
+  th{color:var(--muted);font-weight:500;text-transform:uppercase;font-size:11px;letter-spacing:.5px;background:var(--panel-2)}
+  tr:hover td{background:rgba(91,140,255,.04)}
+
+  /* Login */
+  .login{display:grid;place-items:center;min-height:100vh;padding:20px}
+  .login .box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:30px;width:100%;max-width:380px;box-shadow:var(--shadow)}
+  .login h1{margin:0 0 6px;font-size:20px}
+  .login p{margin:0 0 20px;color:var(--muted);font-size:13px}
+  .login .field{margin-bottom:14px}
+  .login label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .login input{width:100%;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);color:var(--text);outline:none}
+  .login input:focus{border-color:var(--primary)}
+  .login button{width:100%;padding:11px;border-radius:8px;border:0;background:linear-gradient(135deg,#5b8cff,#7aa0ff);color:#fff;font-weight:600;font-size:14px;cursor:pointer}
+  .login button:hover{filter:brightness(1.08)}
+  .login .hint{margin-top:14px;padding:10px 12px;background:var(--panel-2);border:1px dashed var(--border);border-radius:8px;font-size:12px;color:var(--muted)}
+  .login .hint code{color:#bcd0ff}
+
+  /* Modal */
+  .modal-bg{position:fixed;inset:0;background:rgba(5,10,20,.65);display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(4px)}
+  .modal-bg.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px;width:min(560px,92vw);box-shadow:var(--shadow);max-height:90vh;overflow:auto}
+  .modal h3{margin:0 0 4px;font-size:17px}
+  .modal .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
+  .modal .row{display:flex;gap:10px;margin-top:16px;justify-content:flex-end}
+  .drop{padding:30px;border:2px dashed var(--border);border-radius:12px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  .drop:hover,.drop.over{border-color:var(--primary);background:rgba(91,140,255,.06)}
+  .drop .big{font-size:30px;margin-bottom:8px}
+
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:8px;background:var(--panel);border:1px solid var(--border);box-shadow:var(--shadow);z-index:200;opacity:0;transition:.25s;pointer-events:none;font-size:13px}
+  .toast.show{opacity:1}
+  .toast.success{border-color:#1d6f4d;color:#a7f3d0}
+  .toast.error{border-color:#7f1d1d;color:#fecaca}
+
+  .key-display{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0a1325;border:1px solid var(--border);border-radius:8px;padding:10px 12px;word-break:break-all;font-size:13px}
+
+  .tag{display:inline-block;padding:2px 8px;background:rgba(91,140,255,.16);color:#bcd0ff;border-radius:999px;font-size:11px;margin-right:4px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px}
+  .badge.image{background:rgba(52,211,153,.16);color:#a7f3d0}
+  .badge.video{background:rgba(167,139,250,.16);color:#ddd6fe}
+  .badge.other{background:rgba(251,191,36,.16);color:#fde68a}
+  .progress{height:6px;background:var(--panel-2);border-radius:3px;overflow:hidden;margin-top:10px}
+  .progress>div{height:100%;background:linear-gradient(90deg,#5b8cff,#a78bfa);transition:width .2s}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view" class="login">
+  <div class="box">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <div class="brand-logo">D</div>
+      <div>
+        <div style="font-weight:600">DAM 数字资产</div>
+        <div style="color:var(--muted);font-size:11px">Digital Asset Management</div>
+      </div>
+    </div>
+    <h1>欢迎回来</h1>
+    <p>使用管理员账号登录，开始管理你的数字资产</p>
+    <div class="field">
+      <label>用户名</label>
+      <input id="login-username" value="admin" autocomplete="username" />
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input id="login-password" type="password" value="Admin@123456" autocomplete="current-password" />
+    </div>
+    <button onclick="doLogin()">登录</button>
+    <div id="login-status" style="display:none;margin-top:14px;padding:10px 12px;border-radius:8px;font-size:12.5px;text-align:center;border:1px solid transparent"></div>
+    <div class="hint">
+      默认账号：<code>admin / Admin@123456</code><br>
+      后端地址：<code id="api-base">http://localhost:8000</code>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-view" class="app" style="display:none">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">D</div>
+      <div>
+        <div class="brand-name">DAM</div>
+        <div class="brand-sub">v1.0.0</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav">
+      <a data-page="dashboard" class="active"><span class="nav-icon">◎</span><span>概览</span></a>
+      <a data-page="assets"><span class="nav-icon">▤</span><span>资产库</span></a>
+      <a data-page="categories"><span class="nav-icon">⊞</span><span>分类</span></a>
+      <a data-page="tags"><span class="nav-icon">#</span><span>标签</span></a>
+      <a data-page="apikeys"><span class="nav-icon">⚿</span><span>API Key</span></a>
+      <a data-page="delivery"><span class="nav-icon">⇄</span><span>公开投递 API</span></a>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="pill"><span style="width:6px;height:6px;border-radius:50%;background:#34d399"></span> 已登录</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="crumbs">DAM / <b id="crumb">概览</b></div>
+      <div class="spacer"></div>
+      <button class="btn ghost" onclick="checkHealth()" title="健康检查">⚙</button>
+      <div class="user">
+        <div class="avatar" id="user-avatar">A</div>
+        <span id="user-name">admin</span>
+      </div>
+      <button class="btn ghost" onclick="logout()">退出</button>
+    </header>
+
+    <section class="page" id="page"></section>
+  </main>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal" id="modal-content"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = 'http://localhost:8000';
+let TOKEN = localStorage.getItem('dam_token') || '';
+let USER = JSON(localStorage.getItem('dam_user') || 'null');
+let state = { assets: [], categories: [], tags: [], apikeys: [], page: 'dashboard' };
+
+// -------- HTTP --------
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+  if (!(opts.body instanceof FormData) && opts.body && typeof opts.body === 'object') {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(API + path, { ...opts, headers });
+  if (r.status === 204) return null;
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+// -------- Toast --------
+function toast(msg, type = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+// -------- Modal --------
+function showModal(html) {
+  document.getElementById('modal-content').innerHTML = html;
+  document.getElementById('modal-bg').classList.add('show');
+}
+function closeModal() {
+  document.getElementById('modal-bg').classList.remove('show');
+}
+document.getElementById('modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'modal-bg') closeModal();
+});
+
+// -------- Login --------
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const status = document.getElementById('login-status');
+  const btn = document.querySelector('.login button');
+  btn.disabled = true;
+  status.style.display = '';
+  status.textContent = '正在登录…';
+  status.style.background = 'rgba(91,140,255,.16)';
+  status.style.color = '#bcd0ff';
+  status.style.borderColor = 'rgba(91,140,255,.4)';
+  try {
+    const r = await api('/api/v1/auth/login', { method: 'POST', body: { username, password } });
+    status.textContent = '✓ 登录成功，正在加载工作台…';
+    status.style.background = 'rgba(52,211,153,.16)';
+    status.style.color = '#a7f3d0';
+    status.style.borderColor = 'rgba(52,211,153,.4)';
+    TOKEN = r.access_token;
+    USER = r.user;
+    localStorage.setItem('dam_token', TOKEN);
+    localStorage.setItem('dam_user', JSON.stringify(USER));
+    await enterApp();
+  } catch (e) {
+    status.textContent = '✗ 登录失败：' + e.message;
+    status.style.background = 'rgba(248,113,113,.16)';
+    status.style.color = '#fecaca';
+    status.style.borderColor = 'rgba(248,113,113,.4)';
+    console.error('[login error]', e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+function logout() {
+  TOKEN = ''; USER = null;
+  localStorage.removeItem('dam_token'); localStorage.removeItem('dam_user');
+  location.reload();
+}
+async function enterApp() {
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('app-view').style.display = '';
+  document.getElementById('user-name').textContent = USER.username;
+  document.getElementById('user-avatar').textContent = USER.username[0].toUpperCase();
+  await loadAll();
+  render();
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch(API + '/api/health').then(r => r.json());
+    toast('后端健康 · ' + r.status, 'success');
+  } catch (e) {
+    toast('后端不可达：' + e.message, 'error');
+  }
+}
+
+// -------- Load --------
+async function loadAll() {
+  try {
+    const [assets, categories, tags, apikeys, stats] = await Promise.all([
+      api('/api/v1/assets?page_size=200'),
+      api('/api/v1/categories'),
+      api('/api/v1/tags'),
+      api('/api/v1/api-keys'),
+      api('/api/v1/stats'),
+    ]);
+    state.assets = assets.items || [];
+    state.categories = categories || [];
+    state.tags = tags || [];
+    state.apikeys = apikeys || [];
+    state.stats = stats;
+  } catch (e) {
+    toast('加载失败：' + e.message, 'error');
+  }
+}
+
+// -------- Routing --------
+document.getElementById('nav').addEventListener('click', (e) => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  document.querySelectorAll('#nav a').forEach(n => n.classList.remove('active'));
+  a.classList.add('active');
+  state.page = a.dataset.page;
+  render();
+});
+
+// -------- Renderers --------
+function render() {
+  const labels = { dashboard: '概览', assets: '资产库', categories: '分类', tags: '标签', apikeys: 'API Key', delivery: '公开投递 API' };
+  document.getElementById('crumb').textContent = labels[state.page] || '';
+  const p = document.getElementById('page');
+  if (state.page === 'dashboard') p.innerHTML = renderDashboard();
+  else if (state.page === 'assets') p.innerHTML = renderAssets();
+  else if (state.page === 'categories') p.innerHTML = renderCategories();
+  else if (state.page === 'tags') p.innerHTML = renderTags();
+  else if (state.page === 'apikeys') p.innerHTML = renderApiKeys();
+  else if (state.page === 'delivery') p.innerHTML = renderDelivery();
+}
+
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+function renderDashboard() {
+  const s = state.stats || {};
+  return `
+    <div class="h-row">
+      <div>
+        <h1 class="h-title">概览</h1>
+        <div class="h-sub">系统关键指标一目了然</div>
+      </div>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="iconbox">▤</div>
+        <div class="lbl">资产总数</div>
+        <div class="num">${s.total || 0}</div>
+        <div class="delta">所有上传文件</div>
+      </div>
+      <div class="card">
+        <div class="iconbox">▣</div>
+        <div class="lbl">图片</div>
+        <div class="num">${s.images || 0}</div>
+        <div class="delta">image/* 类型</div>
+      </div>
+      <div class="card">
+        <div class="iconbox">▶</div>
+        <div class="lbl">视频</div>
+        <div class="num">${s.videos || 0}</div>
+        <div class="delta">video/* 类型</div>
+      </div>
+      <div class="card">
+        <div class="iconbox">⛁</div>
+        <div class="lbl">占用空间</div>
+        <div class="num">${fmtSize(s.total_size || 0)}</div>
+        <div class="delta">原始文件大小</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>最近上传</h3></div>
+      <div class="panel-body">
+        ${(s.recent || []).length === 0 ? '<div class="empty"><div class="ico">▢</div>还没有资产，去资产库上传第一张吧</div>' : `
+        <table>
+          <thead><tr><th>标题</th><th>类型</th><th>大小</th><th>上传时间</th></tr></thead>
+          <tbody>${(s.recent || []).map(a => `
+            <tr>
+              <td>${escapeHtml(a.title || '—')}</td>
+              <td><span class="badge ${a.asset_type}">${a.asset_type}</span></td>
+              <td>${fmtSize(a.file_size)}</td>
+              <td>${a.created_at}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderAssets() {
+  const items = state.assets;
+  return `
+    <div class="h-row">
+      <div>
+        <h1 class="h-title">资产库</h1>
+        <div class="h-sub">${items.length} 个资产 · 支持图片/视频，SHA-256 自动去重</div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn primary" onclick="openUpload()">＋ 上传</button>
+    </div>
+
+    <div class="toolbar">
+      <input class="input" placeholder="搜索标题..." id="asset-search" style="min-width:240px" />
+      <select class="select" id="asset-type">
+        <option value="">全部类型</option>
+        <option value="image">图片</option>
+        <option value="video">视频</option>
+        <option value="other">其他</option>
+      </select>
+      <button class="btn" onclick="reloadAssets()">🔄 刷新</button>
+    </div>
+
+    ${items.length === 0 ? `
+      <div class="panel"><div class="empty"><div class="ico">▢</div>还没有资产<br><br>
+        <button class="btn primary" onclick="openUpload()">上传第一批资产</button>
+      </div></div>
+    ` : `
+    <div class="grid">
+      ${items.map(a => `
+        <div class="thumb" onclick="showAsset('${a.id}')">
+          <div class="img">
+            ${a.thumbnail_path
+              ? `<img src="${API}/storage/${a.thumbnail_path}" alt="" loading="lazy"/>`
+              : (a.asset_type === 'image' && a.storage_path
+                  ? `<img src="${API}/storage/${a.storage_path}" alt="" loading="lazy"/>`
+                  : (a.asset_type === 'video' ? '▶ 视频' : '▢ 文件'))
+            }
+          </div>
+          <div class="meta">
+            <div class="ttl">${escapeHtml(a.title || a.original_name)}</div>
+            <div class="sub">
+              <span class="badge ${a.asset_type}">${a.asset_type}</span>
+              <span>${fmtSize(a.file_size)}</span>
+            </div>
+          </div>
+        </div>`).join('')}
+    </div>`}
+  `;
+}
+
+function renderCategories() {
+  return `
+    <div class="h-row">
+      <div><h1 class="h-title">分类</h1><div class="h-sub">${state.categories.length} 个分类</div></div>
+      <div class="spacer"></div>
+      <button class="btn primary" onclick="openCategoryModal()">＋ 新建分类</button>
+    </div>
+    <div class="panel"><div class="panel-body">
+      ${state.categories.length === 0 ? '<div class="empty">还没有分类</div>' : `
+      <table>
+        <thead><tr><th>名称</th><th>标识</th><th>描述</th><th>排序</th><th></th></tr></thead>
+        <tbody>${state.categories.map(c => `
+          <tr>
+            <td><b>${escapeHtml(c.name)}</b></td>
+            <td><code style="color:#7aa0ff">${c.slug}</code></td>
+            <td>${escapeHtml(c.description || '—')}</td>
+            <td>${c.sort_order}</td>
+            <td><button class="btn danger" onclick="delCategory('${c.id}')">删除</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div></div>
+  `;
+}
+
+function renderTags() {
+  return `
+    <div class="h-row">
+      <div><h1 class="h-title">标签</h1><div class="h-sub">${state.tags.length} 个标签</div></div>
+      <div class="spacer"></div>
+      <button class="btn primary" onclick="openTagModal()">＋ 新建标签</button>
+    </div>
+    <div class="panel"><div class="panel-body">
+      ${state.tags.length === 0 ? '<div class="empty">还没有标签</div>' : `
+      <div style="display:flex;flex-wrap:wrap;gap:8px;padding:6px">
+        ${state.tags.map(t => `<span class="tag">#${escapeHtml(t.name)} <small style="opacity:.6">· ${t.usage_count}</small></span>`).join('')}
+      </div>`}
+    </div></div>
+  `;
+}
+
+function renderApiKeys() {
+  return `
+    <div class="h-row">
+      <div><h1 class="h-title">API Key 管理</h1><div class="h-sub">用于其他系统通过 API 投递资产 · 完整 Key 仅创建时返回一次</div></div>
+      <div class="spacer"></div>
+      <button class="btn primary" onclick="openApiKeyModal()">＋ 创建 API Key</button>
+    </div>
+    <div class="panel"><div class="panel-body">
+      ${state.apikeys.length === 0 ? '<div class="empty">还没有 API Key</div>' : `
+      <table>
+        <thead><tr><th>名称</th><th>Key 掩码</th><th>权限</th><th>状态</th><th>最后使用</th><th></th></tr></thead>
+        <tbody>${state.apikeys.map(k => `
+          <tr>
+            <td><b>${escapeHtml(k.name)}</b></td>
+            <td><code style="color:#7aa0ff">${k.key_masked}</code></td>
+            <td>${(k.scopes || '').split(',').map(s => `<span class="tag">${s}</span>`).join('')}</td>
+            <td>${k.is_active ? '<span style="color:#34d399">● 启用</span>' : '<span style="color:#f87171">● 停用</span>'}</td>
+            <td>${k.last_used_at || '从未'}</td>
+            <td><button class="btn danger" onclick="revokeKey('${k.id}')">吊销</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div></div>
+  `;
+}
+
+function renderDelivery() {
+  return `
+    <div class="h-row">
+      <div><h1 class="h-title">公开投递 API</h1><div class="h-sub">其他系统通过 API Key 调用本系统的资源</div></div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="lbl">POST /api/public/v1/delivery/upload</div>
+        <div class="num" style="font-size:16px">文件上传</div>
+        <div class="delta">需要 scope: upload</div>
+      </div>
+      <div class="card">
+        <div class="lbl">GET /api/public/v1/delivery/assets</div>
+        <div class="num" style="font-size:16px">资产列表</div>
+        <div class="delta">需要 scope: read</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>调用示例 (curl)</h3></div>
+      <div class="panel-body">
+        <div style="margin-bottom:14px;color:var(--muted);font-size:13px">用任意已启用的 API Key 替换 <code style="color:#7aa0ff">&lt;API_KEY&gt;</code></div>
+        <pre style="background:#0a1325;border:1px solid var(--border);border-radius:8px;padding:14px;overflow:auto;font-size:12.5px;line-height:1.6;color:#bcd0ff"><b style="color:#34d399"># 列出资产</b>
+curl -H "X-API-Key: &lt;API_KEY&gt;" \\
+     "${API}/api/public/v1/delivery/assets?asset_type=image&page=1&page_size=20"
+
+<b style="color:#34d399"># 上传文件</b>
+curl -X POST -H "X-API-Key: &lt;API_KEY&gt;" \\
+     -F "files=@./hero.png" -F "files=@./cover.jpg" \\
+     "${API}/api/public/v1/delivery/upload"
+
+<b style="color:#34d399"># 响应示例</b>
+{
+  "items": [
+    {
+      "id": "...",
+      "title": "hero.png",
+      "asset_type": "image",
+      "storage_path": "originals/xxx.png",
+      "thumbnail_path": "thumbnails/xxx.webp",
+      "file_size": 12345,
+      "mime_type": "image/png"
+    }
+  ],
+  "count": 1
+}</pre>
+      </div>
+    </div>
+  `;
+}
+
+// -------- Helpers --------
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+async function reloadAssets() {
+  const q = document.getElementById('asset-search').value;
+  const type = document.getElementById('asset-type').value;
+  const r = await api('/api/v1/assets?' + new URLSearchParams({ q, asset_type: type, page_size: 200 }));
+  state.assets = r.items || [];
+  render();
+}
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'asset-search') reloadAssets();
+});
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'asset-type') reloadAssets();
+});
+
+// -------- Upload --------
+function openUpload() {
+  showModal(`
+    <h3>上传资产</h3>
+    <div class="sub">支持图片 (jpg/png/webp/gif/svg) 和视频 (mp4/webm/mov)，单文件最大 200MB</div>
+    <div class="drop" id="drop">
+      <div class="big">⬆</div>
+      <div>拖拽文件到此处，或点击选择</div>
+      <input type="file" id="files" multiple style="display:none" />
+    </div>
+    <div class="progress" id="progress" style="display:none"><div style="width:0%"></div></div>
+    <div id="upload-result"></div>
+    <div class="row">
+      <button class="btn" onclick="closeModal()">取消</button>
+    </div>
+  `);
+  const drop = document.getElementById('drop');
+  const input = document.getElementById('files');
+  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault(); drop.classList.remove('over');
+    uploadFiles(e.dataTransfer.files);
+  });
+  input.addEventListener('change', (e) => uploadFiles(e.target.files));
+}
+
+async function uploadFiles(files) {
+  if (!files || !files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const prog = document.getElementById('progress');
+  const bar = prog.querySelector('div');
+  prog.style.display = '';
+  try {
+    const r = await api('/api/v1/assets/upload', { method: 'POST', body: fd });
+    bar.style.width = '100%';
+    document.getElementById('upload-result').innerHTML =
+      `<div style="margin-top:14px;color:#a7f3d0">✓ 已上传 ${r.count} 个资产</div>`;
+    toast(`上传成功 · ${r.count} 个文件`, 'success');
+    await loadAll(); render();
+    setTimeout(closeModal, 1200);
+  } catch (e) {
+    document.getElementById('upload-result').innerHTML =
+      `<div style="margin-top:14px;color:#fecaca">✗ ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// -------- Modals --------
+function openCategoryModal() {
+  showModal(`
+    <h3>新建分类</h3>
+    <div class="sub">分类用于组织资产</div>
+    <div class="field" style="margin-top:14px">
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">名称 *</label>
+      <input class="input" id="cat-name" style="width:100%" placeholder="如：营销素材"/>
+    </div>
+    <div class="field">
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">描述</label>
+      <input class="input" id="cat-desc" style="width:100%" placeholder="可选"/>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="saveCategory()">保存</button>
+    </div>
+  `);
+}
+async function saveCategory() {
+  const name = document.getElementById('cat-name').value.trim();
+  const description = document.getElementById('cat-desc').value.trim();
+  if (!name) return toast('请填写名称', 'error');
+  try {
+    await api('/api/v1/categories', { method: 'POST', body: { name, description } });
+    toast('已创建', 'success'); closeModal(); await loadAll(); render();
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function delCategory(id) {
+  if (!confirm('确认删除此分类？')) return;
+  try { await api('/api/v1/categories/' + id, { method: 'DELETE' }); toast('已删除', 'success'); await loadAll(); render(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+function openTagModal() {
+  showModal(`
+    <h3>新建标签</h3>
+    <div class="sub">标签便于资产检索</div>
+    <div class="field" style="margin-top:14px">
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">名称 *</label>
+      <input class="input" id="tag-name" style="width:100%" placeholder="如：封面"/>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="saveTag()">保存</button>
+    </div>
+  `);
+}
+async function saveTag() {
+  const name = document.getElementById('tag-name').value.trim();
+  if (!name) return toast('请填写名称', 'error');
+  try {
+    await api('/api/v1/tags', { method: 'POST', body: { name } });
+    toast('已创建', 'success'); closeModal(); await loadAll(); render();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function openApiKeyModal() {
+  showModal(`
+    <h3>创建 API Key</h3>
+    <div class="sub">完整 Key 只显示一次，请妥善保存</div>
+    <div class="field" style="margin-top:14px">
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">名称 *</label>
+      <input class="input" id="k-name" style="width:100%" placeholder="如：内容生成系统"/>
+    </div>
+    <div class="field">
+      <label style="display:block;font-size:12px;color:var(--muted);margin-bottom:6px">权限 (逗号分隔)</label>
+      <input class="input" id="k-scopes" style="width:100%" value="read,upload"/>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="saveApiKey()">创建</button>
+    </div>
+  `);
+}
+async function saveApiKey() {
+  const name = document.getElementById('k-name').value.trim();
+  const scopes = document.getElementById('k-scopes').value.trim();
+  if (!name) return toast('请填写名称', 'error');
+  try {
+    const r = await api('/api/v1/api-keys', { method: 'POST', body: { name, scopes } });
+    showModal(`
+      <h3 style="color:#34d399">✓ API Key 已创建</h3>
+      <div class="sub" style="color:#fbbf24">⚠ 完整 Key 只会显示这一次，请立即复制保存</div>
+      <div class="key-display">${r.key}</div>
+      <div style="margin-top:14px;color:var(--muted);font-size:12px">
+        名称：${r.name}<br>
+        权限：${r.scopes}<br>
+        前缀：${r.key_prefix}
+      </div>
+      <div class="row">
+        <button class="btn" onclick="navigator.clipboard.writeText('${r.key}');toast('已复制','success')">复制</button>
+        <button class="btn primary" onclick="closeModal();loadAll();render()">我已保存</button>
+      </div>
+    `);
+  } catch (e) { toast(e.message, 'error'); }
+}
+async function revokeKey(id) {
+  if (!confirm('确认吊销此 API Key？外部系统将无法继续调用')) return;
+  try { await api('/api/v1/api-keys/' + id, { method: 'DELETE' }); toast('已吊销', 'success'); await loadAll(); render(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function showAsset(id) {
+  const a = await api('/api/v1/assets/' + id);
+  showModal(`
+    <h3>${escapeHtml(a.title)}</h3>
+    <div class="sub">${a.mime_type} · ${fmtSize(a.file_size)} · ${a.created_at}</div>
+    <div style="margin:14px 0;text-align:center;background:var(--panel-2);border-radius:8px;padding:14px">
+      ${a.asset_type === 'image'
+        ? `<img src="${API}/storage/${a.storage_path}" style="max-width:100%;max-height:60vh;border-radius:6px"/>`
+        : a.asset_type === 'video'
+        ? `<video src="${API}/storage/${a.storage_path}" controls style="max-width:100%;max-height:60vh;border-radius:6px"></video>`
+        : `<div style="padding:40px;color:var(--muted)">▢ 文件预览不可用</div>`}
+    </div>
+    <div style="font-size:13px;line-height:1.8">
+      <div><b style="color:var(--muted)">ID:</b> <code>${a.id}</code></div>
+      <div><b style="color:var(--muted)">SHA-256:</b> <code style="word-break:break-all">${a.file_hash}</code></div>
+      <div><b style="color:var(--muted)">直链:</b> <code>${API}/storage/${a.storage_path}</code></div>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="closeModal()">关闭</button>
+    </div>
+  `);
+}
+
+// -------- Boot --------
+(async function () {
+  document.getElementById('api-base').textContent = API;
+  const diag = document.getElementById('login-status');
+  diag.style.display = '';
+  diag.style.background = 'rgba(91,140,255,.10)';
+  diag.style.color = '#bcd0ff';
+  diag.style.borderColor = 'rgba(91,140,255,.3)';
+  diag.textContent = '正在检测后端…';
+  // Probe backend
+  try {
+    const r = await fetch(API + '/api/health', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    diag.textContent = '✓ 后端已连接 (' + data.status + ') — 请登录';
+    diag.style.background = 'rgba(52,211,153,.16)';
+    diag.style.color = '#a7f3d0';
+    diag.style.borderColor = 'rgba(52,211,153,.4)';
+  } catch (e) {
+    diag.textContent = '✗ 后端不可达 (' + API + '): ' + e.message;
+    diag.style.background = 'rgba(248,113,113,.16)';
+    diag.style.color = '#fecaca';
+    diag.style.borderColor = 'rgba(248,113,113,.4)';
+    console.error('[backend unreachable]', e);
+    document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    return;
+  }
+  if (TOKEN) {
+    try { await api('/api/v1/auth/me'); await enterApp(); return; } catch { TOKEN = ''; }
+  }
+  document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+})();
+</script>
+</body>
+</html>

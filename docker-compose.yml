@@ -1,0 +1,54 @@
+version: '3.9'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: dam-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_pass_change_me
+      MYSQL_DATABASE: digital_management
+      MYSQL_USER: dam
+      MYSQL_PASSWORD: dam_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "dam", "-pdam_pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dam-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: dam
+      DB_PASSWORD: dam_pass
+      DB_NAME: digital_management
+      SECRET_KEY: please-change-me-in-production-32chars-minimum
+      APP_BASE_URL: http://localhost:8000
+      STORAGE_ROOT: /app/storage
+      SERVE_FRONTEND: "true"
+      FRONTEND_DIST: /app/frontend-dist
+    ports:
+      - "8000:8000"
+    volumes:
+      - asset_storage:/app/storage
+
+volumes:
+  mysql_data:
+  asset_storage:

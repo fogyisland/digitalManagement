@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+backend/venv/
+backend/__pycache__/
+
+# Node
+node_modules/
+dist/
+*.local
+
+# Storage (mounted via volumes in docker)
+storage/originals/*
+storage/thumbnails/*
+storage/previews/*
+storage/temp/*
+!storage/originals/.gitkeep
+!storage/thumbnails/.gitkeep
+!storage/previews/.gitkeep
+!storage/temp/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/
