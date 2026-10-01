@@ -5,12 +5,12 @@ import zhCN from 'antd/locale/zh_CN'
 import { RouterProvider } from 'react-router-dom'
 
 import { router } from './router'
-import { lightTheme } from './styles/theme'
+import { damTheme } from './theme/antd-theme'
 import './styles/global.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ConfigProvider locale={zhCN} theme={lightTheme}>
+    <ConfigProvider locale={zhCN} theme={damTheme}>
       <AntdApp>
         <RouterProvider router={router} />
       </AntdApp>
