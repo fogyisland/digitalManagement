@@ -2,39 +2,35 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
-  Checkbox,
   Empty,
-  Input,
   Pagination,
   Segmented,
-  Select,
   Skeleton,
   Space,
   Spin,
-  Tooltip,
   Typography,
 } from 'antd';
 import {
   AppstoreOutlined,
   BarsOutlined,
   DeleteOutlined,
-  DownloadOutlined,
-  FileImageOutlined,
-  PlayCircleOutlined,
-  SearchOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { apiClient } from '@/api/client';
 import { useApi } from '@/api/hooks';
+import LibraryCard from '@/components/library/LibraryCard';
+import LibraryFilters, {
+  type LibraryFiltersHandlers,
+  type LibraryFiltersState,
+} from '@/components/library/LibraryFilters';
+import LibraryRow from '@/components/library/LibraryRow';
 import type {
   Asset,
-  AssetStatus,
   AssetType,
   Category,
   PageResp,
 } from '@/types/dto';
 import { tokens } from '@/theme/tokens';
-import { formatBytes } from '@/utils/format';
 
 const { Text, Title } = Typography;
 
@@ -78,19 +74,9 @@ function previewUrl(asset: Pick<Asset, 'thumbnail_path' | 'storage_path'>): stri
   return normalized.replace(/^\/api\/v1\/storage\//, '/storage/');
 }
 
-const ASSET_TYPE_FILTERS: { value: AssetType; label: string }[] = [
-  { value: 'image', label: '图片' },
-  { value: 'video', label: '视频' },
-  { value: 'other', label: '其他' },
-];
-
-// `/api/v1/assets/source-tools` does not exist in this milestone; the
-// reasonable hardcoded set covers every value `processUpload` writes.
-const SOURCE_TOOL_OPTIONS = [
-  { value: 'comfyui', label: 'ComfyUI' },
-  { value: 'manual', label: '手动上传' },
-  { value: 'admin', label: '管理后台' },
-];
+// Filter option lists (ASSET_TYPE_FILTERS, SOURCE_TOOL_OPTIONS) and the
+// `<LibraryFilters>` JSX live in `frontend/src/components/library/LibraryFilters.tsx`
+// to keep this page under the CLAUDE.md 500-LOC cap.
 
 function buildQuery(params: {
   q?: string;
@@ -110,400 +96,10 @@ function buildQuery(params: {
   return `/assets?${search.toString()}`;
 }
 
-function statusBadgeColor(status: AssetStatus): string {
-  switch (status) {
-    case 'ready':
-      return tokens.color.success;
-    case 'processing':
-      return tokens.color.jobBadge;
-    case 'failed':
-      return tokens.color.danger;
-    case 'deleted':
-      return tokens.color.textMuted;
-    default:
-      return tokens.color.textMuted;
-  }
-}
-
-function statusLabel(status: AssetStatus): string {
-  switch (status) {
-    case 'ready':
-      return '就绪';
-    case 'processing':
-      return '处理中';
-    case 'failed':
-      return '失败';
-    case 'deleted':
-      return '已删除';
-    default:
-      return status;
-  }
-}
-
-interface CardProps {
-  asset: Asset;
-  isSelected: boolean;
-  onToggle: (id: string) => void;
-  onOpen: (id: string) => void;
-  onDownload: (asset: Asset) => void;
-  onDelete: (asset: Asset) => void;
-}
-
-function LibraryCard({
-  asset,
-  isSelected,
-  onToggle,
-  onOpen,
-  onDownload,
-  onDelete,
-}: CardProps): JSX.Element {
-  const isVideo = asset.asset_type === 'video';
-  const url = previewUrl(asset);
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(asset.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen(asset.id);
-        }
-      }}
-      style={{
-        position: 'relative',
-        background: tokens.color.panel,
-        border: `1px solid ${
-          isSelected ? tokens.color.accent : tokens.color.border
-        }`,
-        borderRadius: tokens.radius.lg,
-        overflow: 'hidden',
-        cursor: 'pointer',
-        transition: 'border-color 120ms ease, transform 120ms ease',
-        boxShadow: isSelected
-          ? `inset 0 0 0 1px ${tokens.color.accent}`
-          : 'none',
-        outline: 'none',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = isSelected
-          ? tokens.color.accent
-          : tokens.color.borderStrong;
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = isSelected
-          ? tokens.color.accent
-          : tokens.color.border;
-      }}
-    >
-      {/* left accent stripe for selected — the page's one memorable beat */}
-      {isSelected && (
-        <span
-          aria-hidden
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: 2,
-            height: '100%',
-            background: tokens.color.accent,
-            pointerEvents: 'none',
-          }}
-        />
-      )}
-      <div
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle(asset.id);
-        }}
-        style={{
-          position: 'absolute',
-          top: tokens.space[2],
-          left: tokens.space[2],
-          zIndex: 2,
-          background: 'rgba(13, 17, 23, 0.72)',
-          borderRadius: tokens.radius.sm,
-          padding: 4,
-          backdropFilter: 'blur(2px)',
-        }}
-      >
-        <Checkbox
-          checked={isSelected}
-          onChange={() => onToggle(asset.id)}
-          onClick={(e) => e.stopPropagation()}
-        />
-      </div>
-
-      <div
-        style={{
-          position: 'relative',
-          aspectRatio: '4 / 3',
-          background: tokens.color.bgAlt,
-          overflow: 'hidden',
-        }}
-      >
-        {url ? (
-          // eslint-disable-next-line jsx-a11y/alt-text -- preview fallback below covers missing alt
-          <img
-            src={url}
-            alt={asset.title}
-            loading="lazy"
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'cover',
-              display: 'block',
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              width: '100%',
-              height: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: tokens.color.textMuted,
-              fontSize: 36,
-            }}
-          >
-            {isVideo ? <PlayCircleOutlined /> : <FileImageOutlined />}
-          </div>
-        )}
-        {isVideo && (
-          <span
-            style={{
-              position: 'absolute',
-              top: tokens.space[2],
-              right: tokens.space[2],
-              padding: '2px 8px',
-              fontSize: 11,
-              color: tokens.color.text,
-              background: 'rgba(13, 17, 23, 0.78)',
-              borderRadius: tokens.radius.sm,
-            }}
-          >
-            视频
-          </span>
-        )}
-        {asset.status !== 'ready' && (
-          <span
-            style={{
-              position: 'absolute',
-              bottom: tokens.space[2],
-              right: tokens.space[2],
-              padding: '2px 8px',
-              fontSize: 11,
-              color: statusBadgeColor(asset.status),
-              background: 'rgba(13, 17, 23, 0.78)',
-              borderRadius: tokens.radius.sm,
-            }}
-          >
-            {statusLabel(asset.status)}
-          </span>
-        )}
-        <div
-          className="library-card-actions"
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            padding: tokens.space[2],
-            background: 'linear-gradient(to top, rgba(13, 17, 23, 0.92), rgba(13, 17, 23, 0))',
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: tokens.space[2],
-            opacity: 0,
-            transition: 'opacity 140ms ease',
-          }}
-        >
-          <Tooltip title="下载原始文件">
-            <Button
-              size="small"
-              icon={<DownloadOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDownload(asset);
-              }}
-            />
-          </Tooltip>
-          <Tooltip title="删除">
-            <Button
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(asset);
-              }}
-            />
-          </Tooltip>
-        </div>
-      </div>
-
-      <div
-        style={{
-          padding: `${tokens.space[3]}px ${tokens.space[3]}px ${tokens.space[3]}px ${tokens.space[3] + (isSelected ? 4 : 0)}px`,
-          transition: 'padding-left 120ms ease',
-        }}
-      >
-        <Text
-          strong
-          ellipsis
-          style={{
-            display: 'block',
-            color: tokens.color.text,
-            fontSize: 14,
-            lineHeight: 1.4,
-          }}
-          title={asset.title}
-        >
-          {asset.title}
-        </Text>
-        <div
-          style={{
-            marginTop: 4,
-            display: 'flex',
-            gap: tokens.space[3],
-            color: tokens.color.textMuted,
-            fontSize: 12,
-            fontFamily: tokens.font.mono,
-          }}
-        >
-          <span>{asset.asset_type}</span>
-          <span>{formatBytes(asset.file_size)}</span>
-          {asset.width && asset.height && (
-            <span>
-              {asset.width}×{asset.height}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface RowProps {
-  asset: Asset;
-  isSelected: boolean;
-  onToggle: (id: string) => void;
-  onOpen: (id: string) => void;
-  onDownload: (asset: Asset) => void;
-  onDelete: (asset: Asset) => void;
-}
-
-function LibraryRow({
-  asset,
-  isSelected,
-  onToggle,
-  onOpen,
-  onDownload,
-  onDelete,
-}: RowProps): JSX.Element {
-  const isVideo = asset.asset_type === 'video';
-  const url = previewUrl(asset);
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: tokens.space[3],
-        padding: `${tokens.space[2]}px ${tokens.space[3]}px`,
-        background: isSelected ? 'rgba(245, 165, 36, 0.06)' : tokens.color.panel,
-        border: `1px solid ${
-          isSelected ? tokens.color.accent : tokens.color.border
-        }`,
-        borderRadius: tokens.radius.md,
-        cursor: 'pointer',
-        transition: 'background 120ms ease, border-color 120ms ease',
-      }}
-      onClick={() => onOpen(asset.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen(asset.id);
-        }
-      }}
-      role="button"
-      tabIndex={0}
-    >
-      <Checkbox
-        checked={isSelected}
-        onClick={(e) => e.stopPropagation()}
-        onChange={() => onToggle(asset.id)}
-      />
-      <div
-        style={{
-          width: 48,
-          height: 48,
-          flexShrink: 0,
-          background: tokens.color.bgAlt,
-          borderRadius: tokens.radius.sm,
-          overflow: 'hidden',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: tokens.color.textMuted,
-        }}
-      >
-        {url ? (
-          <img
-            src={url}
-            alt={asset.title}
-            loading="lazy"
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
-        ) : isVideo ? (
-          <PlayCircleOutlined />
-        ) : (
-          <FileImageOutlined />
-        )}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <Text
-          strong
-          ellipsis
-          style={{ display: 'block', color: tokens.color.text }}
-        >
-          {asset.title}
-        </Text>
-        <Text
-          style={{
-            display: 'block',
-            color: tokens.color.textMuted,
-            fontSize: 12,
-            fontFamily: tokens.font.mono,
-          }}
-        >
-          {asset.asset_type} · {formatBytes(asset.file_size)}
-          {asset.source_tool ? ` · ${asset.source_tool}` : ''}
-        </Text>
-      </div>
-      <Space size="small">
-        <Button
-          size="small"
-          icon={<DownloadOutlined />}
-          onClick={(e) => {
-            e.stopPropagation();
-            onDownload(asset);
-          }}
-        />
-        <Button
-          size="small"
-          danger
-          icon={<DeleteOutlined />}
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(asset);
-          }}
-        />
-      </Space>
-    </div>
-  );
-}
+// `LibraryCard` and `LibraryRow` (plus their `previewUrl`, `statusBadgeColor`,
+// `statusLabel` helpers) live in
+// `frontend/src/components/library/{LibraryCard,LibraryRow}.tsx` to keep
+// this page under the CLAUDE.md 500-LOC cap.
 
 export default function Library(): JSX.Element {
   const navigate = useNavigate();
@@ -647,6 +243,33 @@ export default function Library(): JSX.Element {
     setSearchParams(next, { replace: true });
   };
 
+  // Bundle filter state + handlers for `<LibraryFilters>` (extracted from
+  // this page to keep the file under the CLAUDE.md 500-LOC cap).
+  const filterState: LibraryFiltersState = {
+    keywordInput,
+    assetType,
+    categoryId,
+    sourceTool,
+  };
+
+  const filterHandlers: LibraryFiltersHandlers = {
+    onKeywordInputChange: (v) => setKeywordInput(v),
+    onSearch: (v) => onSearch(v),
+    onAssetTypeChange: (v) => {
+      setAssetType(v);
+      onFilterChange();
+    },
+    onCategoryIdChange: (v) => {
+      setCategoryId(v);
+      onFilterChange();
+    },
+    onSourceToolChange: (v) => {
+      setSourceTool(v);
+      onFilterChange();
+    },
+    onReset: () => onReset(),
+  };
+
   const total = assetsState.data?.total ?? 0;
   const items = assetsState.data?.items ?? [];
 
@@ -724,64 +347,12 @@ export default function Library(): JSX.Element {
         </Space>
       </header>
 
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-          marginBottom: tokens.space[4],
-        }}
-      >
-        <Space size={[tokens.space[3], tokens.space[3]]} wrap style={{ width: '100%' }}>
-          <Input.Search
-            allowClear
-            placeholder="按标题、文件名、描述搜索"
-            value={keywordInput}
-            onChange={(e) => setKeywordInput(e.target.value)}
-            onSearch={onSearch}
-            enterButton={<SearchOutlined />}
-            style={{ width: 280 }}
-          />
-          <Select
-            placeholder="类型"
-            allowClear
-            value={assetType}
-            onChange={(v: AssetType | undefined) => {
-              setAssetType(v);
-              onFilterChange();
-            }}
-            style={{ width: 130 }}
-            options={ASSET_TYPE_FILTERS}
-          />
-          <Select
-            placeholder="分类"
-            allowClear
-            showSearch
-            value={categoryId}
-            onChange={(v: string | undefined) => {
-              setCategoryId(v);
-              onFilterChange();
-            }}
-            optionFilterProp="label"
-            style={{ width: 180 }}
-            loading={categoriesState.loading}
-            options={categories.map((c) => ({ value: c.id, label: c.name }))}
-          />
-          <Select
-            placeholder="来源"
-            allowClear
-            value={sourceTool}
-            onChange={(v: string | undefined) => {
-              setSourceTool(v);
-              onFilterChange();
-            }}
-            style={{ width: 150 }}
-            options={SOURCE_TOOL_OPTIONS}
-          />
-          <Button onClick={onReset}>重置</Button>
-        </Space>
-      </section>
+      <LibraryFilters
+        state={filterState}
+        handlers={filterHandlers}
+        categories={categories}
+        categoriesLoading={categoriesState.loading}
+      />
 
       <section>
         {assetsState.loading ? (

@@ -357,7 +357,7 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
             marginBottom: tokens.space[3],
           }}
         >
-          Webhook 仅支持新建与停用；后端未提供编辑接口，重新启用需新建（详见 task-17-report concerns）。
+          Webhook 仅支持新建与停用；后端未提供编辑接口，重新启用需新建（请新建一个 Webhook）。
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
           {rows.map((ep) => (
