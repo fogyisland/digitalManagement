@@ -35,7 +35,6 @@ backend/data/*.db-wal
 backend/tests/test-*.db
 backend/tests/test-*.db-shm
 backend/tests/test-*.db-wal
-backend/tests/test-*.js
 backend/tests/test-*/
 backend/tests/tmp.db
 backend/tests/tmp.db-shm
