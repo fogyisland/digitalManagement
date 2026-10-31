@@ -1,0 +1,349 @@
+/**
+ * Runtime harness for the contract guard.
+ *
+ * Starts a real backend on an isolated database and storage directory and
+ * points the frontend's own axios instance at it. The user's live
+ * `backend/data/dam.db` is never touched: the server is spawned with
+ * `DB_PATH` and `STORAGE_DIR` pointing at a fresh temp directory.
+ *
+ * The frontend API modules are imported **as they are** — the same
+ * `src/api/client.ts` the browser loads — so a broken contract fails here
+ * instead of in production.
+ */
+
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { registerHooks } from 'node:module';
+import { pathToFileURL } from 'node:url';
+
+/**
+ * Minimal `localStorage` stand-in — the client module reads tokens from it.
+ *
+ * `location` is a plain object on purpose: the client's 401 handler assigns
+ * `location.href`, and in a browser that would navigate. Here it must not.
+ */
+export function installBrowserGlobals() {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+    clear: () => {
+      store.clear();
+    },
+  };
+  globalThis.location = { pathname: '/', href: '' };
+}
+
+/**
+ * Node's ESM resolver does not try extensions. The frontend's API modules
+ * import each other as `./client`, so teach the resolver to find `.ts`.
+ *
+ * `registerHooks` landed in Node 22.15, so the guard needs that or newer.
+ * The repository declares no Node floor, which makes this the one place the
+ * requirement is written down.
+ */
+export function installTypeScriptResolver() {
+  registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+        return nextResolve(specifier, context);
+      }
+      try {
+        return nextResolve(specifier, context);
+      } catch (error) {
+        if (/\.[cm]?[jt]sx?$/.test(specifier)) throw error;
+        try {
+          return nextResolve(`${specifier}.ts`, context);
+        } catch {
+          return nextResolve(`${specifier}.tsx`, context);
+        }
+      }
+    },
+  });
+}
+
+/**
+ * Ask the OS for a port nobody is using.
+ *
+ * @returns {Promise<number>}
+ */
+export function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+export function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll `GET /api/health` until the server answers.
+ *
+ * @param {number} port
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
+export async function waitForHealth(port, child, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'no attempt made';
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`backend exited early with code ${child.exitCode}: ${lastError}`);
+    }
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      if (response.ok) {
+        const body = await response.json();
+        if (body && body.status === 'ok') return;
+        lastError = `unexpected health payload: ${JSON.stringify(body)}`;
+      } else {
+        lastError = `health returned HTTP ${response.status}`;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(150);
+  }
+  throw new Error(`backend did not become healthy within ${timeoutMs}ms: ${lastError}`);
+}
+
+/**
+ * Spawn the backend against a throw-away database and storage directory.
+ *
+ * @param {{backendEntry: string}} input
+ * @returns {Promise<{port: number, origin: string, child: import('node:child_process').ChildProcess,
+ *                    tmpRoot: string, log: () => string, stop: () => Promise<void>}>}
+ */
+export async function startBackend({ backendEntry }) {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-contract-'));
+  const dbPath = path.join(tmpRoot, 'contract.db');
+  const storageDir = path.join(tmpRoot, 'storage');
+  const port = await findFreePort();
+
+  const child = spawn(process.execPath, [backendEntry], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      DB_PATH: dbPath,
+      STORAGE_DIR: storageDir,
+      JWT_SECRET: 'contract-test-secret',
+      // The sample library is a first-boot convenience — a contract run
+      // wants a deterministic, empty library.
+      SEED_SAMPLE_ASSETS: '0',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let serverLog = '';
+  child.stdout.on('data', (chunk) => {
+    serverLog += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    serverLog += chunk.toString();
+  });
+
+  const stop = async () => {
+    child.kill();
+    await new Promise((resolve) => {
+      if (child.exitCode !== null) {
+        resolve();
+        return;
+      }
+      child.once('exit', resolve);
+      setTimeout(resolve, 3000);
+    });
+    // Windows keeps the SQLite handle locked for a moment after the process
+    // exits; a failed cleanup must not mask the real test result.
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (error) {
+      console.warn(`could not remove the temp directory ${tmpRoot}:`, error);
+    }
+  };
+
+  return {
+    port,
+    origin: `http://127.0.0.1:${port}`,
+    child,
+    tmpRoot,
+    log: () => serverLog,
+    stop,
+  };
+}
+
+/**
+ * Import a frontend API module by its path under `src/`.
+ *
+ * @param {string} srcDir
+ * @param {string} relativePath e.g. `api/client.ts`
+ * @returns {Promise<any>}
+ */
+export async function importFrontendModule(srcDir, relativePath) {
+  const absolute = path.join(srcDir, relativePath);
+  return import(pathToFileURL(absolute).href);
+}
+
+/**
+ * Perform a raw HTTP request against the test server.
+ *
+ * The frontend's axios instance is not used here on purpose: a rejected
+ * axios call triggers the client's logout side effect, which would clear the
+ * stored tokens and make the rest of the run meaningless.
+ *
+ * @param {string} origin
+ * @param {string} method
+ * @param {string} urlPath
+ * @param {{headers?: Record<string, string>, body?: unknown}} [options]
+ * @returns {Promise<{status: number, body: any}>}
+ */
+export async function rawRequest(origin, method, urlPath, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  let body;
+  if (options.body !== undefined) {
+    if (typeof options.body === 'string') {
+      body = options.body;
+      headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+    } else {
+      body = JSON.stringify(options.body);
+      headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+    }
+  }
+  const response = await fetch(`${origin}${urlPath}`, { method, headers, body });
+  const text = await response.text();
+  let parsed = null;
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+  return { status: response.status, body: parsed };
+}
+
+/**
+ * Assert that a request fails with a specific HTTP status.
+ *
+ * @param {Promise<any>} promise
+ * @param {number} expected
+ * @param {string} label
+ * @returns {Promise<any>} the rejection, so the caller can inspect the body
+ */
+export async function expectStatus(promise, expected, label) {
+  let error = null;
+  try {
+    await promise;
+  } catch (caught) {
+    error = caught;
+  }
+  if (error === null) {
+    assert.fail(`${label}: expected HTTP ${expected}, but the request succeeded`);
+  }
+  const status = error && error.response ? error.response.status : null;
+  assert.equal(status, expected, `${label}: expected HTTP ${expected}, got ${status}`);
+  return error;
+}
+
+/**
+ * Bytes that are guaranteed not to collide with another upload.
+ *
+ * The backend de-duplicates uploads by file hash, so two "different" files
+ * with identical bytes would come back as the same asset.
+ *
+ * @param {string} seed
+ * @param {number} length
+ * @returns {Buffer}
+ */
+export function uniqueBytes(seed, length) {
+  const out = Buffer.alloc(length);
+  let offset = 0;
+  let counter = 0;
+  while (offset < length) {
+    const block = crypto.createHash('sha256').update(`${seed}:${counter}`).digest();
+    const take = Math.min(block.length, length - offset);
+    block.copy(out, offset, 0, take);
+    offset += take;
+    counter += 1;
+  }
+  return out;
+}
+
+/**
+ * @param {Buffer | string} value
+ * @returns {string} the hex sha256 digest
+ */
+export function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * A 1×1 PNG — the smallest thing sharp will accept.
+ */
+export const TINY_PNG = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+  0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
+  0x54, 0x78, 0x9c, 0x62, 0x00, 0x01, 0x00, 0x00,
+  0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+  0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+  0x42, 0x60, 0x82,
+]);
+
+/**
+ * The frontend modules the runtime checks drive.
+ *
+ * @param {string} srcDir
+ * @returns {Promise<Record<string, any>>}
+ */
+export async function loadFrontendApis(srcDir) {
+  const [client, auth, assets, users, tags, categories, apikeys, webhooks] = await Promise.all([
+    importFrontendModule(srcDir, 'api/client.ts'),
+    importFrontendModule(srcDir, 'api/auth.ts'),
+    importFrontendModule(srcDir, 'api/assets.ts'),
+    importFrontendModule(srcDir, 'api/users.ts'),
+    importFrontendModule(srcDir, 'api/tags.ts'),
+    importFrontendModule(srcDir, 'api/categories.ts'),
+    importFrontendModule(srcDir, 'api/apikeys.ts'),
+    importFrontendModule(srcDir, 'api/webhooks.ts'),
+  ]);
+
+  return {
+    client,
+    authApi: auth.authApi,
+    assetsApi: assets.assetsApi,
+    usersApi: users.usersApi,
+    tagsApi: tags.tagsApi,
+    categoriesApi: categories.categoriesApi,
+    apiKeysApi: apikeys.apiKeysApi,
+    webhooksApi: webhooks.webhooksApi,
+    // The import / job helpers live outside the `assetsApi` object — they are
+    // standalone functions in the same module.
+    importUrlByUrl: assets.importUrlByUrl,
+    lookupComfyUiJob: assets.lookupComfyUiJob,
+    registerAssetByComfyJob: assets.registerAssetByComfyJob,
+  };
+}

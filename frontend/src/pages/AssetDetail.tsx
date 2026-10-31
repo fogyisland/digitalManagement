@@ -7,7 +7,6 @@ import {
   Input,
   Skeleton,
   Space,
-  Switch,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -18,10 +17,11 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { apiClient } from '@/api/client';
 import { useApi } from '@/api/hooks';
-import type { Asset, AssetStatus } from '@/types/dto';
+import type { Asset, AssetStatus } from '@/types';
 import { useAuthStore } from '@/stores/authStore';
 import { tokens } from '@/theme/tokens';
 import { formatBytes, formatDate } from '@/utils/format';
+import { assetOriginalUrl, assetPreviewUrl } from '@/utils/assetUrls';
 
 /**
  * AssetDetail — single asset page (Task 13).
@@ -66,21 +66,6 @@ function parseMetadata(raw: string | null | undefined): MetadataJson | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Storage join — matches the Library card's URL helper. The backend
- * serves `/storage/*` statically; we normalize legacy `/api/v1/storage/`
- * prefixes and absolute URLs.
- */
-function previewUrl(
-  asset: Pick<Asset, 'thumbnail_path' | 'storage_path'>,
-): string | null {
-  const raw = asset.thumbnail_path || asset.storage_path;
-  if (!raw) return null;
-  if (/^https?:\/\//.test(raw)) return raw;
-  const normalized = raw.startsWith('/') ? raw : `/storage/${raw}`;
-  return normalized.replace(/^\/api\/v1\/storage\//, '/storage/');
 }
 
 function statusLabel(status: AssetStatus): string {
@@ -130,7 +115,7 @@ export default function AssetDetail(): JSX.Element {
   const asset: Asset | null = detailState.data ?? null;
   const isVideo: boolean = asset?.asset_type === 'video';
   const heroUrl: string | null = useMemo(
-    () => (asset ? previewUrl(asset) : null),
+    () => (asset ? assetPreviewUrl(asset) : null),
     [asset],
   );
   const metadata: MetadataJson | null = useMemo(
@@ -163,7 +148,7 @@ export default function AssetDetail(): JSX.Element {
         `/assets/${asset.id}/download`,
       );
       const url = r.data?.download_url;
-      const fallback: string | null = previewUrl(asset);
+      const fallback: string | null = assetOriginalUrl(asset);
       const target: string | null = url || fallback;
       if (target) window.open(target, '_blank', 'noopener');
     } catch (e: unknown) {
@@ -369,7 +354,7 @@ export default function AssetDetail(): JSX.Element {
               <video
                 src={heroUrl}
                 controls
-                poster={asset.thumbnail_path || undefined}
+                poster={asset.thumbnail_url || undefined}
                 style={{
                   width: '100%',
                   maxHeight: '70vh',
@@ -767,14 +752,6 @@ function EditModal({
               maxLength={2000}
               showCount
             />
-          </Form.Item>
-          <Form.Item label=" " colon={false}>
-            <Space>
-              <Switch disabled checked={false} aria-label="公开" />
-              <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
-                公开（占位，下一里程碑接入）
-              </span>
-            </Space>
           </Form.Item>
         </Form>
         <div

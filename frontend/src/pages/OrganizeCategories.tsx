@@ -29,7 +29,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { apiClient } from '@/api/client';
-import type { Category } from '@/types/dto';
+import type { Category } from '@/types';
 import { tokens } from '@/theme/tokens';
 import CategoryModal from './CategoryModal';
 

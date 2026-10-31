@@ -1,6 +1,6 @@
 import { Button, Input, Select, Space } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
-import type { AssetType, Category } from '@/types/dto';
+import type { AssetType, Category } from '@/types';
 import { tokens } from '@/theme/tokens';
 
 const ASSET_TYPE_FILTERS: { value: AssetType; label: string }[] = [

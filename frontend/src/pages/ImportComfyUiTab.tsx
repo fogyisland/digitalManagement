@@ -3,15 +3,17 @@
  *
  * Single `<Input>` accepting a ComfyUI job_id (string). Flow:
  *   1. GET /jobs/by-comfyui/:job_id
- *      - on 200 with payload → asset already exists; show a "前往" link
- *        that navigates to `/library/:id`.
- *      - on 404 → no asset yet, proceed.
- *   2. POST /assets/from-comfyui/:job_id → creates the placeholder row.
+ *      - asset already registered → show a "前往" link that navigates
+ *        to `/library/:id`.
+ *      - 404 → no asset yet, proceed.
+ *   2. POST /assets/from-comfyui/:job_id → registers the asset.
  *      - On success, navigate to `/library/:id`.
  *
- * Concerns parked:
- *  - Neither endpoint exists on the backend today; both will 404. We keep
- *    the flow intact so when the routes ship, no UI work is required.
+ * Both routes are served by the backend
+ * (`backend/src/routes/jobs.js` and `backend/src/routes/assets.js`).
+ * `lookupComfyUiJob` already normalises the "not registered" 404 into
+ * `null`, so the flow below only has to handle the happy path and real
+ * failures.
  */
 
 import { useState } from 'react';
@@ -32,7 +34,7 @@ import {
 } from '@/api/assets';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/parseMetadata';
-import type { Asset } from '@/types/dto';
+import type { Asset } from '@/types';
 
 const { Text, Title } = Typography;
 
@@ -54,6 +56,18 @@ export default function ImportComfyUiTab(): JSX.Element {
 
   const busy = phase.kind === 'checking' || phase.kind === 'registering';
 
+  const register = async (jobId: string): Promise<void> => {
+    setPhase({ kind: 'registering' });
+    try {
+      const asset = await registerAssetByComfyJob(jobId);
+      message.success(`已登记「${asset.title || asset.original_name}」`);
+      navigate(`/library/${asset.id}`);
+    } catch (e: unknown) {
+      message.error(describeError(e, '登记 ComfyUI 任务失败'));
+      setPhase({ kind: 'idle' });
+    }
+  };
+
   const onLookup = async (): Promise<void> => {
     const values = await form.validateFields();
     const jobId = values.job_id.trim();
@@ -68,41 +82,10 @@ export default function ImportComfyUiTab(): JSX.Element {
         setPhase({ kind: 'exists', asset: existing });
         return;
       }
-      setPhase({ kind: 'registering' });
-      try {
-        const asset = await registerAssetByComfyJob(jobId);
-        message.success(`已登记「${asset.title || asset.original_name}」`);
-        navigate(`/library/${asset.id}`);
-      } catch (inner: unknown) {
-        const detail = describeError(inner, '登记 ComfyUI 任务失败');
-        message.error(detail);
-        // Backend doesn't ship the routes today → fall back to library
-        // rather than leave the user staring at a broken tab.
-        if (detail.toLowerCase().includes('not found') || detail.includes('404')) {
-          setTimeout(() => navigate('/library'), 800);
-        }
-        setPhase({ kind: 'idle' });
-      }
+      await register(jobId);
     } catch (e: unknown) {
-      // 404 from the lookup endpoint means "no asset yet" — proceed to
-      // register. Any other error is surfaced.
-      const detail = describeError(e, '反查任务失败');
-      const isMissing =
-        detail.toLowerCase().includes('not found') || detail.includes('404');
-      if (isMissing) {
-        setPhase({ kind: 'registering' });
-        try {
-          const asset = await registerAssetByComfyJob(jobId);
-          message.success(`已登记「${asset.title || asset.original_name}」`);
-          navigate(`/library/${asset.id}`);
-        } catch (inner: unknown) {
-          message.error(describeError(inner, '登记 ComfyUI 任务失败'));
-          setPhase({ kind: 'idle' });
-        }
-      } else {
-        message.error(detail);
-        setPhase({ kind: 'idle' });
-      }
+      message.error(describeError(e, '反查任务失败'));
+      setPhase({ kind: 'idle' });
     }
   };
 
@@ -115,21 +98,6 @@ export default function ImportComfyUiTab(): JSX.Element {
         已知 ComfyUI 任务的 <code style={{ fontFamily: tokens.font.mono }}>job_id</code>，先反查是否已有资产，
         没有就登记一条占位记录。
       </Text>
-
-      <Alert
-        type="warning"
-        showIcon
-        message={
-          <Text style={{ fontSize: 12 }}>
-            后端尚未提供 <code>/jobs/by-comfyui/:job_id</code> 与 <code>/assets/from-comfyui/:job_id</code>；
-            提交会得到 404，UI 会按"无重复"分支处理并提示错误。
-          </Text>
-        }
-        style={{
-          background: 'rgba(248, 81, 73, 0.08)',
-          border: `1px solid ${tokens.color.danger}`,
-        }}
-      />
 
       <section
         style={{

@@ -66,7 +66,6 @@ export default function HeaderBar() {
           <Space style={{ cursor: 'pointer' }}>
             <Avatar
               size="small"
-              src={user?.avatar_url}
               style={{ background: 'linear-gradient(135deg, #1677ff, #722ed1)' }}
             >
               {user?.display_name?.[0]?.toUpperCase() || user?.username?.[0]?.toUpperCase()}

@@ -6,7 +6,6 @@ import {
   Space,
   Pagination,
   App,
-  Modal,
   Dropdown,
   Segmented,
 } from 'antd'
@@ -24,8 +23,34 @@ import { assetsApi } from '@/api/assets'
 import { categoriesApi } from '@/api/categories'
 import { tagsApi } from '@/api/tags'
 import AssetGrid from '@/components/asset/AssetGrid'
-import type { Asset, AssetType } from '@/types'
+import type { Asset, AssetType, Category, Tag } from '@/types'
 import { useAuthStore } from '@/stores/authStore'
+
+/** Which slice of the library the list shows. */
+type LibraryView = 'active' | 'trash'
+
+/** One flattened row of the category tree, ready for an antd `Select`. */
+interface CategoryOption {
+  value: string
+  label: string
+}
+
+/**
+ * Flatten the category tree into a depth-prefixed option list.
+ *
+ * The backend serves a flat list with a `parent_id` column; the tree is
+ * built on the frontend, so the indent marker is ours to choose.
+ */
+function flattenCategories(nodes: Category[], prefix = ''): CategoryOption[] {
+  const out: CategoryOption[] = []
+  for (const node of nodes) {
+    out.push({ value: String(node.id), label: `${prefix}${node.name}` })
+    if (node.children?.length) {
+      out.push(...flattenCategories(node.children, `${prefix}— `))
+    }
+  }
+  return out
+}
 
 export default function Assets() {
   const navigate = useNavigate()
@@ -40,30 +65,30 @@ export default function Assets() {
 
   const [keyword, setKeyword] = useState('')
   const [assetType, setAssetType] = useState<AssetType | undefined>()
-  const [categoryId, setCategoryId] = useState<number | undefined>()
+  const [categoryId, setCategoryId] = useState<string | undefined>()
   const [tagNames, setTagNames] = useState<string[]>([])
   const [orderBy, setOrderBy] = useState('created_at_desc')
-  const [includeDeleted, setIncludeDeleted] = useState(false)
+  const [view, setView] = useState<LibraryView>('active')
 
-  const [categories, setCategories] = useState<any[]>([])
-  const [allTags, setAllTags] = useState<any[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [allTags, setAllTags] = useState<Tag[]>([])
 
   useEffect(() => {
-    categoriesApi.tree().then(setCategories).catch(() => {})
-    tagsApi.all().then(setAllTags).catch(() => {})
+    categoriesApi
+      .tree()
+      .then((tree) => setCategories(tree))
+      .catch((error: unknown) => {
+        console.warn('[assets] could not load the category tree:', error)
+      })
+    tagsApi
+      .all()
+      .then((tags) => setAllTags(tags))
+      .catch((error: unknown) => {
+        console.warn('[assets] could not load the tag list:', error)
+      })
   }, [])
 
-  const flatCategories = (() => {
-    const out: { value: number; label: string }[] = []
-    const walk = (nodes: any[], prefix = '') => {
-      for (const n of nodes) {
-        out.push({ value: n.id, label: prefix + n.name })
-        if (n.children?.length) walk(n.children, prefix + '— ')
-      }
-    }
-    walk(categories)
-    return out
-  })()
+  const flatCategories = flattenCategories(categories)
 
   const load = async () => {
     setLoading(true)
@@ -74,14 +99,17 @@ export default function Assets() {
         category_id: categoryId,
         tag_names: tagNames.length ? tagNames.join(',') : undefined,
         order_by: orderBy,
-        include_deleted: includeDeleted,
+        // The recycle bin is the *only* place soft-deleted assets show up:
+        // `status=deleted` filters them in, while the default view hides
+        // them. `include_deleted=true` would mix both views together.
+        status: view === 'trash' ? 'deleted' : undefined,
         page,
         page_size: pageSize,
       })
       setAssets(resp.items)
       setTotal(resp.total)
     } catch {
-      // interceptor
+      // The interceptor already surfaced the error.
     } finally {
       setLoading(false)
     }
@@ -89,7 +117,7 @@ export default function Assets() {
 
   useEffect(() => {
     load()
-  }, [page, pageSize, assetType, categoryId, orderBy, includeDeleted])
+  }, [page, pageSize, assetType, categoryId, orderBy, view])
 
   const onSearch = () => {
     setPage(1)
@@ -102,7 +130,7 @@ export default function Assets() {
     setCategoryId(undefined)
     setTagNames([])
     setOrderBy('created_at_desc')
-    setIncludeDeleted(false)
+    setView('active')
     setPage(1)
     setTimeout(load, 0)
   }
@@ -110,13 +138,15 @@ export default function Assets() {
   const onDelete = (asset: Asset, permanent = false) => {
     modal.confirm({
       title: permanent ? '确认永久删除？' : '确认删除资产？',
-      content: permanent ? '该操作不可恢复，文件将从磁盘删除' : '可在「回收站」中恢复',
+      content: permanent
+        ? '该操作不可恢复，文件将从磁盘删除'
+        : '资产会移入回收站，文件仍然保留，可以随时恢复',
       okText: '确认',
       cancelText: '取消',
       okButtonProps: permanent ? { danger: true } : {},
       onOk: async () => {
         await assetsApi.remove(asset.id, permanent)
-        message.success('已删除')
+        message.success(permanent ? '已永久删除' : '已移入回收站')
         load()
       },
     })
@@ -130,8 +160,8 @@ export default function Assets() {
 
   const actionMenu = (asset: Asset) => ({
     items: [
-      { key: 'view', label: '查看详情', onClick: () => navigate(`/assets/${asset.id}`) },
-      canWrite && { key: 'edit', icon: <EditOutlined />, label: '编辑', onClick: () => navigate(`/assets/${asset.id}`) },
+      { key: 'view', label: '查看详情', onClick: () => navigate(`/library/${asset.id}`) },
+      canWrite && { key: 'edit', icon: <EditOutlined />, label: '编辑', onClick: () => navigate(`/library/${asset.id}`) },
       asset.status === 'deleted' && { key: 'restore', icon: <UndoOutlined />, label: '恢复', onClick: () => onRestore(asset) },
       canWrite && { type: 'divider' as const },
       canWrite && asset.status !== 'deleted' && { key: 'del', icon: <DeleteOutlined />, label: '删除', danger: true, onClick: () => onDelete(asset, false) },
@@ -148,7 +178,7 @@ export default function Assets() {
         </div>
         <Space>
           {canWrite && (
-            <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => navigate('/assets/upload')}>
+            <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => navigate('/import')}>
               上传资产
             </Button>
           )}
@@ -160,7 +190,7 @@ export default function Assets() {
         <Space wrap size="middle" style={{ width: '100%' }}>
           <Input
             prefix={<SearchOutlined />}
-            placeholder="搜索标题、描述、编码、外部引用"
+            placeholder="搜索标题、描述、原始文件名"
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             onPressEnter={onSearch}
@@ -194,7 +224,7 @@ export default function Assets() {
             value={tagNames}
             onChange={setTagNames}
             style={{ minWidth: 180 }}
-            options={allTags.map((t: any) => ({ value: t.name, label: t.name }))}
+            options={allTags.map((tag) => ({ value: tag.name, label: tag.name }))}
             maxTagCount={2}
           />
           <Select
@@ -213,8 +243,8 @@ export default function Assets() {
           <Button icon={<ReloadOutlined />} onClick={onReset}>重置</Button>
           <div style={{ flex: 1 }} />
           <Segmented
-            value={includeDeleted ? 'trash' : 'active'}
-            onChange={(v) => { setIncludeDeleted(v === 'trash'); setPage(1) }}
+            value={view}
+            onChange={(v) => { setView(v as LibraryView); setPage(1) }}
             options={[
               { value: 'active', label: '活跃' },
               { value: 'trash', label: '回收站' },

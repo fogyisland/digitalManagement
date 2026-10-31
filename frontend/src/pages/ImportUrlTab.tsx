@@ -2,15 +2,15 @@
  * ImportUrlTab — second tab of the Import page.
  *
  * Single URL input + optional title + source_tool. Submits via
- * `POST /assets/import-url` (concern parked: backend does not ship this
- * route today; UI surfaces the 404 gracefully and the navigation still
- * falls back to `/library`).
+ * `POST /assets/import-url`, which the backend serves
+ * (`backend/src/routes/assets.js`): it downloads the file, stores it and
+ * answers 201 with the new asset. A failed download answers 502 with a
+ * `{ detail }` body, which is surfaced verbatim.
  */
 
 import { useState } from 'react';
 import {
   App,
-  Alert,
   Button,
   Form,
   Input,
@@ -60,13 +60,7 @@ export default function ImportUrlTab(): JSX.Element {
       message.success(`已导入「${asset.title || asset.original_name}」`);
       navigate('/library');
     } catch (e: unknown) {
-      const detail = describeError(e, 'URL 导入失败');
-      message.error(detail);
-      // The route does not exist on the backend today; if we see a 404,
-      // still nudge the user back to the library so they are not stuck.
-      if (detail.toLowerCase().includes('not found') || detail.includes('404')) {
-        setTimeout(() => navigate('/library'), 800);
-      }
+      message.error(describeError(e, 'URL 导入失败'));
     } finally {
       setSubmitting(false);
     }
@@ -80,21 +74,6 @@ export default function ImportUrlTab(): JSX.Element {
       <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>
         给定一个外部 URL，提交后服务端会拉取并写入资产记录；同一 hash 已存在时会复用原记录。
       </Text>
-
-      <Alert
-        type="warning"
-        showIcon
-        message={
-          <Text style={{ fontSize: 12 }}>
-            当前后端尚未提供 <code>/assets/import-url</code>；提交会得到 404。
-            UI 会在错误提示后自动跳转到资产库，避免阻塞。
-          </Text>
-        }
-        style={{
-          background: 'rgba(248, 81, 73, 0.08)',
-          border: `1px solid ${tokens.color.danger}`,
-        }}
-      />
 
       <section
         style={{

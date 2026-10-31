@@ -17,6 +17,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { apiClient } from '@/api/client';
+import { assetsApi } from '@/api/assets';
 import { useApi } from '@/api/hooks';
 import LibraryCard from '@/components/library/LibraryCard';
 import LibraryFilters, {
@@ -28,8 +29,9 @@ import type {
   Asset,
   AssetType,
   Category,
-  PageResp,
-} from '@/types/dto';
+  PageResponse,
+} from '@/types';
+import { assetPreviewUrl } from '@/utils/assetUrls';
 import { tokens } from '@/theme/tokens';
 
 const { Text, Title } = Typography;
@@ -61,19 +63,6 @@ function flattenCategories(input: unknown): Category[] {
   return out;
 }
 
-/**
- * The backend exposes `thumbnail_path` (relative to STORAGE_DIR, e.g.
- * `thumbnails/abc.jpg`) and `storage_path` (e.g. `originals/abc.png`).
- * Static is served at `/storage/*` by `express.static` so we just join.
- */
-function previewUrl(asset: Pick<Asset, 'thumbnail_path' | 'storage_path'>): string | null {
-  const raw = asset.thumbnail_path || asset.storage_path;
-  if (!raw) return null;
-  if (/^https?:\/\//.test(raw)) return raw;
-  const normalized = raw.startsWith('/') ? raw : `/storage/${raw}`;
-  return normalized.replace(/^\/api\/v1\/storage\//, '/storage/');
-}
-
 // Filter option lists (ASSET_TYPE_FILTERS, SOURCE_TOOL_OPTIONS) and the
 // `<LibraryFilters>` JSX live in `frontend/src/components/library/LibraryFilters.tsx`
 // to keep this page under the CLAUDE.md 500-LOC cap.
@@ -96,10 +85,11 @@ function buildQuery(params: {
   return `/assets?${search.toString()}`;
 }
 
-// `LibraryCard` and `LibraryRow` (plus their `previewUrl`, `statusBadgeColor`,
+// `LibraryCard` and `LibraryRow` (plus their `statusBadgeColor`,
 // `statusLabel` helpers) live in
 // `frontend/src/components/library/{LibraryCard,LibraryRow}.tsx` to keep
-// this page under the CLAUDE.md 500-LOC cap.
+// this page under the CLAUDE.md 500-LOC cap. Preview URLs come from the
+// shared `@/utils/assetUrls` helper, not from a local copy.
 
 export default function Library(): JSX.Element {
   const navigate = useNavigate();
@@ -127,7 +117,7 @@ export default function Library(): JSX.Element {
     [categoriesState.data],
   );
 
-  const assetsState = useApi<PageResp<Asset>>(
+  const assetsState = useApi<PageResponse<Asset>>(
     buildQuery({ q, assetType, categoryId, sourceTool, page, pageSize }),
   );
 
@@ -173,7 +163,7 @@ export default function Library(): JSX.Element {
       if (url) {
         window.open(url, '_blank', 'noopener');
       } else {
-        const fallback = previewUrl(asset);
+        const fallback = assetPreviewUrl(asset);
         if (fallback) window.open(fallback, '_blank', 'noopener');
       }
     } catch (e: unknown) {
@@ -187,14 +177,18 @@ export default function Library(): JSX.Element {
 
   const performDelete = async (ids: string[]) => {
     if (ids.length === 0) return;
-    // /api/v1/assets/batch does not exist yet; fall back to per-item delete
-    // and tolerate partial failures so a single bad id does not abort the rest.
+    // The backend has no `/assets/batch` route, so the delete goes out one
+    // asset at a time. `Promise.allSettled` tolerates partial failures so a
+    // single bad id does not abort the rest.
+    //
+    // `permanent` is left off: the backend soft-deletes by default, which
+    // moves the asset to the recycle bin and keeps the file on disk.
     const results = await Promise.allSettled(
-      ids.map((id) => apiClient.delete(`/assets/${id}`)),
+      ids.map((id) => assetsApi.remove(id)),
     );
     const ok = results.filter((r) => r.status === 'fulfilled').length;
     const failed = ids.length - ok;
-    if (ok > 0) message.success(`已删除 ${ok} 项`);
+    if (ok > 0) message.success(`已移入回收站 ${ok} 项`);
     if (failed > 0) message.warning(`${failed} 项删除失败`);
     await assetsState.reload();
   };
@@ -204,15 +198,13 @@ export default function Library(): JSX.Element {
       title: '删除该资产？',
       content: (
         <span>
-          <Text>「{asset.title}」将被永久删除。</Text>
-          {selected.size > 1 && (
-            <div style={{ marginTop: 6, color: tokens.color.textMuted }}>
-              该操作不影响其他已选项。
-            </div>
-          )}
+          <Text>「{asset.title}」将移入回收站。</Text>
+          <div style={{ marginTop: 6, color: tokens.color.textMuted }}>
+            文件仍然保留，可随时从回收站恢复。
+          </div>
         </span>
       ),
-      okText: '删除',
+      okText: '移入回收站',
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: () => performDelete([asset.id]),
@@ -223,8 +215,8 @@ export default function Library(): JSX.Element {
     if (selected.size === 0) return;
     modal.confirm({
       title: `批量删除 ${selected.size} 项资产？`,
-      content: '此操作不可撤销，文件将从磁盘移除。',
-      okText: '全部删除',
+      content: '所选资产将移入回收站，文件仍然保留，可随时从回收站恢复。',
+      okText: '全部移入回收站',
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: () => performDelete(Array.from(selected)),

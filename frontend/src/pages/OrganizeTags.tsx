@@ -1,16 +1,34 @@
 /**
  * Tags column for Organize (Task 16).
  *
- * Renders the tag card cloud and the create-tag Modal. The backend
- * exposes only `POST /tags` (no PUT or DELETE), so edit/delete UI is
- * intentionally absent — see task-16-report.md concerns.
+ * Renders the tag card cloud plus the create/edit Modal. The backend
+ * exposes the full CRUD surface — `POST /tags`, `PUT /tags/:id` and
+ * `DELETE /tags/:id` (see `backend/src/routes/tags.js`) — so editing
+ * and deleting are wired up here through `tagsApi`.
+ *
+ * Two behaviours worth knowing:
+ *   - `PUT /tags/:id` only honours `name` and `color`. The slug is
+ *     re-derived from the name by the backend, never sent from here.
+ *   - `DELETE /tags/:id` also drops the tag's bindings in
+ *     `asset_tags`. The assets survive; they just lose that tag.
  */
 
 import { useEffect, useState } from 'react';
-import { App, Button, ColorPicker, Empty, Form, Input, Modal, Skeleton } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
-import { apiClient } from '@/api/client';
-import type { Tag } from '@/types/dto';
+import {
+  App,
+  Button,
+  ColorPicker,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Popconfirm,
+  Skeleton,
+  Tooltip,
+} from 'antd';
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { tagsApi } from '@/api/tags';
+import type { Tag } from '@/types';
 import { tokens } from '@/theme/tokens';
 
 interface TagFormValues {
@@ -53,42 +71,57 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function TagModal(props: {
+interface TagModalProps {
   open: boolean;
+  /** `null` = create mode, a tag = edit mode. */
+  editing: Tag | null;
   onCancel: () => void;
   onSaved: () => void;
-}): JSX.Element {
-  const { open, onCancel, onSaved } = props;
+}
+
+function TagModal({ open, editing, onCancel, onSaved }: TagModalProps): JSX.Element {
   const { message } = App.useApp();
   const [form] = Form.useForm<TagFormValues>();
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const isEdit = editing !== null;
 
   useEffect(() => {
     if (!open) return;
     form.resetFields();
-    form.setFieldValue('color', tokens.color.accent);
-  }, [open, form]);
+    if (editing) {
+      form.setFieldsValue({
+        name: editing.name,
+        slug: editing.slug,
+        color: editing.color ?? tokens.color.accent,
+      });
+    } else {
+      form.setFieldValue('color', tokens.color.accent);
+    }
+  }, [open, editing, form]);
 
   const onOk = async (): Promise<void> => {
     let values: TagFormValues;
     try {
       values = await form.validateFields();
     } catch (e: unknown) {
-      void e;
+      // antd already renders the field-level validation messages.
+      console.warn('[tags] validation failed:', e);
       return;
     }
     setSubmitting(true);
-    const payload = {
-      name: values.name.trim(),
-      slug: values.slug && values.slug.trim() ? values.slug.trim() : values.name.trim(),
-      color: extractColorHex(values.color) ?? tokens.color.accent,
-    };
+    const name = values.name.trim();
+    const color = extractColorHex(values.color) ?? tokens.color.accent;
     try {
-      await apiClient.request<Tag>({ url: '/tags', method: 'POST', data: payload });
-      message.success('已新建标签');
+      if (editing) {
+        await tagsApi.update(editing.id, { name, color });
+        message.success('已保存');
+      } else {
+        await tagsApi.create({ name, color });
+        message.success('已新建标签');
+      }
       onSaved();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '新建标签失败'));
+      message.error(extractErrorMessage(e, isEdit ? '保存标签失败' : '新建标签失败'));
     } finally {
       setSubmitting(false);
     }
@@ -96,11 +129,11 @@ function TagModal(props: {
 
   return (
     <Modal
-      title="新建标签"
+      title={isEdit ? '编辑标签' : '新建标签'}
       open={open}
       onCancel={onCancel}
       onOk={() => void onOk()}
-      okText="创建"
+      okText={isEdit ? '保存' : '创建'}
       cancelText="取消"
       confirmLoading={submitting}
       destroyOnClose
@@ -110,8 +143,17 @@ function TagModal(props: {
         <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入标签名称' }]}>
           <Input placeholder="例如：暖色调" autoFocus />
         </Form.Item>
-        <Form.Item name="slug" label="slug" rules={[SLUG_RULE]} extra="留空则按名称自动生成">
-          <Input placeholder="例如：warm-tone" />
+        <Form.Item
+          name="slug"
+          label="slug"
+          rules={isEdit ? [] : [SLUG_RULE]}
+          extra={
+            isEdit
+              ? 'slug 由后端按名称重新生成，此处仅供查看'
+              : '留空则按名称自动生成'
+          }
+        >
+          <Input placeholder="例如：warm-tone" disabled={isEdit} />
         </Form.Item>
         <Form.Item name="color" label="颜色" extra="仅作视觉提示">
           <ColorPicker defaultValue={tokens.color.accent} showText format="hex" />
@@ -130,23 +172,36 @@ interface OrganizeTagsProps {
 
 export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
   const { tags, loading, error, onReload } = props;
+  const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState<boolean>(false);
+  const [editing, setEditing] = useState<Tag | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const openCreate = (): void => {
+    setEditing(null);
+    setModalOpen(true);
+  };
+
+  const openEdit = (tag: Tag): void => {
+    setEditing(tag);
+    setModalOpen(true);
+  };
+
+  const onDelete = async (tag: Tag): Promise<void> => {
+    setDeletingId(tag.id);
+    try {
+      await tagsApi.remove(tag.id);
+      message.success(`已删除标签「${tag.name}」`);
+      await onReload();
+    } catch (e: unknown) {
+      message.error(extractErrorMessage(e, '删除标签失败'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div style={{ ...PANEL_STYLE, display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
-      <div
-        style={{
-          fontSize: 12,
-          color: tokens.color.textMuted,
-          padding: '6px 10px',
-          borderRadius: tokens.radius.sm,
-          background: 'rgba(245, 165, 36, 0.06)',
-          border: `1px dashed ${tokens.color.border}`,
-        }}
-      >
-        标签暂仅支持新建；编辑与删除需后端补齐 PUT / DELETE 接口（详见 task-16-report concerns）。
-      </div>
-
       {loading && tags.length === 0 ? (
         <Skeleton active paragraph={{ rows: 3 }} />
       ) : error ? (
@@ -169,7 +224,7 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
         </div>
       ) : tags.length === 0 ? (
         <Empty description={<span style={{ color: tokens.color.textMuted }}>暂无标签</span>}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             新增标签
           </Button>
         </Empty>
@@ -218,6 +273,32 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
                   >
                     {tag.usage_count}
                   </span>
+                  <Tooltip title="编辑">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<EditOutlined />}
+                      onClick={() => openEdit(tag)}
+                      aria-label={`编辑标签 ${tag.name}`}
+                    />
+                  </Tooltip>
+                  <Popconfirm
+                    title="确认删除该标签？"
+                    description="资产本身保留，仅解除标签绑定。"
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => void onDelete(tag)}
+                  >
+                    <Button
+                      size="small"
+                      type="text"
+                      danger
+                      loading={deletingId === tag.id}
+                      icon={<DeleteOutlined />}
+                      aria-label={`删除标签 ${tag.name}`}
+                    />
+                  </Popconfirm>
                 </div>
                 <span
                   style={{
@@ -236,9 +317,14 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
 
       <TagModal
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        editing={editing}
+        onCancel={() => {
+          setModalOpen(false);
+          setEditing(null);
+        }}
         onSaved={() => {
           setModalOpen(false);
+          setEditing(null);
           void onReload();
         }}
       />

@@ -32,7 +32,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '@/api/hooks';
-import type { Asset, AssetStatus, PageResp } from '@/types/dto';
+import type { Asset, AssetStatus, PageResponse } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatDate } from '@/utils/format';
 
@@ -276,7 +276,7 @@ export default function Jobs(): JSX.Element {
     [q, statusFilter, sourceTool, page, pageSize],
   );
 
-  const jobsState = useApi<PageResp<Asset>>(listPath);
+  const jobsState = useApi<PageResponse<Asset>>(listPath);
 
   const total = jobsState.data?.total ?? 0;
   const items = jobsState.data?.items ?? [];

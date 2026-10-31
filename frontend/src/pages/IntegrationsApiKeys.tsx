@@ -1,15 +1,18 @@
 /**
  * API Keys section for Integrations (Task 17).
  *
- * Lists API keys, supports create + revoke. The masked key is always
- * visible (server returns `key_masked`); the raw key surfaces exactly
- * once in the post-create modal.
+ * Lists API keys and supports create, edit (name + scopes), activate /
+ * deactivate and revoke. The masked key is always visible (the server
+ * returns `key_masked`); the raw key surfaces exactly once in the
+ * post-create modal.
  *
- * The backend stores scopes as a CSV string (`read,upload`) and the
- * DTO reflects that (`scopes: string`). We split for display only.
+ * Backend: `GET/POST /api/v1/api-keys`, `PUT /api/v1/api-keys/:id`
+ * (name / scopes / expires_at / is_active) and `DELETE /api/v1/api-keys/:id`
+ * (deactivates the key but keeps the row for audit).
  *
- * Backend: GET/POST /api/v1/api-keys, DELETE /api/v1/api-keys/:id
- * (soft-disable, sets is_active=0). No PUT — edit UI is hidden.
+ * The scope vocabulary is fixed by the backend (`KNOWN_SCOPES` in
+ * `backend/src/routes/apikeys.js`) and mirrored by
+ * `API_KEY_SCOPES` in `@/api/apikeys` — the UI never invents a scope.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -33,11 +36,12 @@ import {
   CheckCircleOutlined,
   CopyOutlined,
   DeleteOutlined,
+  EditOutlined,
   KeyOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
-import { apiClient } from '@/api/client';
-import type { ApiKey } from '@/types/dto';
+import { API_KEY_SCOPES, API_KEY_SCOPE_LABELS, apiKeysApi } from '@/api/apikeys';
+import type { ApiKey, ApiKeyCreated, ApiKeyScope } from '@/types';
 import { tokens } from '@/theme/tokens';
 
 const PANEL_STYLE: React.CSSProperties = {
@@ -47,18 +51,15 @@ const PANEL_STYLE: React.CSSProperties = {
   padding: tokens.space[4],
 };
 
-const SCOPE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'read', label: '读取 (read)' },
-  { value: 'write', label: '上传 (write)' },
-  { value: 'admin', label: '管理 (admin)' },
-];
-
-/** Backend stores scopes as CSV; the DTO keeps it as a string. Split
- *  defensively — empty / null → []. */
-function parseScopes(raw: unknown): string[] {
-  if (typeof raw !== 'string' || raw.length === 0) return [];
-  return raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
-}
+/**
+ * The scope checkboxes are derived from the backend whitelist so the UI
+ * can never offer a scope the API would reject with 400.
+ */
+const SCOPE_OPTIONS: ReadonlyArray<{ value: ApiKeyScope; label: string }> =
+  API_KEY_SCOPES.map((scope) => ({
+    value: scope,
+    label: `${API_KEY_SCOPE_LABELS[scope]} (${scope})`,
+  }));
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'response' in err) {
@@ -71,20 +72,14 @@ function extractErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/** Shape returned by POST /api-keys. Server returns the raw key only
- *  here; subsequent GETs only ever surface the masked prefix. */
-interface ApiKeyCreatedPayload {
-  id: string;
-  name: string;
-  key: string;
-  key_prefix: string;
-  scopes: string;
-  warning?: string;
-}
-
 interface CreateKeyFormValues {
   name: string;
-  scopes: string[];
+  scopes: ApiKeyScope[];
+}
+
+interface EditKeyFormValues {
+  name: string;
+  scopes: ApiKeyScope[];
 }
 
 interface IntegrationsApiKeysProps {
@@ -100,16 +95,20 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
   const { message } = App.useApp();
 
   const [createOpen, setCreateOpen] = useState<boolean>(false);
-  const [createdPayload, setCreatedPayload] = useState<ApiKeyCreatedPayload | null>(null);
+  const [createdPayload, setCreatedPayload] = useState<ApiKeyCreated | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [lastHandledTick, setLastHandledTick] = useState<number>(0);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<ApiKey | null>(null);
+  const [editOpen, setEditOpen] = useState<boolean>(false);
+  const [editSubmitting, setEditSubmitting] = useState<boolean>(false);
   const [createForm] = Form.useForm<CreateKeyFormValues>();
+  const [editForm] = Form.useForm<EditKeyFormValues>();
 
   const openCreate = (): void => {
     createForm.resetFields();
-    createForm.setFieldValue('scopes', ['read', 'write']);
+    createForm.setFieldValue('scopes', ['read', 'upload']);
     setCreateOpen(true);
   };
 
@@ -122,19 +121,15 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
     try {
       values = await createForm.validateFields();
     } catch (e: unknown) {
-      void e;
+      console.warn('[api-keys] create validation failed:', e);
       return;
     }
     setSubmitting(true);
     try {
-      const payload = (await apiClient.request<ApiKeyCreatedPayload>({
-        url: '/api-keys',
-        method: 'POST',
-        data: {
-          name: values.name.trim(),
-          scopes: values.scopes.join(','),
-        },
-      })).data;
+      const payload = await apiKeysApi.create({
+        name: values.name.trim(),
+        scopes: values.scopes,
+      });
       setCreatedPayload(payload);
       setCreateOpen(false);
       void onReload();
@@ -145,23 +140,56 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
     }
   };
 
-  const onToggleActive = async (key: ApiKey, nextActive: boolean): Promise<void> => {
-    // Backend has no PATCH/PUT for keys; flipping is_active is the
-    // closest thing — we hit the same DELETE endpoint (soft-disable).
-    // For re-enable we fall back to a direct DB-side caveat via
-    // message: backend currently treats DELETE as irreversible
-    // disable. We surface that honestly rather than silently pretending.
-    if (nextActive) {
-      message.warning('后端暂未提供重新启用接口，请创建新的 API Key');
+  const openEdit = (key: ApiKey): void => {
+    setEditing(key);
+    editForm.setFieldsValue({
+      name: key.name,
+      scopes: key.scopes ?? [],
+    });
+    setEditOpen(true);
+  };
+
+  const onEditSubmit = async (): Promise<void> => {
+    if (!editing) return;
+    let values: EditKeyFormValues;
+    try {
+      values = await editForm.validateFields();
+    } catch (e: unknown) {
+      console.warn('[api-keys] edit validation failed:', e);
       return;
     }
-    setTogglingId(key.id);
+    setEditSubmitting(true);
     try {
-      await apiClient.request<void>({ url: `/api-keys/${key.id}`, method: 'DELETE' });
-      message.success('已停用');
+      await apiKeysApi.update(editing.id, {
+        name: values.name.trim(),
+        scopes: values.scopes,
+      });
+      message.success('已保存');
+      setEditOpen(false);
+      setEditing(null);
       await onReload();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '停用失败'));
+      message.error(extractErrorMessage(e, '保存 API Key 失败'));
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  /**
+   * Toggle the key's active state.
+   *
+   * `PUT /api-keys/:id` accepts `is_active`, so both directions are a
+   * real backend operation — deactivating keeps the row (same effect as
+   * DELETE) and activating revives a revoked key.
+   */
+  const onToggleActive = async (key: ApiKey, nextActive: boolean): Promise<void> => {
+    setTogglingId(key.id);
+    try {
+      await apiKeysApi.update(key.id, { is_active: nextActive });
+      message.success(nextActive ? '已启用' : '已停用');
+      await onReload();
+    } catch (e: unknown) {
+      message.error(extractErrorMessage(e, nextActive ? '启用失败' : '停用失败'));
     } finally {
       setTogglingId(null);
     }
@@ -170,7 +198,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
   const onRevoke = async (key: ApiKey): Promise<void> => {
     setRevokingId(key.id);
     try {
-      await apiClient.request<void>({ url: `/api-keys/${key.id}`, method: 'DELETE' });
+      await apiKeysApi.revoke(key.id);
       message.success('已撤销');
       await onReload();
     } catch (e: unknown) {
@@ -185,7 +213,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
       await navigator.clipboard.writeText(text);
       message.success(`${label}已复制到剪贴板`);
     } catch (e: unknown) {
-      void e;
+      console.warn('[api-keys] clipboard write failed:', e);
       message.error('剪贴板不可用，请手动复制');
     }
   };
@@ -218,7 +246,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
         form={createForm}
         layout="vertical"
         preserve={false}
-        initialValues={{ scopes: ['read', 'write'] }}
+        initialValues={{ scopes: ['read', 'upload'] }}
       >
         <Form.Item
           name="name"
@@ -233,6 +261,45 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
           rules={[{ required: true, type: 'array', min: 1, message: '至少选择一项权限' }]}
         >
           <Checkbox.Group options={[...SCOPE_OPTIONS]} />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+
+  const editModal = (
+    <Modal
+      title="编辑 API Key"
+      open={editOpen}
+      onCancel={() => {
+        setEditOpen(false);
+        setEditing(null);
+      }}
+      onOk={() => void onEditSubmit()}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={editSubmitting}
+      destroyOnClose
+      width={520}
+    >
+      <Form form={editForm} layout="vertical" preserve={false}>
+        <Form.Item
+          name="name"
+          label="名称"
+          rules={[{ required: true, message: '请输入 API Key 名称' }]}
+        >
+          <Input autoFocus />
+        </Form.Item>
+        <Form.Item
+          name="scopes"
+          label="权限范围"
+          rules={[{ required: true, type: 'array', min: 1, message: '至少选择一项权限' }]}
+        >
+          <Checkbox.Group options={[...SCOPE_OPTIONS]} />
+        </Form.Item>
+        <Form.Item label=" " colon={false}>
+          <TextMuted>
+            修改权限范围会立即影响该 Key 的调用；密钥本身不可更改。
+          </TextMuted>
         </Form.Item>
       </Form>
     </Modal>
@@ -312,6 +379,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
           </Button>
         </div>
         {createModal}
+        {editModal}
         {createdModal}
       </>
     );
@@ -324,6 +392,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
           <Skeleton active paragraph={{ rows: 3 }} />
         </div>
         {createModal}
+        {editModal}
         {createdModal}
       </>
     );
@@ -342,6 +411,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
           </Empty>
         </div>
         {createModal}
+        {editModal}
         {createdModal}
       </>
     );
@@ -352,7 +422,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
       <div style={PANEL_STYLE}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
           {rows.map((k) => {
-            const scopes = parseScopes(k.scopes);
+            const scopes = Array.isArray(k.scopes) ? k.scopes : [];
             return (
               <div
                 key={k.id}
@@ -370,6 +440,15 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
                 <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[2] }}>
                     <span style={{ color: tokens.color.text, fontWeight: 500 }}>{k.name}</span>
+                    <Tooltip title="编辑名称与权限">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<EditOutlined />}
+                        onClick={() => openEdit(k)}
+                        aria-label={`编辑 ${k.name}`}
+                      />
+                    </Tooltip>
                     <Tooltip title="复制 Key 摘要">
                       <Button
                         size="small"
@@ -439,10 +518,10 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[2] }}>
-                  <Tooltip title={k.is_active ? '点击停用' : '后端暂不支持启用'}>
+                  <Tooltip title={k.is_active ? '点击停用' : '点击启用'}>
                     <Switch
                       checked={k.is_active}
-                      disabled={togglingId === k.id || (!k.is_active)}
+                      loading={togglingId === k.id}
                       onChange={(checked) => void onToggleActive(k, checked)}
                       aria-label={`切换 ${k.name} 的启用状态`}
                     />
@@ -471,13 +550,22 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
         </div>
       </div>
       {createModal}
+      {editModal}
       {createdModal}
     </>
   );
 }
 
-function scopeColor(scope: string): string {
+/** A muted inline note; kept local so the file has no extra imports. */
+function TextMuted({ children }: { children: React.ReactNode }): JSX.Element {
+  return (
+    <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>{children}</span>
+  );
+}
+
+function scopeColor(scope: ApiKeyScope): string {
   if (scope === 'read') return 'green';
-  if (scope === 'write') return 'blue';
+  if (scope === 'write' || scope === 'upload') return 'blue';
+  if (scope === 'delete') return 'volcano';
   return 'red';
 }

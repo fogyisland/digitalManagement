@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { App, Form, Input, InputNumber, Modal, Select as AntSelect } from 'antd';
 import { apiClient } from '@/api/client';
-import type { Category } from '@/types/dto';
+import type { Category } from '@/types';
 import { tokens } from '@/theme/tokens';
 
 export interface CategoryFormValues {

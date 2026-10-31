@@ -1,132 +1,383 @@
 /* ============================================
-   Shared Types
+   API Contract Types — 前后端唯一契约源
+   ============================================
+
+   本文件严格镜像 `backend/src/lib/dto.js` 中各 `toXxx()` 序列化函数的输出
+   形状。`frontend/tests/contract.test.js` 会在 CI 中校验前后端是否漂移。
+
+   规则：
+   1. 所有实体主键都是**字符串**（后端用 nanoid 生成 TEXT 主键），不是数字。
+   2. 字段名与后端 JSON 完全一致（snake_case），不做前端重命名。
+   3. 词表（status / role / asset_type / scopes）必须与后端白名单完全一致。
+   4. 不允许出现后端 DTO 中不存在的字段（那会让前端读到 undefined）。
+
+   后端 DTO 字段数校验：toAsset 31 键 / toUser 9 / toApiKey 9 / toTag 6 /
+   toCategory 7 / toWebhook 6 / toPage 5。
    ============================================ */
 
+/* --------------------------------------------------------------------------
+   资源类型与状态词表
+   -------------------------------------------------------------------------- */
+
+/** `detectAssetType()` 依据 MIME 推导：image | video | other。 */
 export type AssetType = 'image' | 'video' | 'other'
-export type AssetStatus = 'active' | 'processing' | 'failed' | 'deleted'
+
+/** `ASSET_STATUSES` 白名单。`deleted` 表示已软删除（进回收站）。 */
+export type AssetStatus = 'ready' | 'processing' | 'failed' | 'deleted'
+
+/** 用户角色白名单。 */
 export type UserRole = 'admin' | 'editor' | 'viewer'
-export type UserStatus = 'active' | 'disabled' | 'locked'
 
-export interface User {
-  id: number
-  username: string
-  email: string
-  display_name?: string | null
-  avatar_url?: string | null
-  role: UserRole
-  status: UserStatus
-  is_superuser: boolean
-  last_login_at?: string | null
-  created_at: string
-}
+/** 用户状态：后端由 `is_active` 派生，只有 active / disabled 两态。 */
+export type UserStatus = 'active' | 'disabled'
 
-export interface LoginResponse {
-  access_token: string
-  /**
-   * The backend issues a single bearer token (`expiresIn: '7d'`) and does not
-   * return a refresh token, so this field is absent from the response. It is
-   * declared optional rather than removed so a future refresh flow can fill
-   * it in without touching the type again.
-   */
-  refresh_token?: string
-  token_type: string
-  expires_in?: number
-  user: User
-}
+/** API Key 权限白名单（`KNOWN_SCOPES`）。`*` 表示全权限。 */
+export type ApiKeyScope = 'read' | 'upload' | 'delete' | 'write' | '*'
+
+/**
+ * Webhook 事件词表（`WEBHOOK_EVENTS`，后端 `backend/src/lib/webhook.js`）。
+ *
+ * 订阅列表为空表示「订阅全部事件」——这是后端的语义，前端不再自己发明。
+ */
+export type WebhookEvent =
+  | 'asset.created'
+  | 'asset.updated'
+  | 'asset.deleted'
+  | 'asset.restored'
+
+/* --------------------------------------------------------------------------
+   Asset — 镜像 toAsset()
+   -------------------------------------------------------------------------- */
 
 export interface Asset {
-  id: number
-  asset_code: string
+  id: string
   title: string
-  description?: string | null
-  asset_type: AssetType
+  description: string | null
+  /** 落盘文件名（`<id>.<ext>`）。 */
+  filename: string
+  /** 用户上传时的原始文件名。 */
+  original_name: string
   mime_type: string
-  file_ext: string
   file_size: number
-  width?: number | null
-  height?: number | null
-  duration?: number | null
-  thumbnail_url?: string | null
-  preview_url?: string | null
-  original_url?: string | null
-  category_id?: number | null
-  tag_names: string[]
-  status: AssetStatus
-  is_public: boolean
-  uploader_id?: number | null
-  uploader_name?: string | null
-  source?: string
-  source_url?: string | null
-  external_ref?: string | null
-  exif?: Record<string, any> | null
   file_hash: string
-  download_count: number
-  view_count: number
-  versions?: AssetVersion[]
+  asset_type: AssetType
+  category_id: string | null
+  width: number | null
+  height: number | null
+  duration: number | null
+  /** 相对 STORAGE_DIR 的存储路径，如 `originals/abc.png`。 */
+  storage_path: string
+  thumbnail_path: string | null
+  /** 浏览器可访问的缩略图地址 `/storage/...`，无缩略图时为 null。 */
+  thumbnail_url: string | null
+  /** 预览地址：优先缩略图，缺省回落到原图。 */
+  preview_url: string | null
+  /** 原图地址 `/storage/...`。 */
+  original_url: string | null
+  status: AssetStatus
+  /** 软删除时间；非回收站资产为 null。 */
+  deleted_at: string | null
+  /** 上传者用户 id。 */
+  uploaded_by: string | null
+  source: string
+  source_tool: string | null
+  prompt: string | null
+  seed: number | null
+  model_name: string | null
+  job_id: string | null
+  /** 原始元数据的 JSON 字符串（未解析）。 */
+  metadata_json: string | null
+  /** 资产绑定的标签名数组。 */
+  tag_names: string[]
   created_at: string
   updated_at: string
 }
 
-export interface AssetVersion {
-  id: number
-  version_number: number
-  file_size: number
-  file_hash: string
-  note?: string | null
-  uploader_id?: number | null
+/** `PUT /assets/:id` 可接受的字段白名单（后端只认这五个）。 */
+export interface AssetUpdatePayload {
+  title?: string
+  description?: string | null
+  category_id?: string | null
+  tag_names?: string[]
+  status?: Exclude<AssetStatus, 'deleted'>
+}
+
+/** `GET /assets/:id/manifest` 的响应形状。 */
+export interface AssetManifest {
+  id: string
+  title: string
+  asset_type: AssetType
+  source_tool: string | null
+  job_id: string | null
+  prompt: string | null
+  seed: number | null
+  model_name: string | null
+  metadata: Record<string, unknown> | null
+  original_path: string
+  thumbnail_path: string | null
+  public_url: string
   created_at: string
 }
 
-export interface Category {
-  id: number
-  name: string
-  slug: string
-  description?: string | null
-  icon?: string | null
-  color?: string | null
-  sort_order: number
-  parent_id?: number | null
-  created_at: string
-  children?: Category[]
+/** `POST /assets/:id/download` 的响应形状。 */
+export interface AssetDownloadTicket {
+  download_url: string
+  filename: string
+  size: number
+  mime_type: string
 }
+
+/** `POST /assets/upload` 的响应形状。 */
+export interface AssetUploadResult {
+  items: Asset[]
+  count: number
+}
+
+/** `GET /assets` 的查询参数（后端 query 词表）。 */
+export interface AssetListParams {
+  /** 前端叫 keyword，后端参数名是 `q`，见 `assetsApi.list`。 */
+  keyword?: string
+  asset_type?: AssetType
+  category_id?: string
+  tag_names?: string
+  uploader_id?: string
+  status?: AssetStatus
+  include_deleted?: boolean
+  order_by?: string
+  page?: number
+  page_size?: number
+}
+
+/* --------------------------------------------------------------------------
+   User — 镜像 toUser()
+   -------------------------------------------------------------------------- */
+
+export interface User {
+  id: string
+  username: string
+  email: string | null
+  display_name: string | null
+  role: UserRole
+  status: UserStatus
+  is_superuser: boolean
+  last_login_at: string | null
+  created_at: string
+}
+
+/** `POST /users` 的请求体。 */
+export interface UserCreatePayload {
+  username: string
+  email?: string | null
+  password: string
+  display_name?: string | null
+  role: UserRole
+}
+
+/** `PUT /users/:id` 的请求体。 */
+export interface UserUpdatePayload {
+  email?: string | null
+  display_name?: string | null
+  role?: UserRole
+  status?: UserStatus
+  password?: string
+}
+
+/** `GET /users` 的查询参数。 */
+export interface UserListParams {
+  keyword?: string
+  role?: UserRole
+  status?: UserStatus
+  page?: number
+  page_size?: number
+}
+
+/* --------------------------------------------------------------------------
+   Auth — 镜像 issueTokenPair()
+   -------------------------------------------------------------------------- */
+
+export interface TokenPair {
+  access_token: string
+  refresh_token: string
+  token_type: string
+  expires_in: number
+}
+
+/** `POST /auth/login` 的响应 = TokenPair + 当前用户。 */
+export interface LoginResponse extends TokenPair {
+  user: User
+}
+
+/* --------------------------------------------------------------------------
+   Tag — 镜像 toTag()
+   -------------------------------------------------------------------------- */
 
 export interface Tag {
-  id: number
+  id: string
   name: string
   slug: string
-  color: string
-  description?: string | null
+  color: string | null
   usage_count: number
   created_at: string
 }
 
+/** `PUT /tags/:id` 只接受 name 与 color。 */
+export interface TagUpdatePayload {
+  name?: string
+  color?: string | null
+}
+
+/* --------------------------------------------------------------------------
+   Category — 镜像 toCategory()
+   -------------------------------------------------------------------------- */
+
+export interface Category {
+  id: string
+  name: string
+  slug: string
+  parent_id: string | null
+  description: string | null
+  sort_order: number
+  created_at: string
+  /** 前端在 `categoriesApi.tree()` 中派生的子节点，后端不返回该字段。 */
+  children?: Category[]
+}
+
+/** `PUT /categories/:id` 可接受的字段。 */
+export interface CategoryUpdatePayload {
+  name?: string
+  description?: string | null
+  parent_id?: string | null
+  sort_order?: number
+}
+
+/* --------------------------------------------------------------------------
+   ApiKey — 镜像 toApiKey()
+   -------------------------------------------------------------------------- */
+
 export interface ApiKey {
-  id: number
+  id: string
   name: string
   key_prefix: string
-  key_masked?: string
-  scopes: string[]
+  /** 掩码后的密钥，仅供展示。 */
+  key_masked: string
+  scopes: ApiKeyScope[]
   is_active: boolean
-  expires_at?: string | null
-  last_used_at?: string | null
-  last_used_ip?: string | null
-  description?: string | null
-  owner_id: number
+  last_used_at: string | null
+  expires_at: string | null
   created_at: string
 }
 
-export interface ApiKeyCreated extends ApiKey {
-  api_key: string
+/**
+ * `POST /api-keys` 的响应 —— 明文密钥只在创建时返回一次。
+ *
+ * 注意字段名是 `key`，不是 `api_key`。
+ */
+export interface ApiKeyCreated {
+  id: string
+  name: string
+  key: string
+  key_prefix: string
+  scopes: ApiKeyScope[]
+  expires_at: string | null
+  warning: string
 }
 
-export interface PageResponse<T> {
-  items: T[]
+/** `PUT /api-keys/:id` 可接受的字段。 */
+export interface ApiKeyUpdatePayload {
+  name?: string
+  scopes?: ApiKeyScope[]
+  expires_at?: string | null
+  is_active?: boolean
+}
+
+/* --------------------------------------------------------------------------
+   Webhook — 镜像 toWebhook()
+   -------------------------------------------------------------------------- */
+
+export interface WebhookEndpoint {
+  id: string
+  name: string
+  url: string
+  is_active: boolean
+  /** 订阅的事件列表；空数组表示订阅全部事件。 */
+  events: WebhookEvent[]
+  created_at: string
+}
+
+/** `POST /webhooks` 的响应 —— secret 只在创建时返回一次。 */
+export interface WebhookCreated {
+  id: string
+  name: string
+  url: string
+  secret: string
+  events: WebhookEvent[]
+  warning: string
+}
+
+/** `PUT /webhooks/:id` 可接受的字段。 */
+export interface WebhookUpdatePayload {
+  name?: string
+  url?: string
+  events?: WebhookEvent[]
+  is_active?: boolean
+}
+
+/* --------------------------------------------------------------------------
+   分片上传 — 镜像 backend/src/routes/upload.js
+   -------------------------------------------------------------------------- */
+
+/** `POST /upload/init` 的响应。 */
+export interface UploadSession {
+  session_id: string
+  chunk_size: number
+  total_chunks: number
+  received_chunks: number[]
+  expires_at: string
+}
+
+/** `PUT /upload/chunk/:session_id` 的响应。 */
+export interface UploadChunkResult {
+  received_chunks: number[]
+  received: number
+  total_chunks: number
+}
+
+/** `POST /upload/init` 的请求体。 */
+export interface UploadInitPayload {
+  filename: string
+  file_size: number
+  mime_type?: string
+  file_hash?: string
+  chunk_size?: number
+  title?: string
+  description?: string
+  category_id?: string
+  tag_names?: string
+}
+
+/** `POST /upload/complete` 的请求体。 */
+export interface UploadCompletePayload {
+  session_id: string
+  title?: string
+  description?: string
+  category_id?: string
+  tag_names?: string
+}
+
+/* --------------------------------------------------------------------------
+   统计
+   -------------------------------------------------------------------------- */
+
+/** `GET /stats` 的响应。 */
+export interface AssetStats {
   total: number
-  page: number
-  page_size: number
-  total_pages: number
+  images: number
+  videos: number
+  total_size: number
+  recent: Asset[]
 }
 
+/** `GET /stats/dashboard` 的响应。 */
 export interface DashboardData {
   summary: {
     total_assets: number
@@ -143,4 +394,16 @@ export interface DashboardData {
   }
   upload_trend: { date: string; count: number }[]
   recent_assets: Asset[]
+}
+
+/* --------------------------------------------------------------------------
+   分页信封 — 镜像 toPage()
+   -------------------------------------------------------------------------- */
+
+export interface PageResponse<T> {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
 }

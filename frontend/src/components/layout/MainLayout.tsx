@@ -339,7 +339,6 @@ export default function MainLayout() {
               <Space style={{ cursor: 'pointer' }}>
                 <Avatar
                   size="small"
-                  src={user?.avatar_url ?? undefined}
                   style={{
                     background: `linear-gradient(135deg, ${tokens.color.accent}, ${tokens.color.comfyui})`,
                     color: '#0d1117',

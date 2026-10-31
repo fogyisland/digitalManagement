@@ -31,6 +31,24 @@ const BASE_BACKOFF_MS = 200;            // backoff base; doubles each retry
 const MAX_BACKOFF_MS = 5000;             // upper bound for a single sleep
 const REQUEST_TIMEOUT_MS = 5000;        // per-attempt socket timeout
 
+/**
+ * The event vocabulary an endpoint can subscribe to.
+ *
+ * `emitAssetEvent` (backend/src/lib/assets.js) emits exactly these names.
+ * The frontend mirrors the list in `frontend/src/api/webhooks.ts` — the two
+ * must stay identical or a subscription the UI accepted would silently
+ * never fire.
+ *
+ * An endpoint with **no** subscription receives every event; that is the
+ * behaviour of every row created before the column existed.
+ */
+const WEBHOOK_EVENTS = [
+  'asset.created',
+  'asset.updated',
+  'asset.deleted',
+  'asset.restored',
+];
+
 // Status codes that are worth retrying. Everything else (incl. 4xx) is a
 // deterministic client error and we stop retrying immediately.
 function isRetryableStatus(status) {
@@ -310,4 +328,8 @@ module.exports = {
   isRetryableStatus,
   computeBackoffMs,
   MAX_ATTEMPTS,
+  // The event vocabulary — shared by the routes (validation) and by
+  // `emitAssetEvent` (filtering). The frontend mirrors it in
+  // `frontend/src/api/webhooks.ts`.
+  WEBHOOK_EVENTS,
 };

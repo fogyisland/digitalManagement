@@ -21,9 +21,10 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '@/api/hooks';
-import type { Asset, DashboardData } from '@/types';
+import type { DashboardData } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatBytes, formatDate } from '@/utils/format';
+import { assetPreviewUrl } from '@/utils/assetUrls';
 
 const { Text, Title } = Typography;
 
@@ -33,14 +34,6 @@ interface NumberCard {
   value: string;
   hint: string;
   icon: React.ReactNode;
-}
-
-function previewUrl(asset: Pick<Asset, 'thumbnail_url' | 'preview_url' | 'original_url'>): string | null {
-  const raw = asset.thumbnail_url || asset.preview_url || asset.original_url;
-  if (!raw) return null;
-  if (/^https?:\/\//.test(raw)) return raw;
-  const normalized = raw.startsWith('/') ? raw : `/storage/${raw}`;
-  return normalized.replace(/^\/api\/v1\/storage\//, '/storage/');
 }
 
 export default function Dashboard(): JSX.Element {
@@ -248,7 +241,7 @@ export default function Dashboard(): JSX.Element {
         ) : (
           <Space direction="vertical" size="small" style={{ width: '100%' }}>
             {recentAssets.map((asset) => {
-              const preview = previewUrl(asset);
+              const preview = assetPreviewUrl(asset);
               const isVideo = asset.asset_type === 'video';
               return (
                 <div
@@ -323,7 +316,7 @@ export default function Dashboard(): JSX.Element {
                       }}
                       title={asset.title}
                     >
-                      {asset.title || asset.asset_code || '(无标题)'}
+                      {asset.title || asset.original_name || '(无标题)'}
                     </Text>
                     <Text
                       style={{

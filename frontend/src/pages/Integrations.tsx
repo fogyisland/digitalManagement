@@ -6,23 +6,24 @@
  *   - Top section: API keys (list / create / revoke / copy masked).
  *     POST /api-keys returns the raw key exactly once; the UI surfaces
  *     it inside the post-create modal with copy + acknowledge.
- *   - Bottom section: Webhook endpoints (list / create / disable).
- *     The backend exposes GET/POST/DELETE on /webhooks — no PUT, and
- *     DELETE is a soft-disable (is_active=0). Edit buttons are hidden
- *     because there is no edit endpoint; DELETE only disables.
+ *   - Bottom section: Webhook endpoints (list / create / edit / toggle).
+ *     The backend exposes GET/POST/PUT/DELETE on /webhooks. DELETE is a
+ *     soft-disable (is_active=0); PUT can edit the name, the URL and the
+ *     event subscription, and can re-enable a disabled endpoint.
  *     POST /webhooks returns the signing secret exactly once.
  *
  * Both sections are pure subcomponents (`IntegrationsApiKeys`,
  * `IntegrationsWebhooks`) so this orchestrator file stays under the 500-line
  * cap and each section is independently readable. Data fetching goes
- * through `useApi`; mutations go through the shared `apiClient`.
+ * through `useApi`; mutations go through the per-resource API modules
+ * (`@/api/apikeys`, `@/api/webhooks`).
  */
 
 import { useState } from 'react';
 import { Button, Skeleton, Space, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useApi } from '@/api/hooks';
-import type { ApiKey, WebhookEndpoint } from '@/types/dto';
+import type { ApiKey, WebhookEndpoint } from '@/types';
 import { tokens } from '@/theme/tokens';
 import IntegrationsApiKeys from './IntegrationsApiKeys';
 import IntegrationsWebhooks from './IntegrationsWebhooks';

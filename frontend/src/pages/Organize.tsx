@@ -3,15 +3,14 @@
  *
  * Two-column workspace:
  *   - Left:  category tree (CRUD via POST/PUT/DELETE /categories)
- *   - Right: tag card cloud (POST /tags only — backend does not expose
- *            PUT or DELETE for tags, see task-16-report.md "concerns")
+ *   - Right: tag card cloud (CRUD via POST/PUT/DELETE /tags)
  */
 
 import { useState } from 'react';
 import { Button, Space, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useApi } from '@/api/hooks';
-import type { Category, Tag } from '@/types/dto';
+import type { Category, Tag } from '@/types';
 import { tokens } from '@/theme/tokens';
 import OrganizeCategories from './OrganizeCategories';
 import OrganizeTags from './OrganizeTags';

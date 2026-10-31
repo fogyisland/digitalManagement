@@ -2,7 +2,7 @@ import { useRef, useState, useEffect } from 'react'
 import { Button, Input, Select, Space, message } from 'antd'
 import { CloudUploadOutlined, InboxOutlined } from '@ant-design/icons'
 import { assetsApi } from '@/api/assets'
-import type { Asset } from '@/types'
+import type { Asset, Category } from '@/types'
 import { categoriesApi } from '@/api/categories'
 import { tagsApi } from '@/api/tags'
 
@@ -10,34 +10,57 @@ interface Props {
   onUploaded?: (asset: Asset) => void
 }
 
+/** One flattened row of the category tree, ready for an antd `Select`. */
+interface CategoryOption {
+  value: string
+  label: string
+}
+
+/**
+ * Flatten the category tree into a depth-prefixed option list.
+ *
+ * The backend serves a flat list with a `parent_id` column; the tree is
+ * built on the frontend, so the indent marker is ours to choose.
+ */
+function flattenCategories(nodes: Category[], prefix = ''): CategoryOption[] {
+  const out: CategoryOption[] = []
+  for (const node of nodes) {
+    out.push({ value: String(node.id), label: `${prefix}${node.name}` })
+    if (node.children?.length) {
+      out.push(...flattenCategories(node.children, `${prefix}— `))
+    }
+  }
+  return out
+}
+
 export default function AssetUploader({ onUploaded }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [categoryId, setCategoryId] = useState<number | undefined>()
+  const [categoryId, setCategoryId] = useState<string | undefined>(undefined)
   const [tagInput, setTagInput] = useState('')
   const [progress, setProgress] = useState(0)
   const [uploading, setUploading] = useState(false)
-  const [categories, setCategories] = useState<any[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
   const [allTags, setAllTags] = useState<string[]>([])
 
   useEffect(() => {
-    categoriesApi.tree().then((tags: Array<{ id?: number; name: string }>) => setCategories(tags)).catch(() => {})
-    tagsApi.all().then((tags: Array<{ name: string }>) => setAllTags(tags.map((t: { name: string }) => t.name))).catch(() => {})
+    categoriesApi
+      .tree()
+      .then((tree) => setCategories(tree))
+      .catch((error: unknown) => {
+        console.warn('[upload] could not load the category tree:', error)
+      })
+    tagsApi
+      .all()
+      .then((tags) => setAllTags(tags.map((tag) => tag.name)))
+      .catch((error: unknown) => {
+        console.warn('[upload] could not load the tag list:', error)
+      })
   }, [])
 
-  const flatCategories = (() => {
-    const out: { value: number; label: string }[] = []
-    const walk = (nodes: any[], prefix = '') => {
-      for (const n of nodes) {
-        out.push({ value: n.id, label: prefix + n.name })
-        if (n.children?.length) walk(n.children, prefix + '— ')
-      }
-    }
-    walk(categories)
-    return out
-  })()
+  const flatCategories = flattenCategories(categories)
 
   const onPick = (f: File) => {
     setFile(f)
@@ -52,7 +75,7 @@ export default function AssetUploader({ onUploaded }: Props) {
     setUploading(true)
     setProgress(0)
     try {
-      const asset = await assetsApi.upload(file, {
+      const result = await assetsApi.upload(file, {
         title: title || undefined,
         description: description || undefined,
         category_id: categoryId,
@@ -61,6 +84,13 @@ export default function AssetUploader({ onUploaded }: Props) {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 100))
         },
       })
+      // The backend answers `{ items, count }` — a single-file upload still
+      // comes back as a one-element list.
+      const asset = result.items[0]
+      if (!asset) {
+        message.error('上传完成但未返回资产记录')
+        return
+      }
       message.success(`上传成功: ${asset.title}`)
       setFile(null)
       setTitle('')
@@ -69,7 +99,7 @@ export default function AssetUploader({ onUploaded }: Props) {
       setProgress(0)
       onUploaded?.(asset)
     } catch {
-      // interceptor already showed error
+      // The interceptor already showed the error toast.
     } finally {
       setUploading(false)
     }

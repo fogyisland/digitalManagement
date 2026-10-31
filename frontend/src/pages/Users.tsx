@@ -31,16 +31,11 @@ import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined } from '@ant-de
 import { useNavigate } from 'react-router-dom';
 import { usersApi } from '@/api/users';
 import { useAuthStore } from '@/stores/authStore';
-import type { User, UserRole, UserStatus } from '@/types';
+import type { PageResponse, User, UserRole, UserStatus } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatDate } from '@/utils/format';
 
 const { Text, Title } = Typography;
-
-interface UserListResp {
-  items: User[];
-  total: number;
-}
 
 interface CreateUserValues {
   username: string;
@@ -67,10 +62,13 @@ const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: 'viewer', label: 'viewer · 查看者' },
 ];
 
+/**
+ * 后端用户状态只有两态（由 `is_active` 派生）：`active` / `disabled`。
+ * `locked` 不在 `backend/src/routes/users.js` 的白名单里，提交会被 400 拒绝。
+ */
 const STATUS_OPTIONS: { value: UserStatus; label: string }[] = [
   { value: 'active', label: '启用' },
   { value: 'disabled', label: '禁用' },
-  { value: 'locked', label: '锁定' },
 ];
 
 function roleColor(role: UserRole): string {
@@ -129,15 +127,19 @@ export default function Users(): JSX.Element {
   const load = async (): Promise<void> => {
     setLoading(true);
     try {
-      const r: UserListResp = await usersApi.list({
+      const r: PageResponse<User> = await usersApi.list({
         keyword: keyword || undefined,
         page,
         page_size: 20,
       });
       setUsers(r.items);
       setTotal(r.total);
-    } catch {
-      // interceptor surfaces error
+    } catch (e: unknown) {
+      // The axios interceptor already redirects on 401; here we only keep
+      // the table usable by clearing the stale rows and logging the cause.
+      console.warn('[users] load failed:', e);
+      setUsers([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
@@ -177,7 +179,7 @@ export default function Users(): JSX.Element {
     void load();
   };
 
-  const onDelete = async (id: number): Promise<void> => {
+  const onDelete = async (id: string): Promise<void> => {
     await usersApi.remove(id);
     message.success('已删除');
     void load();
@@ -286,8 +288,15 @@ export default function Users(): JSX.Element {
               title: 'ID',
               dataIndex: 'id',
               width: 70,
-              render: (id: number) => (
-                <span style={{ fontFamily: tokens.font.mono, color: tokens.color.textMuted }}>
+              render: (id: string) => (
+                <span
+                  style={{
+                    fontFamily: tokens.font.mono,
+                    fontSize: 12,
+                    color: tokens.color.textMuted,
+                  }}
+                  title={id}
+                >
                   {id}
                 </span>
               ),

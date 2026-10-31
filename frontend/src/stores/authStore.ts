@@ -6,8 +6,6 @@ import { getToken, getRefreshToken, setToken, setRefreshToken, isUnauthorized } 
 
 interface AuthState {
   user: User | null
-  accessToken: string | null
-  refreshToken: string | null
   setAuth: (user: User, access: string, refresh?: string | null) => void
   setUser: (user: User | null) => void
   logout: () => void
@@ -22,10 +20,10 @@ interface AuthState {
  *
  * The tokens live in `localStorage` under `dam_access_token` /
  * `dam_refresh_token`, and `api/client.ts` owns them: it writes them on
- * login and reads them in the request interceptor. This store mirrors the
- * current values so the UI can render "logged in" state, but it never keeps
- * a second copy in `persist` — a duplicated token rots the moment the two
- * drift, and a stale token is worse than no token at all.
+ * login, writes the **rotated** pair after a refresh, and reads them in the
+ * request interceptor. This store deliberately keeps **no copy** of the
+ * tokens — a duplicated token rots the moment the two drift, and the
+ * interceptor cannot see a token written under a different key.
  *
  * `partialize` therefore persists the user profile only. On reload the
  * tokens are read straight back from `localStorage`, which is why
@@ -35,18 +33,28 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
       user: null,
-      accessToken: getToken(),
-      refreshToken: getRefreshToken(),
       setAuth: (user, access, refresh) => {
         setToken(access)
         setRefreshToken(refresh ?? null)
-        set({ user, accessToken: access, refreshToken: refresh ?? null })
+        set({ user })
       },
       setUser: (user) => set({ user }),
+      /**
+       * End the session.
+       *
+       * The tokens are revoked on the server first (the backend keeps a
+       * `revoked_tokens` table, so the access token dies immediately instead
+       * of lingering until its expiry). The local copy is cleared
+       * unconditionally — a failed revocation must never leave a usable
+       * token behind.
+       */
       logout: () => {
+        void authApi.logout().catch((error: unknown) => {
+          console.warn('[auth] server-side logout failed, clearing local session anyway:', error)
+        })
         setToken(null)
         setRefreshToken(null)
-        set({ user: null, accessToken: null, refreshToken: null })
+        set({ user: null })
       },
       hasRole: (...roles) => {
         const u = get().user
@@ -75,9 +83,9 @@ export const useAuthStore = create<AuthState>()(
  *    the token; keeping it would render a "logged in" shell that fails every
  *    request.
  * 2. Confirm the stored token is still valid by calling `GET /auth/me`.
- *    The backend answers with `{ id, username, role }` — a subset of `User` —
- *    so the fresh fields are merged over the persisted profile rather than
- *    replacing it (the persisted copy still holds `email`, `status`, …).
+ *    The backend answers with the canonical user shape; the fresh fields are
+ *    merged over the persisted profile so a role change made while the tab
+ *    was closed is picked up.
  * 3. Sign the user out **only** when the server explicitly rejected the
  *    token (HTTP 401). A network failure or a 5xx must not end the
  *    session — that is a server problem, not an authentication problem.
@@ -102,4 +110,9 @@ export async function bootstrapAuth(): Promise<void> {
     }
     console.warn('[auth] session check failed, keeping the stored session:', error)
   }
+}
+
+/** The refresh token, read from the single source of truth. */
+export function currentRefreshToken(): string | null {
+  return getRefreshToken()
 }

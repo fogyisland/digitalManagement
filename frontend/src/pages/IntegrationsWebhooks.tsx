@@ -1,14 +1,20 @@
 /**
  * Webhook endpoints section for Integrations (Task 17).
  *
- * Backend contract:
- *   GET    /webhooks        → WebhookEndpoint[] (id/name/url/is_active/created_at)
- *   POST   /webhooks        → { id, name, url, secret, warning } (secret only here)
+ * Backend contract (mirrored by `backend/src/routes/webhooks.js`):
+ *   GET    /webhooks        → WebhookEndpoint[] (id/name/url/is_active/events/created_at)
+ *   POST   /webhooks        → { id, name, url, secret, events, warning } (secret only here)
+ *   PUT    /webhooks/:id    → WebhookEndpoint
  *   DELETE /webhooks/:id    → 204 (soft-disable: is_active=0)
  *
- * There is no PUT — edit buttons are intentionally absent. Re-enable is
- * also unsupported by the backend; we surface that honestly via the
- * Switch tooltip rather than pretending the toggle works.
+ * Every mutation goes through `@/api/webhooks` — the page never touches
+ * `apiClient` directly, so the front↔back contract has exactly one place
+ * to drift.
+ *
+ * `events` is a real subscription, not a note: the backend stores it and
+ * only delivers the events an endpoint subscribed to. An **empty list means
+ * "every event"**, which is why the create form starts with all events
+ * ticked and the row badge says 「全部事件」 for an empty subscription.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -16,10 +22,12 @@ import {
   App,
   Alert,
   Button,
+  Checkbox,
   Empty,
   Form,
   Input,
   Modal,
+  Popconfirm,
   Skeleton,
   Space,
   Switch,
@@ -29,10 +37,12 @@ import {
 import {
   CheckCircleOutlined,
   CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
   LinkOutlined,
 } from '@ant-design/icons';
-import { apiClient } from '@/api/client';
-import type { WebhookEndpoint } from '@/types/dto';
+import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, webhooksApi } from '@/api/webhooks';
+import type { WebhookCreated, WebhookEndpoint, WebhookEvent } from '@/types';
 import { tokens } from '@/theme/tokens';
 
 const PANEL_STYLE: React.CSSProperties = {
@@ -42,24 +52,20 @@ const PANEL_STYLE: React.CSSProperties = {
   padding: tokens.space[4],
 };
 
-const EVENT_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'asset.created', label: '资产创建 (asset.created)' },
-  { value: 'asset.updated', label: '资产更新 (asset.updated)' },
-  { value: 'asset.deleted', label: '资产删除 (asset.deleted)' },
-];
+/**
+ * The checkbox list is derived from the backend vocabulary so the UI can
+ * never offer an event the API would reject with 400.
+ */
+const EVENT_OPTIONS: ReadonlyArray<{ value: WebhookEvent; label: string }> = WEBHOOK_EVENTS.map(
+  (event) => ({ value: event, label: `${WEBHOOK_EVENT_LABELS[event]} (${event})` }),
+);
 
-interface WebhookCreatedPayload {
-  id: string;
+const EVENTS_HINT = '不勾选任何事件 = 订阅全部事件。';
+
+interface WebhookFormValues {
   name: string;
   url: string;
-  secret: string;
-  warning?: string;
-}
-
-interface CreateWebhookFormValues {
-  name: string;
-  url: string;
-  events: string[];
+  events: WebhookEvent[];
 }
 
 interface IntegrationsWebhooksProps {
@@ -86,15 +92,22 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
   const { message } = App.useApp();
 
   const [createOpen, setCreateOpen] = useState<boolean>(false);
-  const [createdPayload, setCreatedPayload] = useState<WebhookCreatedPayload | null>(null);
+  const [createdPayload, setCreatedPayload] = useState<WebhookCreated | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<WebhookEndpoint | null>(null);
+  const [editOpen, setEditOpen] = useState<boolean>(false);
+  const [editSubmitting, setEditSubmitting] = useState<boolean>(false);
   const [lastHandledTick, setLastHandledTick] = useState<number>(0);
-  const [createForm] = Form.useForm<CreateWebhookFormValues>();
+  const [createForm] = Form.useForm<WebhookFormValues>();
+  const [editForm] = Form.useForm<WebhookFormValues>();
 
   const openCreate = (): void => {
     createForm.resetFields();
-    createForm.setFieldValue('events', ['asset.created', 'asset.updated']);
+    // Every event ticked by default: an empty subscription means "all
+    // events" on the backend, but ticking them makes the intent explicit.
+    createForm.setFieldValue('events', [...WEBHOOK_EVENTS]);
     setCreateOpen(true);
   };
 
@@ -103,24 +116,20 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
   };
 
   const onCreateSubmit = async (): Promise<void> => {
-    let values: CreateWebhookFormValues;
+    let values: WebhookFormValues;
     try {
       values = await createForm.validateFields();
     } catch (e: unknown) {
-      void e;
+      console.warn('[webhooks] create validation failed:', e);
       return;
     }
     setSubmitting(true);
     try {
-      const payload = (await apiClient.request<WebhookCreatedPayload>({
-        url: '/webhooks',
-        method: 'POST',
-        data: {
-          name: values.name.trim(),
-          url: values.url.trim(),
-          events: values.events,
-        },
-      })).data;
+      const payload = await webhooksApi.create({
+        name: values.name.trim(),
+        url: values.url.trim(),
+        events: values.events ?? [],
+      });
       setCreatedPayload(payload);
       setCreateOpen(false);
       void onReload();
@@ -131,20 +140,73 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
     }
   };
 
-  const onToggleActive = async (ep: WebhookEndpoint, nextActive: boolean): Promise<void> => {
-    if (nextActive) {
-      message.warning('后端暂未提供重新启用接口，请创建新的 Webhook');
+  const openEdit = (ep: WebhookEndpoint): void => {
+    setEditing(ep);
+    editForm.setFieldsValue({
+      name: ep.name,
+      url: ep.url,
+      events: ep.events ?? [],
+    });
+    setEditOpen(true);
+  };
+
+  const onEditSubmit = async (): Promise<void> => {
+    if (!editing) return;
+    let values: WebhookFormValues;
+    try {
+      values = await editForm.validateFields();
+    } catch (e: unknown) {
+      console.warn('[webhooks] edit validation failed:', e);
       return;
     }
+    setEditSubmitting(true);
+    try {
+      await webhooksApi.update(editing.id, {
+        name: values.name.trim(),
+        url: values.url.trim(),
+        events: values.events ?? [],
+      });
+      message.success('已保存');
+      setEditOpen(false);
+      setEditing(null);
+      await onReload();
+    } catch (e: unknown) {
+      message.error(extractErrorMessage(e, '保存 Webhook 失败'));
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  /**
+   * Toggle the endpoint's active state.
+   *
+   * `PUT /webhooks/:id` accepts `is_active`, so both directions are a real
+   * backend operation: `DELETE` only soft-disables, while `PUT` with
+   * `is_active: true` brings the endpoint back into the fan-out.
+   */
+  const onToggleActive = async (ep: WebhookEndpoint, nextActive: boolean): Promise<void> => {
     setTogglingId(ep.id);
     try {
-      await apiClient.request<void>({ url: `/webhooks/${ep.id}`, method: 'DELETE' });
+      await webhooksApi.update(ep.id, { is_active: nextActive });
+      message.success(nextActive ? '已启用' : '已停用');
+      await onReload();
+    } catch (e: unknown) {
+      message.error(extractErrorMessage(e, nextActive ? '启用失败' : '停用失败'));
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const onRemove = async (ep: WebhookEndpoint): Promise<void> => {
+    setRemovingId(ep.id);
+    try {
+      await webhooksApi.remove(ep.id);
       message.success('已停用 Webhook');
       await onReload();
     } catch (e: unknown) {
       message.error(extractErrorMessage(e, '停用失败'));
     } finally {
-      setTogglingId(null);
+      setRemovingId(null);
     }
   };
 
@@ -153,7 +215,7 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
       await navigator.clipboard.writeText(text);
       message.success(`${label}已复制到剪贴板`);
     } catch (e: unknown) {
-      void e;
+      console.warn('[webhooks] clipboard write failed:', e);
       message.error('剪贴板不可用，请手动复制');
     }
   };
@@ -186,14 +248,14 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
         form={createForm}
         layout="vertical"
         preserve={false}
-        initialValues={{ events: ['asset.created', 'asset.updated'] }}
+        initialValues={{ events: [...WEBHOOK_EVENTS] }}
       >
         <Form.Item
           name="name"
           label="名称"
           rules={[{ required: true, message: '请输入 Webhook 名称' }]}
         >
-          <Input placeholder="例如：生产环境资产同步" />
+          <Input placeholder="例如：生产环境资产同步" autoFocus />
         </Form.Item>
         <Form.Item
           name="url"
@@ -206,29 +268,58 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
             },
           ]}
         >
-          <Input placeholder="https://example.com/webhooks/dam" autoFocus />
+          <Input placeholder="https://example.com/webhooks/dam" />
+        </Form.Item>
+        <Form.Item name="events" label="订阅事件" extra={EVENTS_HINT}>
+          <Checkbox.Group options={[...EVENT_OPTIONS]} />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+
+  const editModal = (
+    <Modal
+      title="编辑 Webhook"
+      open={editOpen}
+      onCancel={() => {
+        setEditOpen(false);
+        setEditing(null);
+      }}
+      onOk={() => void onEditSubmit()}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={editSubmitting}
+      destroyOnClose
+      width={560}
+    >
+      <Form form={editForm} layout="vertical" preserve={false}>
+        <Form.Item
+          name="name"
+          label="名称"
+          rules={[{ required: true, message: '请输入 Webhook 名称' }]}
+        >
+          <Input autoFocus />
         </Form.Item>
         <Form.Item
-          name="events"
-          label="订阅事件"
-          extra={eventsHint}
+          name="url"
+          label="回调 URL"
+          rules={[
+            { required: true, message: '请输入 URL' },
+            {
+              pattern: /^https?:\/\//,
+              message: 'URL 必须以 http:// 或 https:// 开头',
+            },
+          ]}
         >
-          <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            {EVENT_OPTIONS.map((opt) => (
-              <label
-                key={opt.value}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: tokens.space[2],
-                  color: tokens.color.text,
-                }}
-              >
-                <input type="checkbox" value={opt.value} />
-                <span>{opt.label}</span>
-              </label>
-            ))}
-          </Space>
+          <Input />
+        </Form.Item>
+        <Form.Item name="events" label="订阅事件" extra={EVENTS_HINT}>
+          <Checkbox.Group options={[...EVENT_OPTIONS]} />
+        </Form.Item>
+        <Form.Item label=" " colon={false}>
+          <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+            签名密钥不可更改；如需更换，请新建一个 Webhook。
+          </span>
         </Form.Item>
       </Form>
     </Modal>
@@ -308,6 +399,7 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
           </Button>
         </div>
         {createModal}
+        {editModal}
         {createdModal}
       </>
     );
@@ -320,6 +412,7 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
           <Skeleton active paragraph={{ rows: 3 }} />
         </div>
         {createModal}
+        {editModal}
         {createdModal}
       </>
     );
@@ -338,6 +431,7 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
           </Empty>
         </div>
         {createModal}
+        {editModal}
         {createdModal}
       </>
     );
@@ -346,74 +440,107 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
   return (
     <>
       <div style={PANEL_STYLE}>
-        <div
-          style={{
-            padding: tokens.space[2],
-            fontSize: 12,
-            color: tokens.color.textMuted,
-            borderRadius: tokens.radius.sm,
-            background: 'rgba(245, 165, 36, 0.06)',
-            border: `1px dashed ${tokens.color.border}`,
-            marginBottom: tokens.space[3],
-          }}
-        >
-          Webhook 仅支持新建与停用；后端未提供编辑接口，重新启用需新建（请新建一个 Webhook）。
-        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
-          {rows.map((ep) => (
-            <div
-              key={ep.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: tokens.space[3],
-                padding: tokens.space[3],
-                background: tokens.color.panelAlt,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-              }}
-            >
-              <LinkOutlined style={{ color: tokens.color.accent, fontSize: 16 }} aria-hidden />
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-                <span style={{ color: tokens.color.text, fontWeight: 500 }}>{ep.name}</span>
-                <span
-                  style={{
-                    fontFamily: tokens.font.mono,
-                    fontSize: 12,
-                    color: tokens.color.textMuted,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                  title={ep.url}
-                >
-                  {ep.url}
-                </span>
-                <div style={{ marginTop: 4 }}>
-                  <Tag color={ep.is_active ? 'green' : 'default'}>
-                    {ep.is_active ? '启用' : '已停用'}
-                  </Tag>
-                  <span style={{ color: tokens.color.textMuted, fontSize: 11, marginLeft: 6 }}>
-                    创建于 {ep.created_at}
+          {rows.map((ep) => {
+            const events = Array.isArray(ep.events) ? ep.events : [];
+            return (
+              <div
+                key={ep.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: tokens.space[3],
+                  padding: tokens.space[3],
+                  background: tokens.color.panelAlt,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                }}
+              >
+                <LinkOutlined style={{ color: tokens.color.accent, fontSize: 16 }} aria-hidden />
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[2] }}>
+                    <span style={{ color: tokens.color.text, fontWeight: 500 }}>{ep.name}</span>
+                    <Tooltip title="编辑名称、URL 与订阅事件">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<EditOutlined />}
+                        onClick={() => openEdit(ep)}
+                        aria-label={`编辑 ${ep.name}`}
+                      />
+                    </Tooltip>
+                  </div>
+                  <span
+                    style={{
+                      fontFamily: tokens.font.mono,
+                      fontSize: 12,
+                      color: tokens.color.textMuted,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title={ep.url}
+                  >
+                    {ep.url}
                   </span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: tokens.space[2],
+                      flexWrap: 'wrap',
+                      marginTop: 4,
+                    }}
+                  >
+                    <Tag color={ep.is_active ? 'green' : 'default'}>
+                      {ep.is_active ? '启用' : '已停用'}
+                    </Tag>
+                    {events.length === 0 ? (
+                      <Tag color="blue">全部事件</Tag>
+                    ) : (
+                      events.map((event) => (
+                        <Tag key={event}>{event}</Tag>
+                      ))
+                    )}
+                    <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
+                      创建于 {ep.created_at}
+                    </span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[2] }}>
+                  <Tooltip title={ep.is_active ? '点击停用' : '点击启用'}>
+                    <Switch
+                      checked={ep.is_active}
+                      loading={togglingId === ep.id}
+                      onChange={(checked) => void onToggleActive(ep, checked)}
+                      aria-label={`切换 ${ep.name} 的启用状态`}
+                    />
+                  </Tooltip>
+                  <Popconfirm
+                    title="确认停用？"
+                    description="停用后该端点将不再收到事件，历史记录会保留。"
+                    okText="停用"
+                    cancelText="取消"
+                    onConfirm={() => void onRemove(ep)}
+                  >
+                    <Button
+                      size="small"
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      loading={removingId === ep.id}
+                      aria-label={`停用 ${ep.name}`}
+                    />
+                  </Popconfirm>
                 </div>
               </div>
-              <Tooltip title={ep.is_active ? '点击停用' : '后端暂不支持启用'}>
-                <Switch
-                  checked={ep.is_active}
-                  disabled={togglingId === ep.id || (!ep.is_active)}
-                  onChange={(checked) => void onToggleActive(ep, checked)}
-                  aria-label={`切换 ${ep.name} 的启用状态`}
-                />
-              </Tooltip>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {createModal}
+      {editModal}
       {createdModal}
     </>
   );
 }
-
-const eventsHint = '后端目前不在 secret 之外持久化事件订阅，事件 fan-out 对全部已启用端点生效；此字段用于客户端可读性记录。';

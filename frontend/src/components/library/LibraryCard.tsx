@@ -5,9 +5,10 @@ import {
   FileImageOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
-import type { Asset, AssetStatus } from '@/types/dto';
+import type { Asset, AssetStatus } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatBytes } from '@/utils/format';
+import { assetPreviewUrl } from '@/utils/assetUrls';
 
 const { Text } = Typography;
 
@@ -18,19 +19,6 @@ export interface LibraryCardProps {
   onOpen: (id: string) => void;
   onDownload: (asset: Asset) => void;
   onDelete: (asset: Asset) => void;
-}
-
-/**
- * Backend exposes `thumbnail_path` (relative to STORAGE_DIR, e.g.
- * `thumbnails/abc.jpg`) and `storage_path` (e.g. `originals/abc.png`).
- * Static is served at `/storage/*` by `express.static` so we just join.
- */
-function previewUrl(asset: Pick<Asset, 'thumbnail_path' | 'storage_path'>): string | null {
-  const raw = asset.thumbnail_path || asset.storage_path;
-  if (!raw) return null;
-  if (/^https?:\/\//.test(raw)) return raw;
-  const normalized = raw.startsWith('/') ? raw : `/storage/${raw}`;
-  return normalized.replace(/^\/api\/v1\/storage\//, '/storage/');
 }
 
 function statusBadgeColor(status: AssetStatus): string {
@@ -72,7 +60,7 @@ export default function LibraryCard({
   onDelete,
 }: LibraryCardProps): JSX.Element {
   const isVideo = asset.asset_type === 'video';
-  const url = previewUrl(asset);
+  const url = assetPreviewUrl(asset);
 
   return (
     <div

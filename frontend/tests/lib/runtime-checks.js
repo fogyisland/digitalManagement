@@ -1,0 +1,88 @@
+/**
+ * Runtime contract checks — the front↔back guard's runtime half.
+ *
+ * Every check drives the **frontend's own API modules** against a real
+ * backend. Nothing here re-implements the request: if `src/api/assets.ts`
+ * sends the wrong path, the wrong field name or the wrong verb, the check
+ * fails here — not in the browser.
+ *
+ * The checks live in four files, one per area of the system:
+ *
+ *   - `runtime-checks-identity.js`     — login, tokens, list envelopes, catalogue
+ *   - `runtime-checks-assets.js`       — the asset lifecycle, including the
+ *                                        three deletion states
+ *   - `runtime-checks-integrations.js` — API keys, delivery, chunked upload,
+ *                                        import-by-URL, ComfyUI, webhooks
+ *   - `runtime-checks-session.js`      — token rotation and logout
+ *
+ * They run in that order and share one context: later checks depend on the
+ * state earlier ones created (the uploaded asset, the API key, …).
+ * `ctx.state` is that shared scratch space. The order is not arbitrary —
+ * the session checks come last because they end the session, and the
+ * webhook check comes after every check that produces an asset event.
+ *
+ * Negative cases go through `rawRequest` rather than the axios instance: a
+ * rejected axios call triggers the client's 401 handler, which clears the
+ * stored tokens and would break every check after it.
+ */
+
+import { assetChecks } from './runtime-checks-assets.js';
+import { identityChecks } from './runtime-checks-identity.js';
+import { integrationChecks } from './runtime-checks-integrations.js';
+import { sessionChecks } from './runtime-checks-session.js';
+
+/**
+ * @typedef {object} CheckContext
+ * @property {string} origin the test server's origin, e.g. `http://127.0.0.1:41234`
+ * @property {any} client the `src/api/client.ts` module
+ * @property {any} authApi
+ * @property {any} assetsApi
+ * @property {any} usersApi
+ * @property {any} tagsApi
+ * @property {any} categoriesApi
+ * @property {any} apiKeysApi
+ * @property {any} webhooksApi
+ * @property {(form: {url: string, title?: string}) => Promise<any>} importUrlByUrl
+ * @property {(jobId: string) => Promise<any|null>} lookupComfyUiJob
+ * @property {(jobId: string, payload?: object) => Promise<any>} registerAssetByComfyJob
+ * @property {Record<string, any>} state scratch space shared between checks
+ */
+
+/**
+ * @typedef {object} RuntimeCheck
+ * @property {string} name a human readable description
+ * @property {(ctx: CheckContext) => Promise<void>} run
+ */
+
+/** Every check, in the order they run. */
+export const runtimeChecks = [
+  ...identityChecks,
+  ...assetChecks,
+  ...integrationChecks,
+  ...sessionChecks,
+];
+
+/**
+ * Run every check in order.
+ *
+ * The first failure aborts the run and names the check that failed — a
+ * contract break is much easier to read as "the chunked upload assembles the
+ * parts in index order failed" than as a stack trace pointing at an
+ * assertion 200 lines below the actual mistake.
+ *
+ * @param {CheckContext} ctx
+ * @returns {Promise<string[]>} the names of the checks that passed
+ */
+export async function runRuntimeChecks(ctx) {
+  const passed = [];
+  for (const check of runtimeChecks) {
+    try {
+      await check.run(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`runtime check "${check.name}" failed: ${message}`, { cause: error });
+    }
+    passed.push(check.name);
+  }
+  return passed;
+}
