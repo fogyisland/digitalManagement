@@ -22,9 +22,15 @@ export interface User {
 
 export interface LoginResponse {
   access_token: string
-  refresh_token: string
+  /**
+   * The backend issues a single bearer token (`expiresIn: '7d'`) and does not
+   * return a refresh token, so this field is absent from the response. It is
+   * declared optional rather than removed so a future refresh flow can fill
+   * it in without touching the type again.
+   */
+  refresh_token?: string
   token_type: string
-  expires_in: number
+  expires_in?: number
   user: User
 }
 

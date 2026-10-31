@@ -1,11 +1,11 @@
-import { apiGet, apiPost, apiPatch, apiDelete } from './client'
-import type { ApiKey, ApiKeyCreated, PageResponse } from '@/types'
+import { apiGet, apiPost, apiPut, apiDelete } from './client'
+import type { ApiKey, ApiKeyCreated } from '@/types'
 
 export const apiKeysApi = {
-  list: (params: { keyword?: string; page?: number; page_size?: number } = {}) =>
-    apiGet<PageResponse<ApiKey>>('/api/v1/api-keys', params),
+  /** The backend serves the full key list; it is not paginated. */
+  list: () => apiGet<ApiKey[]>('/api-keys'),
   create: (payload: { name: string; scopes: string[]; expires_at?: string; description?: string }) =>
-    apiPost<ApiKeyCreated>('/api/v1/api-keys', payload),
-  update: (id: number, payload: Partial<ApiKey>) => apiPatch<ApiKey>(`/api/v1/api-keys/${id}`, payload),
-  revoke: (id: number) => apiDelete(`/api/v1/api-keys/${id}`),
+    apiPost<ApiKeyCreated>('/api-keys', payload),
+  update: (id: number, payload: Partial<ApiKey>) => apiPut<ApiKey>(`/api-keys/${id}`, payload),
+  revoke: (id: number) => apiDelete(`/api-keys/${id}`),
 }
