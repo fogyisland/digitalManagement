@@ -7,37 +7,51 @@ dist/
 .env
 .env.local
 
-# Storage (mounted via volumes in docker)
+# Storage (uploaded files — the skeleton is tracked, the content is not)
 storage/originals/*
 storage/thumbnails/*
 storage/previews/*
 storage/temp/*
 storage/manifests/*
+storage/placeholders/*
 !storage/originals/.gitkeep
 !storage/thumbnails/.gitkeep
 !storage/previews/.gitkeep
 !storage/temp/.gitkeep
 !storage/manifests/.gitkeep
+!storage/placeholders/.gitkeep
 
-# SQLite live database (user-owned, never commit)
-backend/data/*.db
-backend/data/*.db-shm
-backend/data/*.db-wal
+# The old SQLite database file (the application now uses MySQL). It stays
+# ignored until it is moved or removed on purpose.
+# The `**/` prefix matters: a pattern with a slash is anchored to the
+# directory holding this file, so `data/*.db` alone would NOT cover
+# `backend/data/`.
+data/*.db
+data/*.db-shm
+data/*.db-wal
+**/data/*.db
+**/data/*.db-shm
+**/data/*.db-wal
 
-# Backend test artifacts (transient test DBs / temp storage)
-backend/tests/test-*.db
-backend/tests/test-*.db-shm
-backend/tests/test-*.db-wal
-backend/tests/test-*/
-backend/tests/tmp.db
-backend/tests/tmp.db-shm
-backend/tests/tmp.db-wal
+# Test artifacts (transient test DBs / temp storage)
+tests/backend/test-*.db
+tests/backend/test-*.db-shm
+tests/backend/test-*.db-wal
+tests/backend/test-*/
+tests/backend/tmp.db
+tests/backend/tmp.db-shm
+tests/backend/tmp.db-wal
 
-# Frontend TypeScript / Vite transient build outputs
-frontend/tsc-output.txt
-frontend/tsconfig*.tsbuildinfo
-frontend/vite.config.js
-frontend/vite.config.d.ts
+# TypeScript / Vite transient build outputs
+tsc-output.txt
+tsconfig*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Virtual environments (not used by this project, kept out of the repo)
+venv/
+.venv/
+.venv-test/
 
 # IDE
 .vscode/

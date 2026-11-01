@@ -2,7 +2,7 @@
 
 > 一站式存储、管理、分发图片与视频等数字资产，通过 RESTful API + API Key 向其他系统提供可控的资产投递能力。
 
-整个系统是 **Node.js 模块**：一个 Express 进程同时提供管理 API、投递 API、静态文件与前端界面，**只占一个端口（默认 8000）**。数据落在 SQLite 文件里，不需要额外的数据库服务。
+整个系统是 **Node.js 模块**：一个 Express 进程同时提供管理 API、投递 API、静态文件与前端界面，**只占一个端口（默认 8000）**。数据落在 MySQL 里。
 
 ## ✨ 核心特性
 
@@ -20,13 +20,13 @@
 
 ## 🛠 技术栈
 
-**后端**：Node.js 22 LTS+ · Express 4 · better-sqlite3 · sharp · multer · jsonwebtoken · bcryptjs · nanoid · dotenv
+**后端**：Node.js 22 LTS+ · Express 4 · mysql2 · sharp · multer · jsonwebtoken · bcryptjs · nanoid · dotenv
 
 **前端**：React 18 · TypeScript 5 · Vite 6 · Ant Design 5 · Zustand · React Router 6 · axios
 
-**数据库**：SQLite（`backend/data/dam.db`，WAL 模式）
+**数据库**：MySQL 8.0（5.7+ 同样可用）
 
-**存储**：本地文件系统（`backend/storage/`）
+**存储**：本地文件系统（`storage/`）
 
 ## 🚀 快速开始
 
@@ -52,18 +52,17 @@ chmod +x start.sh
 ### 方式二：手动启动
 
 ```bash
-# 1. 后端依赖
-cd backend
+# 1. 依赖（前后端同一份）
 npm install
 cp .env.example .env        # Windows: copy .env.example .env
 
-# 2. 前端构建（产物会被后端托管）
-cd ../frontend
-npm install
+# 2. 填好 .env 里的 DB_HOST / DB_USER / DB_PASSWORD，
+#    并确认 MySQL 已经在跑（服务会自动建库建表）
+
+# 3. 构建前端（产物由后端托管）
 npm run build
 
-# 3. 启动（前台）
-cd ../backend
+# 4. 启动（前台）
 npm start
 ```
 
@@ -81,16 +80,16 @@ npm start
 docker compose up -d --build
 ```
 
-单个容器跑完整系统（前端 + API + SQLite + 文件存储），同样只暴露 8000 端口。
-数据库与文件分别落在 `dam_data` / `dam_storage` 两个 volume 里。
+单个容器跑完整系统（前端 + API + MySQL + 文件存储），应用同样只暴露 8000 端口。
+数据库与文件分别落在 `mysql_data` / `dam_storage` 两个 volume 里。
 
 ### 开发模式（可选）
 
 前端改动需要热更新时，用 Vite 的 dev server，它把 `/api` 代理到 8000：
 
 ```bash
-cd frontend
-npm run dev        # http://localhost:5173
+npm run dev          # http://localhost:5173
+npm run dev:server   # 后端热重启 :8000
 ```
 
 > 这是**可选**的第二端口。默认的单端口模式（8000）不需要它。
@@ -207,58 +206,67 @@ for (const asset of page.items) {
 
 ```
 DigitalManagement/
-├── backend/                # Node.js 后端
-│   ├── src/
-│   │   ├── server.js       # 组装根：命名空间、静态托管、错误处理
-│   │   ├── config.js       # 运行配置（全部来自环境变量）
-│   │   ├── lib/            # 共享逻辑
-│   │   │   ├── dto.js      # DTO —— 前后端唯一契约源
-│   │   │   ├── schema.js   # 建表与种子数据
-│   │   │   ├── auth.js     # 令牌签发、轮换、吊销
-│   │   │   ├── assets.js   # 资产读写与筛选
-│   │   │   ├── upload.js   # multer 与分片
-│   │   │   ├── net.js      # SSRF 防护
-│   │   │   ├── manifest.js # 资产清单
-│   │   │   ├── webhook.js  # Webhook 投递
+├── src/
+│   ├── server/               # Node.js 后端
+│   │   ├── server.js         # 组装根：命名空间、静态托管、错误处理
+│   │   ├── config.js         # 运行配置（全部来自环境变量）
+│   │   ├── lib/              # 共享逻辑
+│   │   │   ├── dto.js        # DTO —— 前后端唯一契约源
+│   │   │   ├── schema.js     # 建表与种子数据
+│   │   │   ├── auth.js       # 令牌签发、轮换、吊销
+│   │   │   ├── assets.js     # 资产读写与筛选
+│   │   │   ├── upload.js     # multer 与分片
+│   │   │   ├── net.js        # SSRF 防护
+│   │   │   ├── manifest.js   # 资产清单
+│   │   │   ├── webhook.js    # Webhook 投递
 │   │   │   └── util.js
-│   │   ├── routes/         # 每个域一个路由工厂
+│   │   ├── routes/           # 每个域一个路由工厂
 │   │   │   ├── auth.js  users.js  assets.js  upload.js
 │   │   │   ├── categories.js  tags.js  apikeys.js
 │   │   │   ├── webhooks.js  stats.js  jobs.js  public.js
-│   │   ├── scripts/seed.js # 种子 / 修复脚本
-│   │   └── server.js
-│   ├── tests/              # 后端测试（自研 harness + 统一 runner）
-│   ├── data/               # SQLite 数据库（不入库）
-│   └── storage/            # 上传文件（不入库）
-├── frontend/               # React 前端
-│   ├── src/
-│   │   ├── api/            # 每个域一个 API 模块
-│   │   ├── components/     # 业务组件
-│   │   ├── pages/          # 页面
-│   │   ├── stores/         # Zustand 状态
-│   │   ├── types/          # DTO 类型
-│   │   ├── utils/          # 工具
-│   │   └── router.tsx
-│   ├── tests/              # 前后端契约护栏
-│   ├── package.json
-│   └── vite.config.ts
+│   │   └── scripts/seed.js   # 种子 / 修复脚本
+│   └── client/               # React 前端
+│       ├── api/              # 每个域一个 API 模块
+│       ├── components/       # 业务组件
+│       ├── pages/            # 页面
+│       ├── stores/           # Zustand 状态
+│       ├── styles/  theme/   # 主题与全局样式
+│       ├── types/            # DTO 类型
+│       ├── utils/            # 工具
+│       ├── main.tsx
+│       └── router.tsx
+├── tests/
+│   ├── contract.test.js      # 前后端契约护栏入口
+│   ├── lib/                  # 护栏实现（静态扫描 + 运行时）
+│   └── backend/              # 后端 suite + 统一 runner
+├── storage/                  # 上传文件（不入库）
+├── public/                   # 静态资源
 ├── docs/
 │   └── ARCHITECTURE.md
-├── storage/                # 保留的历史存储目录
-├── backend/Dockerfile      # 多阶段构建：前端构建 + 后端运行
-├── docker-compose.yml      # 单容器部署
-├── start.bat / start.sh    # 一键启动脚本
-└── README.md
+├── index.html                # 前端入口
+├── vite.config.ts            # 前端构建
+├── tsconfig.json             # 前端类型
+├── Dockerfile                # 多阶段构建：前端构建 + 后端运行
+├── docker-compose.yml        # 单容器部署
+├── start.bat / start.sh      # 一键启动脚本
+└── package.json              # 前后端共用的唯一依赖清单
 ```
 
-## ⚙️ 关键配置（backend/.env）
+> 前后端在**同一个 `package.json`** 里，共用一份 `node_modules`：服务端依赖与前端依赖装在一起，没有第二个清单要维护。
 
-`.env` 是可选的 —— 所有值都有默认值（见 `backend/src/config.js`）。相对路径一律相对 `backend/` 目录解析，与启动位置无关。
+## ⚙️ 关键配置（.env）
+
+`.env` 是可选的 —— 所有值都有默认值（见 `src/server/config.js`）。相对路径一律相对**仓库根目录**解析，与启动位置无关。
 
 ```env
 PORT=8000                        # 唯一端口：API + 界面
 HOST=0.0.0.0
-DB_PATH=./data/dam.db            # SQLite 文件
+DB_HOST=127.0.0.1               # MySQL 地址
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=digital_management      # 不存在会自动创建
+DB_POOL_SIZE=10                 # 连接池大小
 STORAGE_DIR=./storage            # 上传文件目录
 JWT_SECRET=<32 字符以上随机串>    # 生产环境必须修改
 ACCESS_TOKEN_TTL=1h
@@ -268,14 +276,14 @@ SEED_SAMPLE_ASSETS=1             # 设为 0 则不生成示例资产
 APP_BASE_URL=                    # 留空则按请求推导
 ```
 
+数据库连不上时，服务会在启动阶段直接报错退出（不会带着一个半成品 schema 跑起来）。表、列与索引在启动时自动补齐 —— **幂等迁移**，重复启动不会重复建。
+
 ## 🧪 测试
 
 ```bash
-# 后端：5 个 suite 依次执行，失败会点名
-cd backend && npm test
-
-# 前后端契约护栏：静态路由核对 + 运行时集成（22 项）
-cd frontend && npm test
+npm test              # 契约护栏 + 后端 5 个 suite
+npm run test:contract # 静态路由核对 + 运行时集成（22 项）
+npm run test:backend  # 后端 suite
 ```
 
 契约护栏会把后端 44 条路由与前端 61 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程。
@@ -287,7 +295,7 @@ cd frontend && npm test
 2. **修改 JWT_SECRET**：生产环境必须使用 32+ 字符随机字符串
 3. **修改默认 API Key**：如启用了外部投递
 4. **启用 HTTPS**：通过 Nginx/Caddy 反向代理
-5. **定期备份**：`backend/data/dam.db` + `backend/storage/`
+5. **定期备份**：MySQL 数据库 + `storage/`
 6. **限制存储目录**：通过文件系统权限限制 `storage/` 仅服务进程可写
 7. **URL 导入已内置 SSRF 防护**：内网与回环地址会被拒绝
 

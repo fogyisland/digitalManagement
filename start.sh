@@ -9,6 +9,7 @@ echo "╚═══════════════════════�
 echo ""
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT_DIR"
 
 # ============================================
 # Step 1: Check Node
@@ -21,38 +22,27 @@ fi
 node --version
 
 # ============================================
-# Step 2: Backend dependencies
+# Step 2: Dependencies
 # ============================================
 echo ""
-echo "[2/4] 检查后端依赖..."
-cd "$ROOT_DIR/backend"
-
+echo "[2/4] 安装依赖..."
 if [ ! -d "node_modules" ]; then
-    echo "首次运行，正在安装后端依赖..."
+    echo "首次运行，正在安装依赖..."
     npm install
 fi
 
 # ============================================
-# Step 3: Frontend dependencies + build
+# Step 3: Build the frontend
 # ============================================
 echo ""
 echo "[3/4] 构建前端..."
-cd "$ROOT_DIR/frontend"
-
-if [ ! -d "node_modules" ]; then
-    echo "安装前端依赖（首次可能需要几分钟）..."
-    npm install
-fi
-
-echo "构建前端生产版本..."
 npm run build
 
 # ============================================
-# Step 4: Start backend — it serves the API and the built frontend
+# Step 4: Start the server — it serves the API and the built frontend
 # ============================================
 echo ""
 echo "[4/4] 启动服务..."
-cd "$ROOT_DIR/backend"
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"

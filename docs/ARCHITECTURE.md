@@ -45,20 +45,20 @@
 └───────────┬─────────────────────────┬────────────────────────┘
             │                         │
    ┌────────▼─────────┐     ┌─────────▼──────────┐
-   │  SQLite (WAL)     │     │  本地文件系统       │
-   │  backend/data/    │     │  backend/storage/  │
-   │  dam.db           │     │  originals/ thumbs │
+   │   MySQL 8.0       │     │  本地文件系统       │
+   │  用户/权限/审计    │     │  storage/          │
+   │  资产元数据/索引   │     │  originals/ thumbs │
    └──────────────────┘     │  previews/ tmp      │
                             └────────────────────┘
 ```
 
 ### 前后端只有一个契约源
 
-`backend/src/lib/dto.js` 定义了所有对外的响应结构（`toAsset` / `toUser` / `toApiKey` / `toTag` / `toCategory` / `toWebhook` / `toPage`）。前端的 TypeScript 类型与之逐字段对应 —— 这是"一套体系"的核心：**字段名、字段类型、字段缺失与否，只定义一次**。
+`src/server/lib/dto.js` 定义了所有对外的响应结构（`toAsset` / `toUser` / `toApiKey` / `toTag` / `toCategory` / `toWebhook` / `toPage`）。前端的 TypeScript 类型与之逐字段对应 —— 这是"一套体系"的核心：**字段名、字段类型、字段缺失与否，只定义一次**。
 
-`frontend/tests/` 下的契约护栏把这个约定变成可执行的检查：
+`tests/` 下的契约护栏把这个约定变成可执行的检查：
 
-- **静态半程**：从 `server.js` 的 `app.use(prefix, createXxxRouter(...))` 推导挂载前缀，再扫 `backend/src/routes/*.js` 的 `router.<verb>('path')` 还原出完整路由表；反向核对每个路由文件都被挂载、每个被挂载的工厂都有对应文件；再把前端的每一个 HTTP 调用点与路由表双向比对，任何对不上的调用点直接失败（无匹配路由 = 硬失败）。
+- **静态半程**：从 `server.js` 的 `app.use(prefix, createXxxRouter(...))` 推导挂载前缀，再扫 `src/server/routes/*.js` 的 `router.<verb>('path')` 还原出完整路由表；反向核对每个路由文件都被挂载、每个被挂载的工厂都有对应文件；再把前端的每一个 HTTP 调用点与路由表双向比对，任何对不上的调用点直接失败（无匹配路由 = 硬失败）。
 - **运行时半程**：在临时数据库上启动真实后端，用前端**自己的** API 模块跑一遍完整流程（登录、令牌轮换、上传、软删/复原/永久删除、API Key 与投递 API、分片上传、URL 导入的 SSRF 防护、Webhook）。
 
 ## 数据模型
@@ -97,22 +97,30 @@ revoked_tokens / token_registry（令牌吊销与轮换）
 
 ```
 DigitalManagement/
-├── backend/                # Node.js 后端
-│   ├── src/{server,config}.js
-│   ├── src/lib/            # 共享逻辑
-│   ├── src/routes/         # 路由工厂
-│   ├── src/scripts/seed.js # 种子 / 修复脚本
-│   └── tests/              # 后端测试 + 统一 runner
-├── frontend/               # React 前端
-│   ├── src/api/            # 每个域一个 API 模块
-│   ├── src/types/          # DTO 类型
-│   └── tests/              # 前后端契约护栏
+├── src/
+│   ├── server/             # Node.js 后端
+│   │   ├── server.js  config.js
+│   │   ├── lib/            # 共享逻辑
+│   │   ├── routes/         # 路由工厂
+│   │   └── scripts/seed.js # 种子 / 修复脚本
+│   └── client/             # React 前端
+│       ├── api/            # 每个域一个 API 模块
+│       ├── types/          # DTO 类型
+│       └── ...
+├── tests/
+│   ├── contract.test.js    # 前后端契约护栏入口
+│   ├── lib/                # 护栏实现
+│   └── backend/            # 后端 suite + 统一 runner
+├── storage/                # 上传文件
 ├── docs/                   # 设计文档
-├── backend/Dockerfile      # 多阶段构建
+├── Dockerfile              # 多阶段构建
 ├── docker-compose.yml      # 单容器部署
 ├── start.bat / start.sh    # 一键启动脚本
+├── package.json            # 前后端共用的唯一依赖清单
 └── README.md
 ```
+
+前后端在同一个 `package.json` 下，共用一份 `node_modules` 与一次 `npm install`。
 
 ## 部署拓扑（统一端口）
 
@@ -131,7 +139,7 @@ SPA 深链接（`/assets/123`）由一个排除 `/api` 与 `/storage` 的兜底�
 
 优势：
 - 无 CORS 跨域问题（前端与 API 同源）
-- 部署极简：单进程 + 一个 SQLite 文件
+- 部署极简：单进程 + 一个 MySQL 实例
 - 反向代理友好（一个 upstream）
 - 静态资源可挂 CDN：把 `/assets/` 指到 CDN 即可
 

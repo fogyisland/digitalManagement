@@ -6,18 +6,22 @@
 .superpowers
 docs
 
+node_modules
 **/node_modules
+dist
 **/dist
-**/.venv
-**/venv
-**/__pycache__
 
-backend/data
-backend/storage
-backend/.env
-backend/tests
-
+# Runtime data — the container creates its own on the volumes
 storage
+.env
+
+# Tests are not part of the runtime image
+tests
+**/tests
+
+.venv
+venv
+__pycache__
 
 *.log
 *.db

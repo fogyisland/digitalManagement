@@ -23,39 +23,27 @@ if errorlevel 1 (
 node --version
 
 REM ============================================
-REM Step 2: Backend dependencies
+REM Step 2: Dependencies
 REM ============================================
 echo.
-echo [2/4] 检查后端依赖...
-cd /d "%~dp0backend"
+echo [2/4] 安装依赖...
+cd /d "%~dp0"
 
 if not exist "node_modules" (
-    echo 首次运行，正在安装后端依赖...
+    echo 首次运行，正在安装依赖...
     call npm install
     if errorlevel 1 (
-        echo [ERROR] 后端依赖安装失败
+        echo [ERROR] 依赖安装失败
         pause
         exit /b 1
     )
 )
 
 REM ============================================
-REM Step 3: Frontend dependencies + build
+REM Step 3: Build the frontend
 REM ============================================
 echo.
 echo [3/4] 构建前端...
-cd /d "%~dp0frontend"
-
-if not exist "node_modules" (
-    echo 安装前端依赖（首次可能需要几分钟）...
-    call npm install
-    if errorlevel 1 (
-        echo [ERROR] 前端依赖安装失败
-        pause
-        exit /b 1
-    )
-)
-
 call npm run build
 if errorlevel 1 (
     echo [ERROR] 前端构建失败
@@ -64,11 +52,10 @@ if errorlevel 1 (
 )
 
 REM ============================================
-REM Step 4: Start backend — it serves the API and the built frontend
+REM Step 4: Start the server — it serves the API and the built frontend
 REM ============================================
 echo.
 echo [4/4] 启动服务...
-cd /d "%~dp0backend"
 
 echo.
 echo ╔══════════════════════════════════════════════════════════════╗

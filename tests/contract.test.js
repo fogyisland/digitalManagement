@@ -1,0 +1,245 @@
+/**
+ * Front ↔ back API contract guard.
+ *
+ * Run with `npm test` from `frontend/`. Two independent checks run back to
+ * back; both must pass.
+ *
+ * ---------------------------------------------------------------------------
+ * Part A — static route lint
+ * ---------------------------------------------------------------------------
+ * The backend's route table is **derived from the source**, not hard-coded:
+ * `backend/src/server.js` mounts router factories, each factory file
+ * registers `router.<verb>('<path>')`. `tests/lib/backend-routes.js` puts
+ * those three facts together and checks the wiring in both directions — a
+ * route file nobody mounts, a factory without a file, a router mounted
+ * outside an `/api` namespace, a literal path shadowed by a parameterised
+ * one — all fail the run.
+ *
+ * Every HTTP call site in `src/` is then matched against that table.
+ *
+ * The check that matters most: the axios instance in `src/api/client.ts`
+ * already points at `/api/v1`, so a call site that *also* carries the prefix
+ * would be sent to `/api/v1/api/v1/...` and answer 404. That was the state
+ * of the whole legacy API layer — every login, list and upload silently
+ * 404'd. A path that still carries the prefix is a hard failure here, and a
+ * call site with **no** matching backend route is a hard failure too. There
+ * is no allow-list of known gaps any more: the frontend and the backend are
+ * one system, so a gap between them is a bug, not a to-do item.
+ *
+ * Call sites whose path is built at runtime cannot be checked statically.
+ * They are counted and listed — separated into the ones that merely forward a
+ * parameter and the ones that name a route the check cannot resolve — so the
+ * summary never claims more coverage than it has.
+ *
+ * ---------------------------------------------------------------------------
+ * Part B — runtime integration
+ * ---------------------------------------------------------------------------
+ * A real backend is started on an isolated database and storage directory,
+ * and the frontend's own API modules are imported and driven against it:
+ * login, token rotation, the list endpoints, the multipart upload under the
+ * backend's `files` field name, the three deletion states, the chunked
+ * upload, the import-by-URL guard, the delivery API and its scopes.
+ *
+ * This is the part that would have caught the original double-prefix bug
+ * and the `file` vs `files` multipart mismatch — both of which are silent
+ * at compile time and fatal at runtime.
+ *
+ * The user's live `backend/data/dam.db` is never touched: the server is
+ * spawned with `DB_PATH` and `STORAGE_DIR` pointing at a fresh temp dir.
+ */
+
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  ADMIN_NAMESPACE,
+  buildRouteIndex,
+  findShadowingProblems,
+  parseBackendRoutes,
+} from './lib/backend-routes.js';
+import { parseFrontendCallSites } from './lib/frontend-calls.js';
+import {
+  installBrowserGlobals,
+  installTypeScriptResolver,
+  loadFrontendApis,
+  startBackend,
+  waitForHealth,
+} from './lib/runtime.js';
+import { runRuntimeChecks } from './lib/runtime-checks.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..');
+const BACKEND_SRC = path.join(REPO_ROOT, 'src', 'server', 'server.js');
+const BACKEND_ROUTES = path.join(REPO_ROOT, 'src', 'server', 'routes');
+const SRC_DIR = path.join(REPO_ROOT, 'src', 'client');
+
+/* ==========================================================================
+   Part A — static route lint
+   ========================================================================== */
+
+/**
+ * Check the shared axios instance still points at the namespace the backend
+ * mounts the admin API under.
+ *
+ * @param {string[]} violations
+ */
+function checkBaseUrl(violations) {
+  const clientSource = fs.readFileSync(path.join(SRC_DIR, 'api', 'client.ts'), 'utf8');
+  const match = /baseURL\s*:\s*(['"`])([^'"`]+)\1/.exec(clientSource);
+  if (match === null) {
+    violations.push('src/api/client.ts — no baseURL found on the shared axios instance');
+    return;
+  }
+  if (match[2] !== ADMIN_NAMESPACE) {
+    violations.push(
+      `src/api/client.ts baseURL is "${match[2]}" — expected "${ADMIN_NAMESPACE}"`,
+    );
+  }
+}
+
+/**
+ * Run Part A.
+ *
+ * @returns {{callSites: number, backendRoutes: number, dynamic: number, forwarded: number}}
+ */
+function runStaticLint() {
+  const { routes, problems } = parseBackendRoutes({
+    serverFile: BACKEND_SRC,
+    routesDir: BACKEND_ROUTES,
+    repoRoot: REPO_ROOT,
+  });
+  const violations = [...problems];
+  violations.push(...findShadowingProblems(routes));
+
+  const index = buildRouteIndex(routes, ADMIN_NAMESPACE);
+  const { sites, skipped } = parseFrontendCallSites({ srcDir: SRC_DIR, repoRoot: REPO_ROOT });
+
+  for (const site of sites) {
+    const where = `${site.file}:${site.line}`;
+
+    if (site.method === 'PATCH') {
+      violations.push(`${where} uses PATCH — the backend serves no PATCH route`);
+      continue;
+    }
+
+    if (site.rawPath.startsWith('/api/v1')) {
+      violations.push(
+        `${where} path "${site.rawPath}" still carries the /api/v1 prefix — ` +
+          'the axios instance already points there, so the request resolves to ' +
+          `/api/v1${site.rawPath} and answers 404`,
+      );
+      continue;
+    }
+
+    const key = `${site.method} ${site.path}`;
+    if (!index.has(key)) {
+      violations.push(`${where} ${site.method} ${site.path} — no matching backend route`);
+    }
+  }
+
+  checkBaseUrl(violations);
+
+  assert.deepEqual(
+    violations,
+    [],
+    `API contract lint failed:\n${violations.map((v) => `  - ${v}`).join('\n')}`,
+  );
+
+  console.log(
+    `static route lint OK — ${sites.length} call sites checked against ` +
+      `${index.size} backend routes in ${ADMIN_NAMESPACE}`,
+  );
+
+  const dynamic = skipped.filter((entry) => entry.kind === 'dynamic');
+  const forwarded = skipped.filter((entry) => entry.kind === 'forwarded');
+  const resolved = sites.filter((site) => site.isResolved === true);
+
+  if (resolved.length > 0) {
+    console.log(`${resolved.length} call site(s) build their path at runtime and were resolved to a literal:`);
+    for (const site of resolved) {
+      console.log(`  - ${site.file}:${site.line} → ${site.method} ${site.path}`);
+    }
+  }
+  if (dynamic.length > 0) {
+    console.log(`${dynamic.length} call site(s) build their path at runtime and are NOT statically checked:`);
+    for (const entry of dynamic) {
+      console.log(`  - ${entry.file}:${entry.line} — ${entry.reason}`);
+    }
+  }
+  if (forwarded.length > 0) {
+    console.log(`${forwarded.length} call site(s) forward a path from a parameter — no route is named there:`);
+    for (const entry of forwarded) {
+      console.log(`  - ${entry.file}:${entry.line} — ${entry.reason}`);
+    }
+  }
+
+  return {
+    callSites: sites.length,
+    backendRoutes: index.size,
+    resolved: resolved.length,
+    dynamic: dynamic.length,
+    forwarded: forwarded.length,
+  };
+}
+
+/* ==========================================================================
+   Part B — runtime integration
+   ========================================================================== */
+
+/**
+ * Run Part B.
+ *
+ * @returns {Promise<number>} the number of checks that passed
+ */
+async function runRuntimeIntegration() {
+  installBrowserGlobals();
+  installTypeScriptResolver();
+
+  const server = await startBackend({ backendEntry: BACKEND_SRC });
+  try {
+    await waitForHealth(server.port, server.child);
+
+    const apis = await loadFrontendApis(SRC_DIR);
+    // The browser resolves the relative baseURL against the page origin; in
+    // Node we point the very same instance at the test server.
+    apis.client.apiClient.defaults.baseURL = `${server.origin}/api/v1`;
+
+    const context = { origin: server.origin, ...apis, state: {} };
+    const passed = await runRuntimeChecks(context);
+    console.log(`runtime integration OK — ${passed.length} checks passed`);
+    return passed.length;
+  } catch (error) {
+    console.error('--- backend log ---');
+    console.error(server.log().trim());
+    throw error;
+  } finally {
+    await server.stop();
+  }
+}
+
+/* ==========================================================================
+   Entry point
+   ========================================================================== */
+
+async function main() {
+  runStaticLint();
+
+  // The static half needs nothing but the source tree; the runtime half
+  // needs a MySQL server. `CONTRACT_STATIC_ONLY=1` runs the first one alone,
+  // which is useful when the database is not reachable.
+  if (process.env.CONTRACT_STATIC_ONLY === '1') {
+    console.log('\nStatic contract check passed (runtime half skipped).');
+    return;
+  }
+
+  await runRuntimeIntegration();
+  console.log('\nAll contract checks passed.');
+}
+
+main().catch((error) => {
+  console.error('\nContract check failed:');
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});
