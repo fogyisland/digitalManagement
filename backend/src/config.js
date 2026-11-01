@@ -18,8 +18,29 @@ const path = require('path');
 // originally computed at in `server.js`, so the default paths are unchanged.
 const SRC_DIR = __dirname;
 
+/** The backend's own directory — the anchor for every relative path. */
+const BACKEND_DIR = path.join(SRC_DIR, '..');
+
 const DEFAULT_ACCESS_TOKEN_TTL = '1h';
 const DEFAULT_REFRESH_TOKEN_TTL = '30d';
+
+/**
+ * Resolve a configured path against the backend directory.
+ *
+ * A relative path in `.env` must not depend on the working directory: the
+ * server is started from `backend/` by the launch scripts, from the repo
+ * root by `npm --prefix backend start`, and from `/app` inside a container.
+ * Anchoring to the backend directory makes all three behave the same.
+ *
+ * @param {string | undefined} value the configured value, if any
+ * @param {string} fallback the absolute default
+ * @returns {string} an absolute path
+ */
+function resolveFromBackendDir(value, fallback) {
+  const raw = String(value || '').trim();
+  if (raw.length === 0) return fallback;
+  return path.isAbsolute(raw) ? raw : path.join(BACKEND_DIR, raw);
+}
 
 /**
  * Convert a JWT-style duration ("30d", "1h", "15m", "45s") to seconds.
@@ -62,9 +83,9 @@ function getConfig() {
     port: parseInt(process.env.PORT || '8000', 10),
     host: process.env.HOST || '0.0.0.0',
     jwtSecret: process.env.JWT_SECRET || 'dam-dev-secret-change-me-in-production',
-    dbPath: process.env.DB_PATH || path.join(SRC_DIR, '..', 'data', 'dam.db'),
-    storageDir: process.env.STORAGE_DIR || path.join(SRC_DIR, '..', 'storage'),
-    rootDir: path.join(SRC_DIR, '..', '..'),
+    dbPath: resolveFromBackendDir(process.env.DB_PATH, path.join(BACKEND_DIR, 'data', 'dam.db')),
+    storageDir: resolveFromBackendDir(process.env.STORAGE_DIR, path.join(BACKEND_DIR, 'storage')),
+    rootDir: path.join(BACKEND_DIR, '..'),
     maxFileSize:
       parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '2048', 10) * 1024 * 1024,
     // The sample library is a first-boot convenience, not part of the

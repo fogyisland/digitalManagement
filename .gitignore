@@ -1,18 +1,11 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.env
-.env.local
-backend/venv/
-backend/__pycache__/
-
 # Node
 node_modules/
 dist/
 *.local
+
+# Secrets
+.env
+.env.local
 
 # Storage (mounted via volumes in docker)
 storage/originals/*

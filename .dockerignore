@@ -1,0 +1,25 @@
+# Build context hygiene: everything below is either rebuilt inside the image
+# or must never end up in it.
+
+.git
+.gitignore
+.superpowers
+docs
+
+**/node_modules
+**/dist
+**/.venv
+**/venv
+**/__pycache__
+
+backend/data
+backend/storage
+backend/.env
+backend/tests
+
+storage
+
+*.log
+*.db
+*.db-shm
+*.db-wal

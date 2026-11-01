@@ -235,8 +235,11 @@ function initSchema(db) {
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} storageDir
+ * @param {{skipSamples?: boolean}} [options] `skipSamples` leaves the sample
+ *   images alone — the seed script generates them itself so it can wait for
+ *   them instead of letting them finish in the background.
  */
-function seedDatabase(db, storageDir) {
+function seedDatabase(db, storageDir, options = {}) {
   const adminCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (adminCount === 0) {
     const adminId = nanoid();
@@ -278,7 +281,7 @@ function seedDatabase(db, storageDir) {
   }
 
   const assetCount = db.prepare('SELECT COUNT(*) AS c FROM assets').get().c;
-  if (assetCount === 0 && getConfig().seedSampleAssets) {
+  if (assetCount === 0 && getConfig().seedSampleAssets && !options.skipSamples) {
     seedSampleAssets(db, storageDir).catch((e) => {
       console.warn('[seed] sample assets failed:', e.message);
     });
@@ -374,4 +377,10 @@ async function seedSampleAssets(db, storageDir) {
   }
 }
 
-module.exports = { initSchema, seedDatabase, ASSETS_COLUMN_DEFS, USERS_COLUMN_DEFS };
+module.exports = {
+  initSchema,
+  seedDatabase,
+  seedSampleAssets,
+  ASSETS_COLUMN_DEFS,
+  USERS_COLUMN_DEFS,
+};

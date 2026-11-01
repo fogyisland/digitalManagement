@@ -22,6 +22,11 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 
+// Load `backend/.env` before anything reads `process.env`. The file is
+// optional: a missing one leaves the environment untouched, and every value
+// in it still has a default in `config.js`.
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
 const { getConfig } = require('./config');
 const { initSchema, seedDatabase } = require('./lib/schema');
 const { createUploader, uploadErrorHandler } = require('./lib/upload');

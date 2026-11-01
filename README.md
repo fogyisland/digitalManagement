@@ -2,29 +2,31 @@
 
 > 一站式存储、管理、分发图片与视频等数字资产，通过 RESTful API + API Key 向其他系统提供可控的资产投递能力。
 
+整个系统是 **Node.js 模块**：一个 Express 进程同时提供管理 API、投递 API、静态文件与前端界面，**只占一个端口（默认 8000）**。数据落在 SQLite 文件里，不需要额外的数据库服务。
+
 ## ✨ 核心特性
 
 | 模块 | 能力 |
 |------|------|
 | 📦 **资产管理** | 图片（JPG/PNG/WebP/GIF/SVG/BMP/TIFF）+ 视频（MP4/MOV/WebM/MKV/AVI/M4V） |
 | 🔐 **双轨认证** | 管理后台 JWT，外部投递 API Key |
-| 📤 **上传方式** | 单文件、批量、分片（大文件）、外部 URL 导入 |
-| 🏷️ **分类标签** | 多级树形分类、灵活标签系统 |
+| 📤 **上传方式** | 单次多文件、分片（大文件）、外部 URL 导入 |
+| 🏷️ **分类标签** | 分类与标签管理 |
 | 🖼️ **媒体处理** | 自动缩略图、WebP 预览、视频封面、EXIF 提取 |
-| 🔑 **API Key** | 细粒度权限（读/写/删）、过期控制、调用审计 |
+| 🔑 **API Key** | 细粒度权限（read / upload / delete）、随时停用 |
 | 🔔 **Webhook** | 资产变更实时通知，HMAC 签名校验 |
-| 📊 **审计日志** | 所有敏感操作全程留痕 |
+| 🗑️ **三态删除** | 软删除 → 回收站 → 永久删除，支持复原 |
 | 🌓 **统一端口** | 单端口同时托管 UI + API + 静态资源 |
 
 ## 🛠 技术栈
 
-**后端**：Python 3.13 · FastAPI · SQLAlchemy 2 · Alembic · PyMySQL · Pillow · imageio-ffmpeg
+**后端**：Node.js 22 LTS+ · Express 4 · better-sqlite3 · sharp · multer · jsonwebtoken · bcryptjs · nanoid · dotenv
 
-**前端**：React 18 · TypeScript · Vite 6 · Ant Design 5 · Zustand · React Router 6
+**前端**：React 18 · TypeScript 5 · Vite 6 · Ant Design 5 · Zustand · React Router 6 · axios
 
-**数据库**：MySQL 8.0
+**数据库**：SQLite（`backend/data/dam.db`，WAL 模式）
 
-**存储**：本地文件系统（`./storage`）
+**存储**：本地文件系统（`backend/storage/`）
 
 ## 🚀 快速开始
 
@@ -42,44 +44,28 @@ chmod +x start.sh
 ```
 
 脚本会自动：
-1. 检查 Python / Node 环境
-2. 创建虚拟环境并安装依赖
+1. 检查 Node.js 环境
+2. 安装后端依赖
 3. 构建前端
-4. 启动后端
+4. 启动后端（单端口 8000，API + 界面都在这里）
 
 ### 方式二：手动启动
 
-#### 1. 准备 MySQL
-
-```sql
-CREATE DATABASE digital_management CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'dam'@'localhost' IDENTIFIED BY 'dam_pass';
-GRANT ALL PRIVILEGES ON digital_management.* TO 'dam'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-#### 2. 启动后端
-
 ```bash
+# 1. 后端依赖
 cd backend
-cp .env.example .env       # 按需修改 DB_*/SECRET_KEY 等配置
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-#### 3. 构建前端
-
-```bash
-cd frontend
 npm install
-npm run build               # 生产构建（后端会自动托管 dist/）
-# 或：
-npm run dev                 # 开发模式，访问 http://localhost:5173
-```
+cp .env.example .env        # Windows: copy .env.example .env
 
-#### 4. 访问
+# 2. 前端构建（产物会被后端托管）
+cd ../frontend
+npm install
+npm run build
+
+# 3. 启动（前台）
+cd ../backend
+npm start
+```
 
 打开浏览器：**http://localhost:8000**
 
@@ -92,48 +78,89 @@ npm run dev                 # 开发模式，访问 http://localhost:5173
 ### 方式三：Docker Compose
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-服务包括：MySQL 8.0 + Backend。
+单个容器跑完整系统（前端 + API + SQLite + 文件存储），同样只暴露 8000 端口。
+数据库与文件分别落在 `dam_data` / `dam_storage` 两个 volume 里。
+
+### 开发模式（可选）
+
+前端改动需要热更新时，用 Vite 的 dev server，它把 `/api` 代理到 8000：
+
+```bash
+cd frontend
+npm run dev        # http://localhost:5173
+```
+
+> 这是**可选**的第二端口。默认的单端口模式（8000）不需要它。
 
 ## 📡 API 速览
+
+命名空间：
+
+| 前缀 | 鉴权 | 用途 |
+|------|------|------|
+| `/api/v1` | `Authorization: Bearer <JWT>` | 管理 API |
+| `/api/public/v1` | `X-API-Key: dam_xxx` | 投递 API |
+| `/api/health` | 无 | 健康检查 |
+| `/storage/*` | 无 | 上传文件与缩略图 |
 
 ### 管理 API（JWT 鉴权）
 
 | Method | Path | 描述 |
 |--------|------|------|
-| POST | `/api/v1/auth/login` | 登录获取 Token |
-| GET | `/api/v1/auth/me` | 当前用户信息 |
-| GET | `/api/v1/assets` | 资产列表（支持筛选、搜索、分页） |
-| POST | `/api/v1/assets/upload` | 单文件上传 |
-| POST | `/api/v1/assets/upload/batch` | 批量上传 |
-| GET | `/api/v1/assets/{id}` | 资产详情 |
-| PATCH | `/api/v1/assets/{id}` | 更新资产 |
-| DELETE | `/api/v1/assets/{id}?permanent=false` | 软删除 / 永久删除 |
-| POST | `/api/v1/assets/{id}/restore` | 恢复 |
-| POST | `/api/v1/assets/{id}/download` | 下载 |
+| POST | `/api/v1/auth/login` | 登录，返回 access + refresh token |
+| POST | `/api/v1/auth/refresh` | 轮换令牌（旧 refresh 立即作废） |
+| POST | `/api/v1/auth/logout` | 注销，吊销 access token 与会话 |
+| GET | `/api/v1/auth/me` | 当前用户 |
+| POST | `/api/v1/auth/change-password` | 修改密码 |
+| GET | `/api/v1/users` | 用户列表 |
+| POST | `/api/v1/users` | 新建用户 |
+| PUT | `/api/v1/users/:id` | 更新用户 |
+| DELETE | `/api/v1/users/:id` | 删除用户 |
+| POST | `/api/v1/users/:id/reset-password` | 重置密码 |
+| GET | `/api/v1/assets` | 资产列表（筛选、搜索、分页） |
+| POST | `/api/v1/assets/upload` | 上传（multipart，字段名 `files`，最多 20 个） |
+| POST | `/api/v1/assets/import-url` | 从外部 URL 导入（拒绝内网地址） |
+| POST | `/api/v1/assets/from-comfyui/:job_id` | 登记 ComfyUI 任务产物 |
+| GET | `/api/v1/assets/:id` | 资产详情 |
+| GET | `/api/v1/assets/:id/manifest` | 资产清单（原始尺寸、时长、来源） |
+| PUT | `/api/v1/assets/:id` | 更新资产（标题、分类、标签等） |
+| DELETE | `/api/v1/assets/:id` | 删除（`?permanent=true` 为永久删除） |
+| POST | `/api/v1/assets/:id/restore` | 从回收站复原 |
+| POST | `/api/v1/assets/:id/download` | 下载原文件 |
 | POST | `/api/v1/upload/init` | 初始化分片上传 |
-| PUT | `/api/v1/upload/chunk/{session_id}` | 上传分片 |
-| POST | `/api/v1/upload/complete` | 完成上传 |
-| GET | `/api/v1/categories/tree` | 分类树 |
+| PUT | `/api/v1/upload/chunk/:session_id` | 上传分片（字段名 `chunk`，query `chunk_index`） |
+| POST | `/api/v1/upload/complete` | 合并分片并生成资产 |
+| GET | `/api/v1/categories` | 分类列表 |
+| POST | `/api/v1/categories` | 新建分类 |
+| PUT | `/api/v1/categories/:id` | 更新分类 |
+| DELETE | `/api/v1/categories/:id` | 删除分类 |
 | GET | `/api/v1/tags` | 标签列表 |
-| GET/POST/PATCH/DELETE | `/api/v1/api-keys` | API Key 管理 |
+| POST | `/api/v1/tags` | 新建标签 |
+| PUT | `/api/v1/tags/:id` | 更新标签 |
+| DELETE | `/api/v1/tags/:id` | 删除标签 |
+| GET | `/api/v1/api-keys` | API Key 列表（掩码显示） |
+| POST | `/api/v1/api-keys` | 创建 API Key（明文只返回一次） |
+| PUT | `/api/v1/api-keys/:id` | 更新 API Key |
+| DELETE | `/api/v1/api-keys/:id` | 停用 API Key |
+| GET | `/api/v1/webhooks` | Webhook 列表 |
+| POST | `/api/v1/webhooks` | 创建 Webhook |
+| PUT | `/api/v1/webhooks/:id` | 更新 Webhook |
+| DELETE | `/api/v1/webhooks/:id` | 停用 Webhook |
+| GET | `/api/v1/stats` | 统计汇总 |
 | GET | `/api/v1/stats/dashboard` | 仪表盘统计 |
-
-完整文档：访问 `/docs`（Swagger UI）或 `/redoc`。
+| GET | `/api/v1/jobs/by-comfyui/:job_id` | 按 ComfyUI 任务号查资产 |
 
 ### 公开投递 API（API Key 鉴权）
 
-> 其他系统使用 `X-API-Key: dam_xxxxxxxx` Header 调用。
+> Header：`X-API-Key: dam_xxxxxxxx`。Scope 分为 `read` / `upload` / `delete`。
 
 | Method | Path | 所需 Scope | 描述 |
 |--------|------|-------------|------|
-| POST | `/api/public/v1/delivery/upload` | `assets:write` | 上传文件 |
-| POST | `/api/public/v1/delivery/import-url` | `assets:write` | URL 导入 |
-| GET | `/api/public/v1/delivery/assets` | `assets:read` | 列出本 Key 的资产 |
-| GET | `/api/public/v1/delivery/assets/{code}` | `assets:read` | 资产详情 |
-| DELETE | `/api/public/v1/delivery/assets/{code}` | `assets:delete` | 删除资产 |
+| GET | `/api/public/v1/delivery/assets` | `read` | 列出资产 |
+| POST | `/api/public/v1/delivery/upload` | `upload` | 上传文件（multipart，字段名 `files`，最多 20 个） |
 
 ### 调用示例（curl）
 
@@ -141,114 +168,128 @@ docker compose up -d
 # 1. 上传文件
 curl -X POST http://localhost:8000/api/public/v1/delivery/upload \
   -H "X-API-Key: dam_xxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
-  -F "file=@/path/to/image.png" \
-  -F "title=My Image" \
-  -F "tag_names=ai-generated,product" \
-  -F "external_ref=order-12345"
+  -F "files=@/path/to/image.png" \
+  -F "title=My Image"
 
-# 2. URL 导入
-curl -X POST http://localhost:8000/api/public/v1/delivery/import-url \
-  -H "X-API-Key: dam_xxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com/sample.jpg", "title": "Sample"}'
-
-# 3. 列出本 Key 资产
+# 2. 列出本 Key 资产
 curl http://localhost:8000/api/public/v1/delivery/assets \
   -H "X-API-Key: dam_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-### Python SDK 示例
+### Node.js 调用示例
 
-```python
-import requests
+```js
+import { readFile } from 'node:fs/promises';
 
-API_BASE = "http://localhost:8000/api/public/v1/delivery"
-API_KEY = "dam_xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+const API_BASE = 'http://localhost:8000/api/public/v1/delivery';
+const API_KEY = 'dam_xxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 
-headers = {"X-API-Key": API_KEY}
+const headers = { 'X-API-Key': API_KEY };
 
-# 上传
-with open("image.png", "rb") as f:
-    resp = requests.post(
-        f"{API_BASE}/upload",
-        headers=headers,
-        files={"file": f},
-        data={"title": "My Image", "tag_names": "demo,test"},
-    )
-asset = resp.json()["data"]
-print(asset["original_url"])
+// 上传
+const form = new FormData();
+form.append('files', new Blob([await readFile('image.png')]), 'image.png');
+form.append('title', 'My Image');
 
-# 列出
-resp = requests.get(f"{API_BASE}/assets", headers=headers, params={"page": 1, "page_size": 20})
-for item in resp.json()["data"]["items"]:
-    print(item["asset_code"], item["original_url"])
+const upload = await fetch(`${API_BASE}/upload`, { method: 'POST', headers, body: form });
+const { items } = await upload.json();
+console.log(items[0].id, items[0].title);
+
+// 列出
+const list = await fetch(`${API_BASE}/assets`, { headers });
+const page = await list.json();
+for (const asset of page.items) {
+  console.log(asset.id, asset.title);
+}
 ```
 
 ## 📁 目录结构
 
 ```
 DigitalManagement/
-├── backend/                # FastAPI 后端
-│   ├── app/
-│   │   ├── api/            # API 路由（v1 管理 + public 投递）
-│   │   ├── core/           # 配置、数据库、安全
-│   │   ├── models/         # SQLAlchemy 数据模型
-│   │   ├── schemas/        # Pydantic 数据契约
-│   │   ├── services/       # 业务逻辑层
-│   │   ├── utils/          # 工具（文件、媒体处理）
-│   │   ├── middleware/     # 中间件
-│   │   └── main.py         # 应用入口
-│   ├── alembic/            # 数据库迁移
-│   ├── requirements.txt
-│   └── .env.example
+├── backend/                # Node.js 后端
+│   ├── src/
+│   │   ├── server.js       # 组装根：命名空间、静态托管、错误处理
+│   │   ├── config.js       # 运行配置（全部来自环境变量）
+│   │   ├── lib/            # 共享逻辑
+│   │   │   ├── dto.js      # DTO —— 前后端唯一契约源
+│   │   │   ├── schema.js   # 建表与种子数据
+│   │   │   ├── auth.js     # 令牌签发、轮换、吊销
+│   │   │   ├── assets.js   # 资产读写与筛选
+│   │   │   ├── upload.js   # multer 与分片
+│   │   │   ├── net.js      # SSRF 防护
+│   │   │   ├── manifest.js # 资产清单
+│   │   │   ├── webhook.js  # Webhook 投递
+│   │   │   └── util.js
+│   │   ├── routes/         # 每个域一个路由工厂
+│   │   │   ├── auth.js  users.js  assets.js  upload.js
+│   │   │   ├── categories.js  tags.js  apikeys.js
+│   │   │   ├── webhooks.js  stats.js  jobs.js  public.js
+│   │   ├── scripts/seed.js # 种子 / 修复脚本
+│   │   └── server.js
+│   ├── tests/              # 后端测试（自研 harness + 统一 runner）
+│   ├── data/               # SQLite 数据库（不入库）
+│   └── storage/            # 上传文件（不入库）
 ├── frontend/               # React 前端
 │   ├── src/
-│   │   ├── api/            # API 客户端
+│   │   ├── api/            # 每个域一个 API 模块
 │   │   ├── components/     # 业务组件
 │   │   ├── pages/          # 页面
 │   │   ├── stores/         # Zustand 状态
-│   │   ├── styles/         # 主题 & 全局样式
+│   │   ├── types/          # DTO 类型
+│   │   ├── utils/          # 工具
 │   │   └── router.tsx
+│   ├── tests/              # 前后端契约护栏
 │   ├── package.json
 │   └── vite.config.ts
-├── storage/                # 本地文件存储
-│   ├── originals/          # 原始文件
-│   ├── thumbnails/         # 缩略图
-│   ├── previews/           # WebP 预览
-│   └── temp/               # 临时上传
 ├── docs/
 │   └── ARCHITECTURE.md
-├── docker-compose.yml
+├── storage/                # 保留的历史存储目录
+├── backend/Dockerfile      # 多阶段构建：前端构建 + 后端运行
+├── docker-compose.yml      # 单容器部署
 ├── start.bat / start.sh    # 一键启动脚本
 └── README.md
 ```
 
 ## ⚙️ 关键配置（backend/.env）
 
+`.env` 是可选的 —— 所有值都有默认值（见 `backend/src/config.js`）。相对路径一律相对 `backend/` 目录解析，与启动位置无关。
+
 ```env
-APP_PORT=8000
-SECRET_KEY=<随机 32 字符以上>
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_USER=dam
-DB_PASSWORD=dam_pass
-DB_NAME=digital_management
-STORAGE_ROOT=./storage
+PORT=8000                        # 唯一端口：API + 界面
+HOST=0.0.0.0
+DB_PATH=./data/dam.db            # SQLite 文件
+STORAGE_DIR=./storage            # 上传文件目录
+JWT_SECRET=<32 字符以上随机串>    # 生产环境必须修改
+ACCESS_TOKEN_TTL=1h
+REFRESH_TOKEN_TTL=30d
 UPLOAD_MAX_FILE_SIZE_MB=2048
-THUMBNAIL_SIZE=320
-PREVIEW_MAX_WIDTH=1920
-DEFAULT_ADMIN_USERNAME=admin
-DEFAULT_ADMIN_PASSWORD=Admin@123456
+SEED_SAMPLE_ASSETS=1             # 设为 0 则不生成示例资产
+APP_BASE_URL=                    # 留空则按请求推导
 ```
+
+## 🧪 测试
+
+```bash
+# 后端：5 个 suite 依次执行，失败会点名
+cd backend && npm test
+
+# 前后端契约护栏：静态路由核对 + 运行时集成（22 项）
+cd frontend && npm test
+```
+
+契约护栏会把后端 44 条路由与前端 61 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程。
+护栏需要 **Node.js ≥ 22.15**。
 
 ## 🔒 安全建议
 
 1. **修改默认密码**：首次登录后立即修改
-2. **修改 SECRET_KEY**：生产环境必须使用 32+ 字符随机字符串
+2. **修改 JWT_SECRET**：生产环境必须使用 32+ 字符随机字符串
 3. **修改默认 API Key**：如启用了外部投递
 4. **启用 HTTPS**：通过 Nginx/Caddy 反向代理
-5. **定期备份**：`./storage` + MySQL 数据库
+5. **定期备份**：`backend/data/dam.db` + `backend/storage/`
 6. **限制存储目录**：通过文件系统权限限制 `storage/` 仅服务进程可写
+7. **URL 导入已内置 SSRF 防护**：内网与回环地址会被拒绝
 
 ## 🗺️ Roadmap
 
@@ -259,7 +300,6 @@ DEFAULT_ADMIN_PASSWORD=Admin@123456
 - [ ] 图片 AI 标注（自动打标签）
 - [ ] 公开访问短链（带签名 + 过期）
 - [ ] 多租户支持
-- [ ] Vue 3 前端版本（可选）
 
 ## 📄 License
 
