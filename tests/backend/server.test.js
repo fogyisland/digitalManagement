@@ -267,6 +267,25 @@ function close(server) {
 }
 
 /**
+ * Close the database pool the server module opened.
+ *
+ * `src/server/server.js` creates one pool per module instance, and the suite
+ * re-requires that module for every phase (the require cache is dropped so
+ * the phase gets its own schema and storage directory). An un-ended pool
+ * keeps its sockets open, the Node event loop never drains and the suite
+ * process never exits — the runner waits on the child's `exit` event and
+ * would hang forever. Every phase therefore closes the pool it created.
+ *
+ * @param {import('express').Express} app
+ * @returns {Promise<void>}
+ */
+async function closeDb(app) {
+  const pool = app && app.locals && app.locals.db && app.locals.db.pool;
+  if (!pool) return;
+  await pool.end();
+}
+
+/**
  * Mint an admin access token for the seeded admin user.
  *
  * @param {string} dbName
@@ -359,8 +378,8 @@ async function uploadFile(port, token, options) {
 /**
  * The real server module is required with an isolated DB so it runs the full
  * init path (CREATE TABLE + idempotent ALTER TABLE + indexes + seed).
- * The module leaves its `db` connection open for the lifetime of the process,
- * so the fixture is only removed on a best-effort basis.
+ * The module opens its own pool, which this phase closes before the fixture
+ * is dropped.
  */
 async function phaseSchema() {
   const dbName = `dam_test_schema_${process.pid}`;
@@ -417,6 +436,7 @@ async function phaseSchema() {
     await pool.end();
   }
 
+  await closeDb(app);
   await removeFixture(dbName, storagePath);
   delete require.cache[require.resolve('../../src/server/server')];
   console.log('schema OK');
@@ -462,6 +482,7 @@ async function phaseUpload() {
     console.log('upload endpoint OK');
   } finally {
     await close(server);
+    await closeDb(app);
     await removeFixture(dbName, storagePath);
   }
 }
@@ -486,6 +507,7 @@ async function phaseFileSizeLimit() {
     console.log('413 file size limit OK');
   } finally {
     await close(server);
+    await closeDb(app);
     delete process.env.UPLOAD_MAX_FILE_SIZE_MB;
     await removeFixture(dbName, storagePath);
   }
@@ -701,6 +723,7 @@ async function phaseWebhooks() {
     }
     await new Promise((resolve) => captureServer.close(resolve));
     await close(server);
+    await closeDb(app);
     await removeFixture(dbName, storagePath);
   }
 }
@@ -1011,6 +1034,7 @@ async function phaseLifecycle() {
     console.log('auth + users + deletion states + chunked upload OK');
   } finally {
     await close(server);
+    await closeDb(app);
     await removeFixture(dbName, storagePath);
   }
 }
