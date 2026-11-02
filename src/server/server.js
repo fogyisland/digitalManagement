@@ -30,6 +30,7 @@ const { getConfig } = require('./config');
 const { createDb, createPool, ensureDatabase } = require('./lib/db');
 const { initSchema, seedDatabase } = require('./lib/schema');
 const { createUploader, uploadErrorHandler } = require('./lib/upload');
+const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
 const createAuthRouter = require('./routes/auth');
 const createUsersRouter = require('./routes/users');
@@ -64,6 +65,16 @@ const ready = (async () => {
   await ensureDatabase(config);
   await initSchema(db);
   await seedDatabase(db, config.storageDir);
+  // The manifest index is written on every boot, not only when the process
+  // is started as the entry point: the backend is also embedded (the test
+  // suite boots this module directly), and a missing index makes
+  // `/storage/manifests/index.json` answer 404 for every consumer.
+  try {
+    await replayPendingManifestWrites(db, config.storageDir);
+    await writeManifestIndex(db, config.storageDir);
+  } catch (error) {
+    console.warn('[manifest] startup replay failed', error.message);
+  }
 })();
 
 // --- App --------------------------------------------------------------------
@@ -131,8 +142,7 @@ app.use((err, _req, res, _next) => {
   res.status(err.status || 500).json({ detail: err.message || 'Internal error' });
 });
 
-// --- Startup: replay pending manifest writes + ensure index.json exists -----
-const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
+// --- Startup: the manifest index is written as part of `ready` --------------
 
 // --- Start ------------------------------------------------------------------
 // The server starts listening only once the database is reachable and the
@@ -145,13 +155,6 @@ if (require.main === module) {
     } catch (error) {
       console.error('[startup] the database is not reachable:', error.message);
       process.exit(1);
-    }
-
-    try {
-      await replayPendingManifestWrites(db, config.storageDir);
-      await writeManifestIndex(db, config.storageDir);
-    } catch (error) {
-      console.warn('[manifest] startup replay failed', error.message);
     }
 
     app.listen(config.port, config.host, () => {
