@@ -19,6 +19,15 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
+const { ensureColumns, existingIndexes } = require('./db');
+const {
+  DEFAULT_TENANT_ID,
+  TENANT_ID_COLUMN,
+  TENANT_SCOPED_TABLES,
+  TENANT_UNIQUE_KEYS,
+  tenantUniqueKeyName,
+  migrateToMultiTenant,
+} = require('./tenant-schema');
 
 /**
  * The character set and collation every table uses.
@@ -57,44 +66,73 @@ const USERS_COLUMN_DEFS = ['display_name VARCHAR(191)', 'last_login_at DATETIME'
 /** Columns added to `webhook_endpoints` after the initial release. */
 const WEBHOOK_ENDPOINTS_COLUMN_DEFS = ['events TEXT'];
 
-/** The statements that create the schema, in dependency order. */
+/**
+ * The `tenants` table — the first table, because every other table's rows
+ * point at one of its rows.
+ */
+const TENANTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS tenants (
+  id ${ID} NOT NULL PRIMARY KEY,
+  name VARCHAR(191) NOT NULL,
+  slug VARCHAR(191) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  settings_json TEXT,
+  created_at ${TIMESTAMP},
+  UNIQUE KEY uq_tenants_slug (slug)
+) ENGINE=InnoDB ${CHARSET}`;
+
+/**
+ * The statements that create the schema, in dependency order.
+ *
+ * A fresh database is created *already tenant-scoped*: every business table
+ * carries `tenant_id` and every unique key is composite over
+ * `(tenant_id, …)`. The ALTER-based migration in `tenant-schema.js` is only
+ * needed for a database that was created before the multi-tenant release —
+ * building the tables twice would cost a table rebuild per table on every
+ * fresh install.
+ */
 const BASE_SCHEMA_SQL = [
+  TENANTS_TABLE_SQL,
+
   `CREATE TABLE IF NOT EXISTS users (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   username VARCHAR(191) NOT NULL,
   email VARCHAR(191),
   password_hash VARCHAR(191) NOT NULL,
   role VARCHAR(32) NOT NULL DEFAULT 'viewer',
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at ${TIMESTAMP},
-  UNIQUE KEY uq_users_username (username)
+  UNIQUE KEY ${tenantUniqueKeyName('users', 'username')} (tenant_id, username)
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS categories (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   name VARCHAR(191) NOT NULL,
   slug VARCHAR(191) NOT NULL,
   parent_id ${ID},
   description TEXT,
   sort_order INT NOT NULL DEFAULT 0,
   created_at ${TIMESTAMP},
-  UNIQUE KEY uq_categories_name (name),
-  UNIQUE KEY uq_categories_slug (slug)
+  UNIQUE KEY ${tenantUniqueKeyName('categories', 'name')} (tenant_id, name),
+  UNIQUE KEY ${tenantUniqueKeyName('categories', 'slug')} (tenant_id, slug)
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS tags (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   name VARCHAR(191) NOT NULL,
   slug VARCHAR(191) NOT NULL,
   color VARCHAR(32),
   usage_count INT NOT NULL DEFAULT 0,
   created_at ${TIMESTAMP},
-  UNIQUE KEY uq_tags_name (name),
-  UNIQUE KEY uq_tags_slug (slug)
+  UNIQUE KEY ${tenantUniqueKeyName('tags', 'name')} (tenant_id, name),
+  UNIQUE KEY ${tenantUniqueKeyName('tags', 'slug')} (tenant_id, slug)
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS assets (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   title VARCHAR(191) NOT NULL,
   description TEXT,
   filename VARCHAR(255) NOT NULL,
@@ -117,14 +155,16 @@ const BASE_SCHEMA_SQL = [
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS asset_tags (
+  ${TENANT_ID_COLUMN},
   asset_id ${ID} NOT NULL,
   tag_id ${ID} NOT NULL,
-  PRIMARY KEY (asset_id, tag_id),
+  PRIMARY KEY (tenant_id, asset_id, tag_id),
   KEY idx_asset_tags_tag (tag_id)
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS api_keys (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   name VARCHAR(191) NOT NULL,
   key_prefix VARCHAR(32) NOT NULL,
   key_hash VARCHAR(191) NOT NULL,
@@ -132,11 +172,13 @@ const BASE_SCHEMA_SQL = [
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   last_used_at DATETIME,
   expires_at DATETIME,
-  created_at ${TIMESTAMP}
+  created_at ${TIMESTAMP},
+  UNIQUE KEY ${tenantUniqueKeyName('api_keys', 'key_hash')} (tenant_id, key_hash)
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS audit_logs (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   user_id ${ID},
   action VARCHAR(191) NOT NULL,
   resource_type VARCHAR(191) NOT NULL,
@@ -148,6 +190,7 @@ const BASE_SCHEMA_SQL = [
 
   `CREATE TABLE IF NOT EXISTS webhook_endpoints (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   name VARCHAR(191) NOT NULL,
   url VARCHAR(1024) NOT NULL,
   secret VARCHAR(191) NOT NULL,
@@ -158,6 +201,7 @@ const BASE_SCHEMA_SQL = [
 
   `CREATE TABLE IF NOT EXISTS webhook_logs (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   endpoint_id ${ID} NOT NULL,
   event VARCHAR(191) NOT NULL,
   payload TEXT NOT NULL,
@@ -169,6 +213,7 @@ const BASE_SCHEMA_SQL = [
 
   `CREATE TABLE IF NOT EXISTS manifest_writes (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   asset_id ${ID},
   op VARCHAR(32) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'pending',
@@ -179,12 +224,14 @@ const BASE_SCHEMA_SQL = [
 
   `CREATE TABLE IF NOT EXISTS revoked_tokens (
   jti ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   expires_at DATETIME,
   created_at ${TIMESTAMP}
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS token_registry (
   jti ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   user_id ${ID},
   kind VARCHAR(32),
   expires_at DATETIME
@@ -192,6 +239,7 @@ const BASE_SCHEMA_SQL = [
 
   `CREATE TABLE IF NOT EXISTS upload_sessions (
   id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
   owner_id ${ID},
   filename VARCHAR(255) NOT NULL,
   file_size BIGINT NOT NULL,
@@ -228,58 +276,6 @@ const INDEX_DEFS = [
 ];
 
 /**
- * The columns a table already has.
- *
- * @param {object} db
- * @param {string} table
- * @returns {Promise<Set<string>>}
- */
-async function existingColumns(db, table) {
-  const rows = await db
-    .prepare(
-      `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-    )
-    .all([table]);
-  return new Set(rows.map((row) => row.name));
-}
-
-/**
- * The indexes a table already has.
- *
- * @param {object} db
- * @param {string} table
- * @returns {Promise<Set<string>>}
- */
-async function existingIndexes(db, table) {
-  const rows = await db
-    .prepare(
-      `SELECT DISTINCT INDEX_NAME AS name FROM information_schema.STATISTICS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-    )
-    .all([table]);
-  return new Set(rows.map((row) => row.name));
-}
-
-/**
- * Add the missing columns of a table.
- *
- * @param {object} db
- * @param {string} table one of the hard-coded table names above
- * @param {string[]} columnDefs e.g. ["source_tool TEXT"]
- * @returns {Promise<void>}
- */
-async function ensureColumns(db, table, columnDefs) {
-  const existing = await existingColumns(db, table);
-  for (const def of columnDefs) {
-    const columnName = def.split(/\s+/)[0];
-    if (existing.has(columnName)) continue;
-    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${def}`);
-    existing.add(columnName);
-  }
-}
-
-/**
  * Create the indexes that are missing.
  *
  * @param {object} db
@@ -308,6 +304,9 @@ async function initSchema(db) {
   await ensureColumns(db, 'users', USERS_COLUMN_DEFS);
   await ensureColumns(db, 'webhook_endpoints', WEBHOOK_ENDPOINTS_COLUMN_DEFS);
   await ensureIndexes(db);
+  // The tenant layer comes last: the columns have to exist before the
+  // composite unique keys and the composite primary key can reference them.
+  await migrateToMultiTenant(db);
 }
 
 /**
@@ -324,6 +323,19 @@ async function initSchema(db) {
  * @returns {Promise<void>}
  */
 async function seedDatabase(db, storageDir, options = {}) {
+  // The default tenant is the one an existing single-tenant installation
+  // belongs to. It must exist before any row is written, because every
+  // business table's `tenant_id` points at it.
+  const tenantCount = await db
+    .prepare('SELECT COUNT(*) AS c FROM tenants WHERE id = ?')
+    .get([DEFAULT_TENANT_ID]);
+  if (tenantCount.c === 0) {
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run([DEFAULT_TENANT_ID, '默认租户', DEFAULT_TENANT_ID]);
+    console.log('[seed] default tenant created');
+  }
+
   const adminCount = await db.prepare('SELECT COUNT(*) AS c FROM users').get();
   if (adminCount.c === 0) {
     const adminId = nanoid();
@@ -477,4 +489,9 @@ module.exports = {
   seedSampleAssets,
   ASSETS_COLUMN_DEFS,
   USERS_COLUMN_DEFS,
+  TENANTS_TABLE_SQL,
+  TENANT_SCOPED_TABLES,
+  TENANT_UNIQUE_KEYS,
+  tenantUniqueKeyName,
+  DEFAULT_TENANT_ID,
 };

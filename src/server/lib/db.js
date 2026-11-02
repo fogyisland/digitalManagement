@@ -255,4 +255,84 @@ async function connect(config) {
   return createDb(createPool(config));
 }
 
-module.exports = { connect, createDb, createPool, ensureDatabase, DEFAULT_POOL_SIZE };
+/**
+ * The columns a table already has.
+ *
+ * @param {object} db
+ * @param {string} table
+ * @returns {Promise<Set<string>>}
+ */
+async function existingColumns(db, table) {
+  const rows = await db
+    .prepare(
+      `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    )
+    .all([table]);
+  return new Set(rows.map((row) => row.name));
+}
+
+/**
+ * The indexes a table already has.
+ *
+ * @param {object} db
+ * @param {string} table
+ * @returns {Promise<Set<string>>}
+ */
+async function existingIndexes(db, table) {
+  const rows = await db
+    .prepare(
+      `SELECT DISTINCT INDEX_NAME AS name FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    )
+    .all([table]);
+  return new Set(rows.map((row) => row.name));
+}
+
+/**
+ * The columns of a table's primary key, in key order.
+ *
+ * @param {object} db
+ * @param {string} table
+ * @returns {Promise<string[]>}
+ */
+async function primaryKeyColumns(db, table) {
+  const rows = await db
+    .prepare(
+      `SELECT COLUMN_NAME AS name FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY'
+        ORDER BY SEQ_IN_INDEX`,
+    )
+    .all([table]);
+  return rows.map((row) => row.name);
+}
+
+/**
+ * Add the missing columns of a table.
+ *
+ * @param {object} db
+ * @param {string} table one of the hard-coded table names above
+ * @param {string[]} columnDefs e.g. ["source_tool TEXT"]
+ * @returns {Promise<void>}
+ */
+async function ensureColumns(db, table, columnDefs) {
+  const existing = await existingColumns(db, table);
+  for (const def of columnDefs) {
+    const columnName = def.split(/\s+/)[0];
+    if (existing.has(columnName)) continue;
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+    existing.add(columnName);
+  }
+}
+
+module.exports = {
+  connect,
+  createDb,
+  createPool,
+  ensureDatabase,
+  existingColumns,
+  existingIndexes,
+  primaryKeyColumns,
+  ensureColumns,
+  DEFAULT_POOL_SIZE,
+};

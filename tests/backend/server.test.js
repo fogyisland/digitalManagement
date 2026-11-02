@@ -27,6 +27,13 @@ const http = require('http');
 const assert = require('assert');
 const jwt = require('jsonwebtoken');
 
+const {
+  DEFAULT_TENANT_ID,
+  TENANT_SCOPED_TABLES,
+  TENANT_UNIQUE_KEYS,
+  tenantUniqueKeyName,
+} = require('../../src/server/lib/schema');
+
 const TESTS_DIR = __dirname;
 const JWT_SECRET = 'test-secret-key';
 
@@ -432,6 +439,68 @@ async function phaseSchema() {
     ]) {
       if (!tables.includes(table)) throw new Error('missing table: ' + table);
     }
+
+    // --- the tenant layer ---------------------------------------------------
+    // Every business row belongs to a tenant: the `tenants` table exists, it
+    // carries the default tenant, and every tenant-scoped table has the
+    // `tenant_id` column that points at it.
+    const [tenantRows] = await pool.execute(
+      "SELECT id, slug FROM tenants WHERE id = 'default'",
+    );
+    assert.strictEqual(tenantRows.length, 1, 'the default tenant must exist');
+    assert.strictEqual(
+      DEFAULT_TENANT_ID,
+      'default',
+      'the default tenant id must be exported as "default"',
+    );
+
+    for (const table of TENANT_SCOPED_TABLES) {
+      const [cols] = await pool.execute(
+        `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+        [dbName, table],
+      );
+      assert.ok(
+        cols.some((c) => c.name === 'tenant_id'),
+        `${table} must have a tenant_id column`,
+      );
+    }
+
+    // The unique keys that used to be global are now tenant-scoped: the old
+    // index is gone and the composite one is in place, otherwise two tenants
+    // could not both own a category called "产品图".
+    for (const [table, oldIndex, column] of TENANT_UNIQUE_KEYS) {
+      const [indexes] = await pool.execute(
+        `SELECT DISTINCT INDEX_NAME AS name FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+        [dbName, table],
+      );
+      const names = indexes.map((i) => i.name);
+      if (oldIndex) {
+        assert.ok(
+          !names.includes(oldIndex),
+          `${table}.${oldIndex} must be replaced by a tenant-scoped unique key`,
+        );
+      }
+      assert.ok(
+        names.includes(tenantUniqueKeyName(table, column)),
+        `${table} must have the tenant-scoped unique key on ${column}`,
+      );
+    }
+
+    // `asset_tags` is keyed by tenant as well: the same tag on the same
+    // asset may exist once per tenant.
+    const [assetTagsKeys] = await pool.execute(
+      `SELECT COLUMN_NAME AS name, SEQ_IN_INDEX AS seq FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'asset_tags' AND INDEX_NAME = 'PRIMARY'
+        ORDER BY SEQ_IN_INDEX`,
+      [dbName],
+    );
+    assert.deepStrictEqual(
+      assetTagsKeys.map((c) => c.name),
+      ['tenant_id', 'asset_id', 'tag_id'],
+      'asset_tags must be keyed by (tenant_id, asset_id, tag_id)',
+    );
   } finally {
     await pool.end();
   }
