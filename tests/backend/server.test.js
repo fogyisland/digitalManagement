@@ -7,10 +7,11 @@
  * and storage directory and drives it over real HTTP.
  *
  *   1. schema     — the migration produces every column and table
- *   2. upload     — a multipart upload echoes the metadata fields back
- *   3. file size  — an oversized upload is rejected with 413
- *   4. webhooks   — CRUD plus the asset event fan-out
- *   5. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
+ *   2. tenant     — a credential resolves to the tenant it speaks for
+ *   3. upload     — a multipart upload echoes the metadata fields back
+ *   4. file size  — an oversized upload is rejected with 413
+ *   5. webhooks   — CRUD plus the asset event fan-out
+ *   6. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
  *                   permanent delete and the chunked upload flow
  *
  * The phases are chained explicitly: a phase only starts once the previous
@@ -33,6 +34,12 @@ const {
   TENANT_UNIQUE_KEYS,
   tenantUniqueKeyName,
 } = require('../../src/server/lib/schema');
+const {
+  ALL_TENANTS,
+  SUPERADMIN_ROLE,
+  resolveTenantFromUser,
+  tenantScope,
+} = require('../../src/server/lib/tenant');
 
 const TESTS_DIR = __dirname;
 const JWT_SECRET = 'test-secret-key';
@@ -511,7 +518,89 @@ async function phaseSchema() {
   console.log('schema OK');
 }
 
-// --- Phase 2: upload endpoint ------------------------------------------------
+// --- Phase 2: tenant context -------------------------------------------------
+
+/**
+ * The tenant a credential speaks for.
+ *
+ * Two tenants and two users: a regular one that belongs to the default
+ * tenant, and a platform administrator that may act across every tenant.
+ * The tenant identity comes from the credential, never from the request.
+ */
+async function phaseTenantContext() {
+  const { app, dbName, storagePath } = await bootServer('tenant');
+  const db = app.locals.db;
+  try {
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run(['tenant-b', '第二租户', 'tenant-b']);
+    await db
+      .prepare(
+        'INSERT INTO users (id, tenant_id, username, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(['u-regular', DEFAULT_TENANT_ID, 'regular', 'x', 'viewer']);
+    await db
+      .prepare(
+        'INSERT INTO users (id, tenant_id, username, password_hash, role) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(['u-root', ALL_TENANTS, 'root', 'x', SUPERADMIN_ROLE]);
+
+    const regular = await db
+      .prepare('SELECT id, username, role, tenant_id FROM users WHERE id = ?')
+      .get(['u-regular']);
+    const root = await db
+      .prepare('SELECT id, username, role, tenant_id FROM users WHERE id = ?')
+      .get(['u-root']);
+
+    // A regular user speaks for its own tenant and nothing else.
+    const regularTenant = await resolveTenantFromUser(db, regular);
+    assert.deepStrictEqual(
+      regularTenant,
+      { id: DEFAULT_TENANT_ID, slug: DEFAULT_TENANT_ID, name: '默认租户', status: 'active' },
+      'a regular user must resolve to the tenant its row belongs to',
+    );
+    assert.deepStrictEqual(
+      tenantScope(regular, regularTenant),
+      { tenantId: DEFAULT_TENANT_ID, isSuperadmin: false },
+      'a regular user must be scoped to its own tenant',
+    );
+
+    // A platform administrator speaks for every tenant.
+    const rootTenant = await resolveTenantFromUser(db, root);
+    assert.strictEqual(rootTenant.id, ALL_TENANTS, 'a superadmin resolves to the wildcard tenant');
+    assert.deepStrictEqual(
+      tenantScope(root, rootTenant),
+      { tenantId: ALL_TENANTS, isSuperadmin: true },
+      'a superadmin must be scoped across every tenant',
+    );
+
+    // A user whose tenant does not exist resolves to nothing at all: the
+    // request is answered with 403, never with another tenant's data.
+    const orphan = await resolveTenantFromUser(db, {
+      id: 'u-orphan',
+      role: 'viewer',
+      tenant_id: 'no-such-tenant',
+    });
+    assert.strictEqual(orphan, null, 'a user without a tenant must not resolve to one');
+    assert.strictEqual(
+      tenantScope({ id: 'u-orphan', role: 'viewer' }, null),
+      null,
+      'a request without a tenant has no scope',
+    );
+    assert.strictEqual(
+      tenantScope(null, null),
+      null,
+      'an unauthenticated request has no scope',
+    );
+
+    console.log('tenant context OK');
+  } finally {
+    await closeDb(app);
+    await removeFixture(dbName, storagePath);
+  }
+}
+
+// --- Phase 3: upload endpoint ------------------------------------------------
 
 async function phaseUpload() {
   const { app, dbName, storagePath } = await bootServer('upload');
@@ -1112,6 +1201,7 @@ async function phaseLifecycle() {
 
 async function main() {
   await phaseSchema();
+  await phaseTenantContext();
   await phaseUpload();
   await phaseFileSizeLimit();
   await phaseWebhooks();
