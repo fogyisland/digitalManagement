@@ -16,28 +16,34 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
+const { resolveTenantFromUser, tenantScope, loadTenant } = require('./tenant');
 
 /**
  * Issue a fresh access/refresh token pair for a user.
  *
+ * Both tokens carry `tid` — the tenant the credential speaks for. The
+ * tenant is written into the token at signing time and never travels with
+ * the request, so a token cannot be pointed at another tenant later.
+ *
  * @param {object} db
- * @param {{id: string, role: string}} user
+ * @param {{id: string, role: string, tenant_id: string}} user
  * @returns {Promise<{access_token: string, refresh_token: string, token_type: string, expires_in: number}>}
  */
 async function issueTokenPair(db, user) {
   const { jwtSecret, accessTokenTtl, refreshTokenTtl, accessTokenTtlSeconds } = getConfig();
   const accessJti = nanoid();
   const refreshJti = nanoid();
+  const tenantId = user.tenant_id ?? null;
 
   const accessToken = jwt.sign(
     // `sid` ties the access token to its refresh token so a logout can
     // revoke the whole session in one call.
-    { sub: user.id, role: user.role, typ: 'access', jti: accessJti, sid: refreshJti },
+    { sub: user.id, role: user.role, typ: 'access', jti: accessJti, sid: refreshJti, tid: tenantId },
     jwtSecret,
     { expiresIn: accessTokenTtl },
   );
   const refreshToken = jwt.sign(
-    { sub: user.id, typ: 'refresh', jti: refreshJti },
+    { sub: user.id, typ: 'refresh', jti: refreshJti, tid: tenantId },
     jwtSecret,
     { expiresIn: refreshTokenTtl },
   );
@@ -183,16 +189,38 @@ function authRequired(db) {
       if (payload.typ === 'refresh') {
         return res.status(401).json({ detail: 'Refresh token cannot be used as an access token' });
       }
+      // A token without a tenant cannot be allowed to reach a handler: the
+      // tenant is what every business query is filtered by, so a token that
+      // does not carry one would query the whole library.
+      if (!payload.tid) {
+        return res.status(401).json({ detail: 'Token does not carry a tenant' });
+      }
+      // The token names the tenant, the user's row has to agree with it: a
+      // token that outlived a move to another tenant stops working.
       const user = await db
-        .prepare('SELECT id, username, role, is_active FROM users WHERE id = ?')
-        .get(payload.sub);
+        .prepare(
+          'SELECT id, username, role, is_active, tenant_id FROM users WHERE id = ? AND tenant_id = ?',
+        )
+        .get(payload.sub, payload.tid);
       if (!user) return res.status(401).json({ detail: 'User not found' });
       if (!user.is_active) return res.status(403).json({ detail: 'User is disabled' });
       if (await isRevoked(db, payload.jti)) {
         return res.status(401).json({ detail: 'Token revoked' });
       }
-      req.user = { id: user.id, username: user.username, role: user.role };
+      const tenant = await resolveTenantFromUser(db, user);
+      if (!tenant) return res.status(403).json({ detail: 'Tenant not found' });
+      if (tenant.status !== 'active') {
+        return res.status(403).json({ detail: 'Tenant is suspended' });
+      }
+      req.user = {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        tenant_id: user.tenant_id,
+      };
       req.token = payload;
+      req.tenant = tenant;
+      req.tenantScope = tenantScope(user, tenant);
       return next();
     })().catch(next);
   };
@@ -232,8 +260,15 @@ function apiKeyRequired(db, requiredScope) {
       const provided = req.headers['x-api-key'] || req.query.api_key;
       if (!provided) return res.status(401).json({ detail: 'Missing API key' });
       const hash = crypto.createHash('sha256').update(provided).digest('hex');
+      // The key carries the tenant it was created in — the key *is* the
+      // tenant's credential, so the tenant comes from the row and never
+      // from the request.
       const key = await db
-        .prepare('SELECT * FROM api_keys WHERE key_hash = ? AND is_active = 1')
+        .prepare(
+          `SELECT id, name, key_prefix, key_hash, scopes, is_active, last_used_at,
+                  expires_at, created_at, tenant_id
+             FROM api_keys WHERE key_hash = ? AND is_active = 1`,
+        )
         .get(hash);
       if (!key) return res.status(401).json({ detail: 'Invalid API key' });
       const expiresAt = parseDateTime(key.expires_at);
@@ -247,10 +282,21 @@ function apiKeyRequired(db, requiredScope) {
       if (requiredScope && !scopes.includes(requiredScope) && !scopes.includes('*')) {
         return res.status(403).json({ detail: `Missing scope: ${requiredScope}` });
       }
+      const tenant = await loadTenant(db, key.tenant_id);
+      if (!tenant) return res.status(403).json({ detail: 'Tenant not found' });
+      if (tenant.status !== 'active') {
+        return res.status(403).json({ detail: 'Tenant is suspended' });
+      }
       await db
         .prepare("UPDATE api_keys SET last_used_at = NOW() WHERE id = ?")
         .run(key.id);
       req.apiKey = key;
+      req.tenant = tenant;
+      // A key speaks for exactly one tenant — never for all of them.
+      req.tenantScope = tenantScope(
+        { id: key.id, role: 'api-key', tenant_id: key.tenant_id },
+        tenant,
+      );
       return next();
     })().catch(next);
   };

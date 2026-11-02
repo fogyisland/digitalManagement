@@ -26,7 +26,7 @@ export type AssetType = 'image' | 'video' | 'other'
 export type AssetStatus = 'ready' | 'processing' | 'failed' | 'deleted'
 
 /** 用户角色白名单。 */
-export type UserRole = 'admin' | 'editor' | 'viewer'
+export type UserRole = 'admin' | 'editor' | 'viewer' | 'superadmin'
 
 /** 用户状态：后端由 `is_active` 派生，只有 active / disabled 两态。 */
 export type UserStatus = 'active' | 'disabled'
@@ -160,6 +160,8 @@ export interface User {
   role: UserRole
   status: UserStatus
   is_superuser: boolean
+  /** 用户所属租户；平台超管的租户为 `*`。 */
+  tenant_id: string | null
   last_login_at: string | null
   created_at: string
 }

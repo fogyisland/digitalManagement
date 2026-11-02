@@ -8,10 +8,11 @@
  *
  *   1. schema     — the migration produces every column and table
  *   2. tenant     — a credential resolves to the tenant it speaks for
- *   3. upload     — a multipart upload echoes the metadata fields back
- *   4. file size  — an oversized upload is rejected with 413
- *   5. webhooks   — CRUD plus the asset event fan-out
- *   6. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
+ *   3. credential — the token and the API key carry the tenant
+ *   4. upload     — a multipart upload echoes the metadata fields back
+ *   5. file size  — an oversized upload is rejected with 413
+ *   6. webhooks   — CRUD plus the asset event fan-out
+ *   7. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
  *                   permanent delete and the chunked upload flow
  *
  * The phases are chained explicitly: a phase only starts once the previous
@@ -25,7 +26,9 @@ const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 const assert = require('assert');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const {
@@ -315,9 +318,14 @@ async function mintAdminToken(dbName) {
     dateStrings: true,
   });
   try {
-    const [rows] = await pool.execute("SELECT id FROM users WHERE username = 'admin'");
+    const [rows] = await pool.execute("SELECT id, tenant_id FROM users WHERE username = 'admin'");
     if (rows.length === 0) throw new Error('admin user not seeded');
-    return jwt.sign({ sub: rows[0].id, role: 'admin' }, JWT_SECRET, { expiresIn: '1h' });
+    // The token carries the tenant it was issued for, like a real one.
+    return jwt.sign(
+      { sub: rows[0].id, role: 'admin', tid: rows[0].tenant_id },
+      JWT_SECRET,
+      { expiresIn: '1h' },
+    );
   } finally {
     await pool.end();
   }
@@ -600,7 +608,168 @@ async function phaseTenantContext() {
   }
 }
 
-// --- Phase 3: upload endpoint ------------------------------------------------
+// --- Phase 3: the credential decides the tenant -------------------------------
+
+/**
+ * The tenant travels with the credential, never with the request.
+ *
+ * A management token carries the tenant it was issued for, an API key the
+ * one it was created in, and a suspended tenant is refused outright.
+ */
+async function phaseTenantCredential() {
+  const { app, dbName, storagePath } = await bootServer('credential');
+  const server = await listen(app);
+  const port = server.address().port;
+  const db = app.locals.db;
+
+  /**
+   * Log in and return the session.
+   *
+   * @param {string} username
+   * @param {string} password
+   * @returns {Promise<object>}
+   */
+  async function login(username, password) {
+    const res = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/auth/login',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    assert.strictEqual(res.status, 200, `login(${username}) expected 200, got ${res.status}: ${res.raw}`);
+    return JSON.parse(res.raw);
+  }
+
+  try {
+    // A second tenant with its own administrator.
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run(['tenant-b', '第二租户', 'tenant-b']);
+    await db
+      .prepare(
+        'INSERT INTO users (id, tenant_id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        ['u-boss', 'tenant-b', 'boss', 'boss@dam.local', bcrypt.hashSync('Boss@123456', 10), 'admin'],
+      );
+
+    // --- 1) the access token carries the tenant it was issued for ----------
+    const bossSession = await login('boss', 'Boss@123456');
+    const bossPayload = jwt.decode(bossSession.access_token);
+    assert.strictEqual(
+      bossPayload.tid,
+      'tenant-b',
+      'the access token must carry the tenant of its user',
+    );
+
+    // --- 2) the tenant is visible on the current user ----------------------
+    const meRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/auth/me',
+      method: 'GET',
+      headers: { Authorization: `Bearer ${bossSession.access_token}` },
+    });
+    assert.strictEqual(meRes.status, 200, `/auth/me expected 200, got ${meRes.status}: ${meRes.raw}`);
+    assert.strictEqual(
+      JSON.parse(meRes.raw).tenant_id,
+      'tenant-b',
+      '/auth/me must report the tenant of the credential',
+    );
+
+    // --- 3) the seeded administrator belongs to the default tenant ---------
+    const adminSession = await login('admin', 'Admin@123456');
+    assert.strictEqual(
+      jwt.decode(adminSession.access_token).tid,
+      DEFAULT_TENANT_ID,
+      'the seeded administrator must speak for the default tenant',
+    );
+
+    // --- 4) a suspended tenant is refused ----------------------------------
+    await db
+      .prepare('UPDATE tenants SET status = ? WHERE id = ?')
+      .run(['suspended', 'tenant-b']);
+    const suspendedRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/auth/me',
+      method: 'GET',
+      headers: { Authorization: `Bearer ${bossSession.access_token}` },
+    });
+    assert.strictEqual(
+      suspendedRes.status,
+      403,
+      `a suspended tenant must be refused, got ${suspendedRes.status}: ${suspendedRes.raw}`,
+    );
+    await db
+      .prepare('UPDATE tenants SET status = ? WHERE id = ?')
+      .run(['active', 'tenant-b']);
+
+    // --- 5) an API key speaks for its own tenant ---------------------------
+    const rawKey = 'dam_test_key_b';
+    const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+    await db
+      .prepare(
+        'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(['k-b', 'tenant-b', 'tenant-b key', rawKey.slice(0, 12), keyHash, 'read']);
+
+    const deliveryRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/public/v1/delivery/assets',
+      method: 'GET',
+      headers: { 'X-API-Key': rawKey },
+    });
+    assert.strictEqual(
+      deliveryRes.status,
+      200,
+      `the delivery API must accept a key of an active tenant, got ${deliveryRes.status}: ${deliveryRes.raw}`,
+    );
+
+    // A key of a suspended tenant is refused like any other credential.
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug, status) VALUES (?, ?, ?, ?)')
+      .run(['tenant-c', '暂停租户', 'tenant-c', 'suspended']);
+    const rawKeyC = 'dam_test_key_c';
+    await db
+      .prepare(
+        'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        [
+          'k-c',
+          'tenant-c',
+          'suspended key',
+          rawKeyC.slice(0, 12),
+          crypto.createHash('sha256').update(rawKeyC).digest('hex'),
+          'read',
+        ],
+      );
+    const suspendedKeyRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/public/v1/delivery/assets',
+      method: 'GET',
+      headers: { 'X-API-Key': rawKeyC },
+    });
+    assert.strictEqual(
+      suspendedKeyRes.status,
+      403,
+      `a key of a suspended tenant must be refused, got ${suspendedKeyRes.status}: ${suspendedKeyRes.raw}`,
+    );
+
+    console.log('tenant credential OK');
+  } finally {
+    await close(server);
+    await closeDb(app);
+    await removeFixture(dbName, storagePath);
+  }
+}
+
+// --- Phase 4: upload endpoint ------------------------------------------------
 
 async function phaseUpload() {
   const { app, dbName, storagePath } = await bootServer('upload');
@@ -1202,6 +1371,7 @@ async function phaseLifecycle() {
 async function main() {
   await phaseSchema();
   await phaseTenantContext();
+  await phaseTenantCredential();
   await phaseUpload();
   await phaseFileSizeLimit();
   await phaseWebhooks();

@@ -102,6 +102,7 @@ function toUser(row) {
     role: row.role,
     status: row.is_active ? 'active' : 'disabled',
     is_superuser: row.role === 'admin',
+    tenant_id: row.tenant_id ?? null,
     last_login_at: row.last_login_at ?? null,
     created_at: row.created_at,
   };
