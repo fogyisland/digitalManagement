@@ -231,33 +231,6 @@ async function recordLog(db, endpointId, event, body, final) {
 }
 
 /**
- * Mark the endpoint active when delivery succeeded, leave unchanged on
- * failure. `is_active` is not auto-disabled by a single failed attempt —
- * operations may want to keep endpoints warm — but this hook is in place
- * so task 7 can layer policy on top if desired.
- *
- * @param {Object} db the database handle
- * @param {string} endpointId
- * @param {string} finalStatus
- * @returns {Promise<void>}
- */
-async function updateEndpointState(db, endpointId, finalStatus) {
-  try {
-    await db
-      .prepare(
-        'UPDATE webhook_endpoints SET is_active = CASE WHEN ? THEN 1 ELSE is_active END WHERE id = ?'
-      )
-      .run(finalStatus === 'done' ? 1 : 0, endpointId);
-  } catch (e) {
-    console.error('[webhook] failed to update webhook_endpoints.is_active', {
-      endpointId,
-      finalStatus,
-      err: e.message,
-    });
-  }
-}
-
-/**
  * Dispatch a webhook.
  *
  * @param {Object} db the database handle, with `webhook_logs` +
@@ -329,9 +302,12 @@ async function dispatch(db, endpoint, event, payload) {
     terminal = { status: 'failed', attempts, error: lastError };
   }
 
-  // Persist terminal state and reflect into endpoint flag.
+  // Persist the terminal state. The endpoint's `is_active` flag is *not*
+  // touched here: it belongs to the operator (`DELETE /webhooks/:id`
+  // soft-disables, `PUT /webhooks/:id` toggles), and a delivery that was
+  // already in flight must not resurrect an endpoint the operator has
+  // disabled. The delivery outcome lives in `webhook_logs`.
   await recordLog(db, endpoint.id, event, body, terminal);
-  await updateEndpointState(db, endpoint.id, terminal.status);
 
   return terminal;
 }

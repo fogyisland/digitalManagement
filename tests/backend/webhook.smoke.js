@@ -6,10 +6,11 @@
  *   - isRetryableStatus
  *   - computeBackoffMs is bounded and positive
  *   - dispatch() happy path: HTTP 200 -> status='done', webhook_logs row exists,
- *     endpoint.is_active flipped to 1
+ *     endpoint.is_active untouched (the operator owns that flag)
  *   - dispatch() failure path: always-500 -> 3 attempts, status='failed',
  *     webhook_logs row persists last_error, endpoint.is_active unchanged
  *   - dispatch() 4xx (non-retryable): 1 attempt, status='failed'
+ *   - dispatch() must NOT re-enable an endpoint the operator disabled
  *   - failure result SURFACES to the caller (no swallow)
  *
  * Runs against a temporary sqlite file so it does not pollute project data.
@@ -254,6 +255,29 @@ async function fetchLogs(endpointId) {
   const log404 = await fetchLogs('ep-404');
   assert.strictEqual(log404.length, 1);
   assert.strictEqual(log404[0].attempts, 1);
+
+  // --- a delivery must not re-enable a disabled endpoint -------------------
+  // The endpoint's enabled flag belongs to the operator: `DELETE /webhooks/:id`
+  // soft-disables it and `PUT /webhooks/:id` toggles it. A delivery that was
+  // already in flight when the operator disabled the endpoint must not
+  // resurrect it — otherwise a soft-disable silently comes back to life.
+  scenariosRef.current = ({ res }) => {
+    res.statusCode = 200;
+    res.end('ok');
+  };
+  await insertEndpoint('ep-off', `${baseUrl}/ok`, 'sec-off', 0);
+  const offRes = await w.dispatch(
+    db,
+    await fetchEndpoint('ep-off'),
+    'asset.created',
+    { id: 'asset-5' },
+  );
+  assert.strictEqual(offRes.status, 'done', `expected done, got ${offRes.status} err=${offRes.error}`);
+  assert.strictEqual(
+    (await fetchEndpoint('ep-off')).is_active,
+    0,
+    'a delivery must not re-enable an endpoint the operator disabled',
+  );
 
   // --- transport error (server closed) -> retries, terminal failed --------
   // We close the server, then dispatch; expect 3 attempts, status='failed',
