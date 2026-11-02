@@ -33,6 +33,10 @@ data/*.db-wal
 **/data/*.db-shm
 **/data/*.db-wal
 
+# Local throw-away MySQL instance (datadir, logs, pid, init scripts).
+# It exists only to run the test suites and must never be committed.
+.mysql-dev/
+
 # Test artifacts (transient test DBs / temp storage)
 tests/backend/test-*.db
 tests/backend/test-*.db-shm
