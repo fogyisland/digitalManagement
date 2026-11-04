@@ -177,6 +177,80 @@ export const integrationChecks = [
   },
 
   {
+    name: 'the ingest API accepts a key of the right scope and refuses one without it',
+    async run(ctx) {
+      // The key created by the first check carries `read,upload`; a second
+      // one is created with `read` only, so the scope rule is what separates
+      // the two calls rather than the credential being invalid.
+      const key = ctx.state.apiKey.key;
+      const uploaderKey = await ctx.apiKeysApi.create({
+        name: 'contract-ingest-uploader',
+        scopes: ['read', 'upload'],
+      });
+      const readOnlyKey = await ctx.apiKeysApi.create({
+        name: 'contract-ingest-reader',
+        scopes: ['read'],
+      });
+      assert.ok(key, 'the earlier API key must still be available');
+
+      const bytes = uniqueBytes('contract-ingest', 512);
+      const form = new FormData();
+      form.append('files', new File([bytes], 'contract-ingest.bin', {
+        type: 'application/octet-stream',
+      }));
+      form.append('title', 'contract-ingest');
+      const accepted = await fetch(`${ctx.origin}/api/ingest/v1/assets`, {
+        method: 'POST',
+        headers: { 'x-api-key': uploaderKey.key },
+        body: form,
+      });
+      assert.equal(accepted.status, 201, `an ingest upload must answer 201, got ${accepted.status}`);
+      const payload = await accepted.json();
+      assert.equal(payload.count, 1, 'the ingest endpoint must return one asset per file');
+      const ingested = payload.items[0];
+      assert.equal(ingested.title, 'contract-ingest');
+      assert.equal(ingested.source, 'ingest', 'an ingested asset must record its entry point');
+      assert.ok(ingested.tenant_id, 'an ingested asset must report the tenant of its key');
+      assert.equal(
+        ingested.tenant_id,
+        ctx.state.login.user.tenant_id,
+        'an ingested asset must belong to the tenant the key was created in',
+      );
+
+      // The same file again is a duplicate within the tenant, not a new asset.
+      const formAgain = new FormData();
+      formAgain.append('files', new File([bytes], 'contract-ingest.bin', {
+        type: 'application/octet-stream',
+      }));
+      const duplicate = await fetch(`${ctx.origin}/api/ingest/v1/assets`, {
+        method: 'POST',
+        headers: { 'x-api-key': uploaderKey.key },
+        body: formAgain,
+      });
+      assert.equal(duplicate.status, 200, 'a duplicate ingest must answer 200, not create a row');
+      assert.equal((await duplicate.json()).items[0].id, ingested.id);
+
+      // A key without `upload` cannot push an asset.
+      const formDenied = new FormData();
+      formDenied.append('files', new File([uniqueBytes('contract-ingest-denied', 64)], 'x.bin', {
+        type: 'application/octet-stream',
+      }));
+      const denied = await fetch(`${ctx.origin}/api/ingest/v1/assets`, {
+        method: 'POST',
+        headers: { 'x-api-key': readOnlyKey.key },
+        body: formDenied,
+      });
+      assert.equal(denied.status, 403, 'a key without the upload scope must be refused');
+      assert.match(String((await denied.json()).detail), /Missing scope/);
+
+      const anonymous = await rawRequest(ctx.origin, 'POST', '/api/ingest/v1/assets');
+      assert.equal(anonymous.status, 401, 'the ingest API must require a key');
+
+      ctx.state.ingested = ingested;
+    },
+  },
+
+  {
     name: 'the webhook endpoints validate the events and the URL, and disable on delete',
     async run(ctx) {
       const created = await ctx.webhooksApi.create({

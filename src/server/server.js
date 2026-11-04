@@ -51,6 +51,7 @@ const createWebhooksRouter = require('./routes/webhooks');
 const createStatsRouter = require('./routes/stats');
 const createJobsRouter = require('./routes/jobs');
 const createInitRouter = require('./routes/init');
+const createIngestRouter = require('./routes/ingest');
 const createPublicRouter = require('./routes/public');
 
 const config = getConfig();
@@ -153,6 +154,9 @@ app.use(
 
 // --- Public delivery API ----------------------------------------------------
 app.use('/api/public/v1', createPublicRouter({ db, uploader }));
+
+// --- Ingest API (external systems, API key) ---------------------------------
+app.use('/api/ingest/v1', createIngestRouter({ db, uploader }));
 
 // --- 404 for unknown API ----------------------------------------------------
 app.use('/api', (_req, res) => res.status(404).json({ detail: 'Not found' }));
