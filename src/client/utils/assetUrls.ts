@@ -8,6 +8,12 @@ import type { Asset } from '@/types';
  * `storage_path` into `/storage/...` URLs. The frontend therefore only has
  * to *pick* one of them — rebuilding `/storage/...` by hand in five places
  * is exactly the kind of duplication that drifts away from the contract.
+ *
+ * Those URLs are **signed**: they carry an expiry and a signature that the
+ * storage route checks, because the stored files are not public and a
+ * browser's `<img src>` cannot send an `Authorization` header. The URL is
+ * the credential, so it has to be used as it is — do not rebuild it, and do
+ * not strip its query string.
  */
 
 /** The fields a preview lookup needs. */

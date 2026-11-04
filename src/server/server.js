@@ -12,7 +12,7 @@
  *   /api/health, /api/health/ready  — liveness / readiness probes
  *   /api/v1/*                       — admin API, JWT bearer tokens
  *   /api/public/v1/*                — delivery API, API keys
- *   /storage/*                      — uploaded files (static)
+ *   /storage/*                      — the stored files (signed URLs)
  *   /*                              — frontend build output (static)
  */
 
@@ -53,6 +53,8 @@ const createJobsRouter = require('./routes/jobs');
 const createInitRouter = require('./routes/init');
 const createIngestRouter = require('./routes/ingest');
 const createPublicRouter = require('./routes/public');
+const createStorageRouter = require('./routes/storage');
+const createManifestRouter = require('./routes/manifest');
 
 const config = getConfig();
 
@@ -150,6 +152,11 @@ app.use(
   createWebhooksRouter({ db }),
   createStatsRouter({ db }),
   createJobsRouter({ db }),
+  // The manifest index is the library's own listing. It used to be a static
+  // file under the storage root, which enumerated every tenant's assets to
+  // anybody; it is served here, to an authenticated caller, scoped to their
+  // tenant.
+  createManifestRouter({ db }),
 );
 
 // --- Public delivery API ----------------------------------------------------
@@ -161,8 +168,14 @@ app.use('/api/ingest/v1', createIngestRouter({ db, uploader }));
 // --- 404 for unknown API ----------------------------------------------------
 app.use('/api', (_req, res) => res.status(404).json({ detail: 'Not found' }));
 
-// --- Static: storage --------------------------------------------------------
-app.use('/storage', express.static(config.storageDir, { maxAge: '7d', fallthrough: true }));
+// --- The stored files --------------------------------------------------------
+// The files are served through a route that checks a signature or a token,
+// not through a static mount: a static mount over the storage directory
+// would publish every tenant's originals to anybody who could name the file.
+// This is a file route, not an API route — the frontend puts the URL
+// straight into an `<img src>`, which cannot carry an `Authorization`
+// header, so the URL cannot live under `/api`.
+app.use('/storage', createStorageRouter({ db }));
 
 // --- Static: frontend build (if exists) -------------------------------------
 const FRONTEND_DIST = path.join(config.rootDir, 'dist');
@@ -208,7 +221,7 @@ if (require.main === module) {
       console.log(`  Database: ${config.dbUser}@${config.dbHost}:${config.dbPort}/${config.dbName}`);
       console.log('  API:    /api/v1/* (admin JWT)');
       console.log('  Public: /api/public/v1/* (API Key)');
-      console.log('  Static: /storage/*  (uploaded files)');
+      console.log('  Files:  /storage/*  (signed URLs)');
       console.log('  Admin:  admin / Admin@123456\n');
     });
   })();

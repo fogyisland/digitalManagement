@@ -10,17 +10,26 @@
  * (`frontend/tests/contract.test.js`) fails the build if the two drift.
  */
 
+const { signedStorageUrl } = require('./storage-url');
+
 /**
  * Build a browser-reachable URL for a file stored under STORAGE_DIR.
  *
+ * The URL is **signed**: it carries an expiry and an HMAC over the asset's
+ * tenant and its path, so the storage route can tell that the server issued
+ * it. The signature is what lets a browser's `<img src>` reach the file at
+ * all — an image request cannot carry an `Authorization` header — and it is
+ * also what stops the URL from working for another tenant's file.
+ *
  * @param {string|null|undefined} relativePath e.g. "thumbnails/abc.webp"
+ * @param {string|null|undefined} tenantId the tenant that owns the file
  * @returns {string|null}
  */
-function storageUrl(relativePath) {
+function storageUrl(relativePath, tenantId) {
   if (!relativePath) return null;
   const normalized = String(relativePath).split(/[\\/]+/).filter(Boolean).join('/');
   if (!normalized) return null;
-  return `/storage/${normalized}`;
+  return signedStorageUrl(normalized, tenantId);
 }
 
 /**
@@ -46,8 +55,10 @@ function parseTagNames(csv) {
  */
 function toAsset(row) {
   if (!row) return null;
-  const thumbnailUrl = storageUrl(row.thumbnail_path);
-  const originalUrl = storageUrl(row.storage_path);
+  // The signature is computed over the asset's own tenant, so the URL only
+  // ever opens the file it was issued for.
+  const thumbnailUrl = storageUrl(row.thumbnail_path, row.tenant_id);
+  const originalUrl = storageUrl(row.storage_path, row.tenant_id);
   return {
     id: row.id,
     title: row.title,

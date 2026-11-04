@@ -240,6 +240,12 @@ function createAssetsRouter({ db, uploader }) {
     }
     const extension = path.extname(asset.original_name || '') || '';
     const baseUrl = getConfig().appBaseUrl;
+    // The file is served through the signed URL route, so the link carries
+    // the signature that proves the server issued it for this asset.
+    const signedUrl = storageUrl(
+      path.posix.join('originals', `${asset.id}${extension}`),
+      asset.tenant_id,
+    );
     return res.json({
       id: asset.id,
       title: asset.title,
@@ -252,7 +258,7 @@ function createAssetsRouter({ db, uploader }) {
       metadata: asset.metadata_json ? safeParse(asset.metadata_json) : null,
       original_path: `originals/${asset.id}${extension}`,
       thumbnail_path: asset.thumbnail_path || null,
-      public_url: `${baseUrl}/storage/${asset.id}${extension}`,
+      public_url: signedUrl ? `${baseUrl}${signedUrl}` : null,
       created_at: asset.created_at,
     });
   }));
@@ -317,7 +323,7 @@ function createAssetsRouter({ db, uploader }) {
       return res.status(410).json({ detail: 'The stored file is no longer available' });
     }
     return res.json({
-      download_url: storageUrl(asset.storage_path),
+      download_url: storageUrl(asset.storage_path, asset.tenant_id),
       filename: asset.original_name || asset.filename,
       size: asset.file_size,
       mime_type: asset.mime_type,

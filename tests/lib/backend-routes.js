@@ -51,6 +51,27 @@ const SHADOW_PLACEHOLDER = 'x-contract-placeholder';
 const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete'];
 
 /**
+ * The prefixes that serve something other than the JSON API.
+ *
+ * Every *router* has to live under an `/api` namespace, because a router
+ * mounted without one answers every path the app sees. A file route is not
+ * an API route: it serves bytes, and the frontend puts its URL straight
+ * into an `<img src>`, so the URL cannot live under `/api` without changing
+ * the contract on both sides.
+ *
+ * Each entry names the prefix and says why it is not an API — an exemption
+ * nobody can read is a hole, exactly as in the tenant lint.
+ */
+export const NON_API_MOUNTS = [
+  {
+    prefix: '/storage',
+    reason:
+      "the stored files are served as bytes, not as JSON — the frontend puts " +
+      "the URL straight into an `<img src>`, which cannot live under `/api`",
+  },
+];
+
+/**
  * Join a mount prefix and a route path into the path the server answers.
  *
  * @param {string} prefix
@@ -262,11 +283,15 @@ export function parseBackendRoutes({ serverFile, routesDir, repoRoot }) {
       continue;
     }
     if (!mount.prefix.startsWith('/api/')) {
-      problems.push(
-        `${serverLabel}:${mount.line} mounts a router on "${mount.prefix}" — ` +
-          'every router must live under an /api namespace',
-      );
-      continue;
+      // A file route may live outside `/api` when it is named here.
+      const exempt = NON_API_MOUNTS.some((entry) => entry.prefix === mount.prefix);
+      if (!exempt) {
+        problems.push(
+          `${serverLabel}:${mount.line} mounts a router on "${mount.prefix}" — ` +
+            'every router must live under an /api namespace',
+        );
+        continue;
+      }
     }
     for (const factoryName of mount.factories) {
       const file = factories.get(factoryName);

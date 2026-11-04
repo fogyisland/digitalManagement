@@ -2075,6 +2075,215 @@ async function phaseLifecycle() {
   }
 }
 
+// --- Phase 9: the storage files are not anonymous ----------------------------
+
+/**
+ * The stored files are served through a route that checks a signature, not
+ * through a static mount.
+ *
+ * A static mount over the storage directory publishes every tenant's
+ * originals to anybody who can name the file. The files are served instead
+ * through a signed URL: the server issues the link to a caller who may
+ * already see the asset, and the link grants access to that one file until
+ * it expires.
+ *
+ * The phase asserts the three properties that matter:
+ *
+ *   1. an anonymous request for a stored file does not get the bytes;
+ *   2. the tenant that owns the asset gets its own file;
+ *   3. another tenant does not — not even with the owner's URL in hand.
+ *
+ * The manifest index used to sit under the same static root and enumerated
+ * every tenant's assets, so it is checked too.
+ */
+async function phaseStorageScope() {
+  const { app, dbName, storagePath } = await bootServer('storage');
+  const server = await listen(app);
+  const port = server.address().port;
+  const db = app.locals.db;
+
+  /**
+   * @param {string} requestPath
+   * @param {Record<string, string>} [headers]
+   * @returns {Promise<{status: number, raw: string}>}
+   */
+  function get(requestPath, headers) {
+    return request({
+      hostname: '127.0.0.1',
+      port,
+      path: requestPath,
+      method: 'GET',
+      headers: headers || {},
+      binary: true,
+    });
+  }
+
+  /**
+   * @param {string} username
+   * @param {string} password
+   * @returns {Promise<string>}
+   */
+  async function tokenFor(username, password) {
+    const res = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/auth/login',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    assert.strictEqual(
+      res.status,
+      200,
+      `login(${username}) expected 200, got ${res.status}: ${res.raw}`,
+    );
+    return JSON.parse(res.raw).access_token;
+  }
+
+  /**
+   * Upload one PNG for the token's tenant.
+   *
+   * @param {string} token
+   * @param {string} title
+   * @returns {Promise<object>} the created asset
+   */
+  async function uploadFor(token, title) {
+    const { boundary, body } = pngUpload(`${title}.png`, [['title', title]]);
+    const res = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/assets/upload',
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': String(body.length),
+        Authorization: `Bearer ${token}`,
+      },
+      body,
+      binary: true,
+    });
+    assert.strictEqual(res.status, 201, `upload(${title}) expected 201, got ${res.status}: ${res.raw}`);
+    return JSON.parse(res.raw).items[0];
+  }
+
+  try {
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run(['tenant-a', '租户 A', 'tenant-a']);
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run(['tenant-b', '租户 B', 'tenant-b']);
+    for (const [id, tenant, username, password] of [
+      ['u-a', 'tenant-a', 'alice', 'Alice@123456'],
+      ['u-b', 'tenant-b', 'bob', 'Bob@123456'],
+    ]) {
+      await db
+        .prepare(
+          'INSERT INTO users (id, tenant_id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+        )
+        .run([id, tenant, username, `${username}@dam.local`, bcrypt.hashSync(password, 10), 'admin']);
+    }
+
+    const aliceToken = await tokenFor('alice', 'Alice@123456');
+    const bobToken = await tokenFor('bob', 'Bob@123456');
+
+    const aliceAsset = await uploadFor(aliceToken, 'alice-secret');
+    const bobAsset = await uploadFor(bobToken, 'bob-secret');
+
+    // --- 1) an unsigned URL must not work ----------------------------------
+    // The URL the API hands out is signed. A caller who guesses the asset id
+    // and builds the path by hand must not reach the file — that is what
+    // stopped the static mount from publishing the library.
+    const unsigned = aliceAsset.original_url.split('?')[0];
+    const anonymous = await get(unsigned);
+    assert.notStrictEqual(
+      anonymous.status,
+      200,
+      `an unsigned URL must not reach the file, got ${anonymous.status}`,
+    );
+    assert.ok(
+      !String(anonymous.raw).includes('PNG'),
+      'the unsigned response must not carry the file bytes',
+    );
+
+    // --- 2) the signed URL works for the browser ----------------------------
+    // A browser's `<img src>` cannot carry an `Authorization` header, so the
+    // signed URL is the only way the frontend can show a picture. It has to
+    // work without a credential.
+    const signed = await get(aliceAsset.original_url);
+    assert.strictEqual(
+      signed.status,
+      200,
+      `the signed URL must open the file, got ${signed.status}`,
+    );
+    assert.ok(
+      signed.raw.length > 0,
+      'the signed URL must return the file bytes',
+    );
+
+    // --- 3) a signed URL only opens the file it was issued for --------------
+    // The signature covers the path, so it cannot be moved onto another
+    // asset — not even one of the caller's own.
+    const movedSignature = aliceAsset.original_url.replace(
+      /\/originals\/[^?]+/,
+      `/originals/${bobAsset.id}${path.extname(bobAsset.original_name || '')}`,
+    );
+    const moved = await get(movedSignature);
+    assert.notStrictEqual(
+      moved.status,
+      200,
+      `a signature must not open another file, got ${moved.status}`,
+    );
+
+    // --- 4) the owning tenant gets its own file with its token --------------
+    const owner = await get(aliceAsset.original_url, {
+      Authorization: `Bearer ${aliceToken}`,
+    });
+    assert.strictEqual(
+      owner.status,
+      200,
+      `the owning tenant must be able to read its own file, got ${owner.status}`,
+    );
+
+    // --- 5) another tenant must not, even with a token ----------------------
+    const crossTenant = await get(aliceAsset.original_url, {
+      Authorization: `Bearer ${bobToken}`,
+    });
+    assert.notStrictEqual(
+      crossTenant.status,
+      200,
+      `another tenant must not read the file, got ${crossTenant.status}`,
+    );
+    assert.ok(
+      !String(crossTenant.raw).includes('PNG'),
+      "the other tenant's response must not carry the file bytes",
+    );
+
+    // --- 6) the manifest index must not enumerate the library ---------------
+    const manifest = await get('/storage/manifests/index.json');
+    assert.notStrictEqual(
+      manifest.status,
+      200,
+      `the manifest index must not be readable without a credential, got ${manifest.status}`,
+    );
+
+    // --- 5) a tampered signature must not work -----------------------------
+    const tampered = aliceAsset.original_url.replace(/sig=[0-9a-f]+/, 'sig=' + '0'.repeat(64));
+    const tamperedRes = await get(tampered, { Authorization: `Bearer ${aliceToken}` });
+    assert.notStrictEqual(
+      tamperedRes.status,
+      200,
+      `a tampered signature must not be accepted, got ${tamperedRes.status}`,
+    );
+
+    console.log('storage files are scoped to their tenant OK');
+  } finally {
+    await close(server);
+    await closeDb(app);
+    await removeFixture(dbName, storagePath);
+  }
+}
+
 // --- Runner ------------------------------------------------------------------
 
 async function main() {
@@ -2086,6 +2295,7 @@ async function main() {
   await phaseFileSizeLimit();
   await phaseWebhooks();
   await phaseLifecycle();
+  await phaseStorageScope();
   console.log('all backend tests passed');
 }
 

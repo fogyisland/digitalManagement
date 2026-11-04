@@ -82,6 +82,30 @@ export const assetChecks = [
   },
 
   {
+    name: 'the signed file URL serves the bytes, and the unsigned path does not',
+    async run(ctx) {
+      const asset = ctx.state.asset;
+      // The frontend puts these URLs straight into an `<img src>`, which
+      // cannot carry an `Authorization` header — so the URL itself has to
+      // open the file.
+      const response = await fetch(`${ctx.origin}${asset.original_url}`);
+      assert.equal(response.status, 200, 'the signed URL must open the file');
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.equal(bytes.length, TINY_PNG.length, 'the file must arrive whole');
+      assert.equal(
+        bytes.subarray(0, 8).toString('hex'),
+        '89504e470d0a1a0a',
+        'the bytes must be the PNG that was uploaded',
+      );
+
+      // The same path without the signature is the attack the static mount
+      // allowed: guess an asset id, build the path, read the bytes.
+      const unsigned = await fetch(`${ctx.origin}${asset.original_url.split('?')[0]}`);
+      assert.notEqual(unsigned.status, 200, 'an unsigned URL must not open the file');
+    },
+  },
+
+  {
     name: 'PUT /assets/:id updates the title, the description and the tags',
     async run(ctx) {
       const asset = ctx.state.asset;
