@@ -28,12 +28,14 @@
 
 import { assetChecks } from './runtime-checks-assets.js';
 import { identityChecks } from './runtime-checks-identity.js';
+import { initChecks } from './runtime-checks-init.js';
 import { integrationChecks } from './runtime-checks-integrations.js';
 import { sessionChecks } from './runtime-checks-session.js';
 
 /**
  * @typedef {object} CheckContext
  * @property {string} origin the test server's origin, e.g. `http://127.0.0.1:41234`
+ * @property {string} srcDir the frontend source directory the checks read from
  * @property {any} client the `src/api/client.ts` module
  * @property {any} authApi
  * @property {any} assetsApi
@@ -42,6 +44,7 @@ import { sessionChecks } from './runtime-checks-session.js';
  * @property {any} categoriesApi
  * @property {any} apiKeysApi
  * @property {any} webhooksApi
+ * @property {any} initSteps the wizard's step module
  * @property {(form: {url: string, title?: string}) => Promise<any>} importUrlByUrl
  * @property {(jobId: string) => Promise<any|null>} lookupComfyUiJob
  * @property {(jobId: string, payload?: object) => Promise<any>} registerAssetByComfyJob
@@ -59,6 +62,7 @@ export const runtimeChecks = [
   ...identityChecks,
   ...assetChecks,
   ...integrationChecks,
+  ...initChecks,
   ...sessionChecks,
 ];
 

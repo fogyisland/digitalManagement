@@ -68,6 +68,7 @@ import {
   waitForHealth,
 } from './lib/runtime.js';
 import { runRuntimeChecks } from './lib/runtime-checks.js';
+import { loadInitSteps } from './lib/runtime-checks-init.js';
 import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
 import { findEventVocabularyDrift } from './lib/event-parity.js';
 
@@ -237,7 +238,11 @@ async function runRuntimeIntegration() {
     // Node we point the very same instance at the test server.
     apis.client.apiClient.defaults.baseURL = `${server.origin}/api/v1`;
 
-    const context = { origin: server.origin, ...apis, state: {} };
+    // The wizard's step mapping is pure logic, so it is loaded straight from
+    // the frontend source — the check and the wizard read the same function.
+    const initSteps = await loadInitSteps(SRC_DIR);
+
+    const context = { origin: server.origin, srcDir: SRC_DIR, ...apis, initSteps, state: {} };
     const passed = await runRuntimeChecks(context);
     console.log(`runtime integration OK — ${passed.length} checks passed`);
     return passed.length;

@@ -10,6 +10,15 @@
  * on every step but the status probe. It is printed by the backend on boot,
  * so the operator copies it from the console — the wizard cannot discover it
  * on its own, by design.
+ *
+ * The wizard also has to survive a reload. `GET /api/init/status` reports how
+ * far the installation got, and the wizard opens on the first step the
+ * backend has not finished (`stepFromStatus`). Without that, an operator who
+ * closed the browser after the database step came back to a form for a
+ * database that already exists and could not get past it. A page reached this
+ * way has no collected values — they belonged to the previous session — so
+ * the pages below accept them as `null` and say so rather than refusing to
+ * render.
  */
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Input, Space, Spin, Steps, Typography } from 'antd';
@@ -18,12 +27,14 @@ import InitDatabase from './InitDatabase';
 import InitAdmin from './InitAdmin';
 import InitReview from './InitReview';
 import { describeInitError, initApi, setInitToken } from './initApi';
+import { stepFromStatus } from './initSteps';
+import type { InitStep } from './initSteps';
 import type { AdminInput, DatabaseInput } from './initApi';
 
 const { Paragraph, Text, Title } = Typography;
 
 /** Which page is showing. */
-type Step = 0 | 1 | 2;
+type Step = InitStep;
 
 /** Where the token is remembered between reloads of the wizard only. */
 const TOKEN_STORAGE_KEY = 'dam_init_token';
@@ -35,6 +46,7 @@ export default function InitWizard(): JSX.Element {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) || '');
   const [tokenAccepted, setTokenAccepted] = useState(false);
   const [step, setStep] = useState<Step>(0);
+  const [resumed, setResumed] = useState(false);
   const [database, setDatabase] = useState<DatabaseInput | null>(null);
   const [admin, setAdmin] = useState<AdminInput | null>(null);
 
@@ -47,6 +59,11 @@ export default function InitWizard(): JSX.Element {
       .then((status) => {
         if (cancelled) return;
         setAlreadyInitialized(status.initialized);
+        // A half-finished installation resumes where it stopped: the backend
+        // knows which steps are done, and the wizard has no other way to.
+        const resumeAt = stepFromStatus(status.steps);
+        setStep(resumeAt);
+        setResumed(resumeAt > 0);
       })
       .catch((err: unknown) => {
         if (!cancelled) setCheckError(describeInitError(err));
@@ -148,6 +165,16 @@ export default function InitWizard(): JSX.Element {
 
         {!alreadyInitialized && tokenAccepted ? (
           <>
+            {resumed ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginTop: 24 }}
+                message="从上次停下的地方继续"
+                description="后端报告前面的步骤已经完成，向导直接打开在尚未完成的那一页。"
+              />
+            ) : null}
+
             <Steps
               current={step}
               style={{ marginTop: 24, marginBottom: 24 }}
@@ -162,22 +189,24 @@ export default function InitWizard(): JSX.Element {
               <InitDatabase
                 onDone={(values) => {
                   setDatabase(values);
+                  setResumed(false);
                   setStep(1);
                 }}
               />
             ) : null}
 
-            {step === 1 && database ? (
+            {step === 1 ? (
               <InitAdmin
                 onBack={() => setStep(0)}
                 onDone={(values) => {
                   setAdmin(values);
+                  setResumed(false);
                   setStep(2);
                 }}
               />
             ) : null}
 
-            {step === 2 && database && admin ? (
+            {step === 2 ? (
               <InitReview
                 database={database}
                 admin={admin}
