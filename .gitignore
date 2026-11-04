@@ -67,3 +67,7 @@ venv/
 # Logs
 *.log
 logs/
+
+# Python bytecode (the comfyui-node package)
+__pycache__/
+*.py[cod]
