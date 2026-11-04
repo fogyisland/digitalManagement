@@ -251,6 +251,73 @@ export const integrationChecks = [
   },
 
   {
+    name: 'the ComfyUI ingest endpoint uploads the artifact and registers the job in one call',
+    async run(ctx) {
+      const uploaderKey = await ctx.apiKeysApi.create({
+        name: 'contract-comfyui-uploader',
+        scopes: ['read', 'upload'],
+      });
+      const readOnlyKey = await ctx.apiKeysApi.create({
+        name: 'contract-comfyui-reader',
+        scopes: ['read'],
+      });
+
+      const jobId = 'contract-comfyui-job-1';
+      const bytes = uniqueBytes('contract-comfyui', 512);
+      const form = new FormData();
+      form.append('files', new File([bytes], 'contract-comfyui.png', {
+        type: 'image/png',
+      }));
+      form.append('title', 'Contract ComfyUI');
+      form.append('tag_names', 'comfyui,contract');
+      form.append('prompt', 'a quiet harbour at dawn');
+      form.append('seed', '12345');
+      const uploaded = await fetch(`${ctx.origin}/api/ingest/v1/comfyui/${jobId}`, {
+        method: 'POST',
+        headers: { 'x-api-key': uploaderKey.key },
+        body: form,
+      });
+      assert.equal(uploaded.status, 201, `the ComfyUI ingest must answer 201, got ${uploaded.status}`);
+      const payload = await uploaded.json();
+      assert.equal(payload.count, 1, 'the ComfyUI ingest must return one asset per file');
+      const asset = payload.items[0];
+
+      // The correlation the endpoint exists for: the asset carries the job id
+      // that was in the path, and the admin lookup finds it by that id.
+      assert.equal(asset.job_id, jobId, 'the asset must carry the job id from the path');
+      assert.equal(asset.source_tool, 'comfyui', 'the asset must record the tool it came from');
+      assert.equal(asset.title, 'Contract ComfyUI');
+      assert.equal(asset.prompt, 'a quiet harbour at dawn');
+      assert.equal(asset.seed, 12345);
+      assert.equal(
+        asset.tenant_id,
+        ctx.state.login.user.tenant_id,
+        'the asset must belong to the tenant the key was created in',
+      );
+
+      const found = await ctx.lookupComfyUiJob(jobId);
+      assert.ok(found, 'the uploaded asset must be found again by its job id');
+      assert.equal(found.id, asset.id, 'the lookup must return the asset the ingest created');
+
+      // A key without the `upload` scope cannot push an artifact.
+      const deniedForm = new FormData();
+      deniedForm.append('files', new File([uniqueBytes('contract-comfyui-denied', 64)], 'x.png', {
+        type: 'image/png',
+      }));
+      const denied = await fetch(`${ctx.origin}/api/ingest/v1/comfyui/contract-comfyui-denied`, {
+        method: 'POST',
+        headers: { 'x-api-key': readOnlyKey.key },
+        body: deniedForm,
+      });
+      assert.equal(denied.status, 403, 'a key without the upload scope must be refused');
+      assert.match(String((await denied.json()).detail), /Missing scope/);
+
+      const anonymous = await rawRequest(ctx.origin, 'POST', `/api/ingest/v1/comfyui/${jobId}`);
+      assert.equal(anonymous.status, 401, 'the ComfyUI ingest must require a key');
+    },
+  },
+
+  {
     name: 'the webhook endpoints validate the events and the URL, and disable on delete',
     async run(ctx) {
       const created = await ctx.webhooksApi.create({

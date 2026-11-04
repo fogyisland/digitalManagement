@@ -16,6 +16,7 @@
  * The router is mounted at `/api/ingest/v1`, so the paths below are relative
  * to that prefix. Contract:
  *   POST /assets              (scope upload) multipart `files`, or JSON `{url}`
+ *   POST /comfyui/:job_id     (scope upload) multipart `files` — the ComfyUI door
  *   POST /assets/:id/metadata (scope write)  {title?, description?, tags?, category_id?, status?}
  *   POST /events              (scope write)  {event, payload?}
  */
@@ -177,6 +178,50 @@ function createIngestRouter({ db, uploader }) {
       // exists for; the admin path emits `asset.updated`.
       await require('../lib/assets').emitAssetEvent(db, 'asset.metadata_updated', updated);
       return res.json(toAsset(updated));
+    }),
+  );
+
+  // --- comfyui --------------------------------------------------------------
+  router.post(
+    '/comfyui/:job_id',
+    apiKeyRequired(db, 'upload'),
+    // The same file limit as every other door: an API key must not be a way
+    // around the configured maximum.
+    uploader.array('files', 20),
+    asyncHandler(async (req, res) => {
+      const jobId = String(req.params.job_id || '').trim();
+      if (!jobId) return res.status(400).json({ detail: 'job_id required' });
+
+      const body = req.body || {};
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ detail: 'files required' });
+      }
+
+      // The job id in the path is the correlation — it wins over whatever the
+      // body claims, so a caller cannot file one artifact under another's job.
+      const extras = uploadExtras({ ...body, job_id: jobId, source_tool: 'comfyui' });
+      if (!extras.title) extras.title = jobId;
+
+      const items = [];
+      let anyCreated = false;
+      for (let index = 0; index < req.files.length; index += 1) {
+        const perFile = { ...extras };
+        if (req.files.length > 1) {
+          perFile.title = `${extras.title} (${index + 1})`;
+        }
+        const result = await processUpload({
+          db,
+          storageDir: getConfig().storageDir,
+          file: req.files[index],
+          ownerId: null,
+          source: 'ingest',
+          tenantId: req.tenantScope.tenantId,
+          extra: perFile,
+        });
+        if (!result.duplicate) anyCreated = true;
+        items.push(toAsset(result.asset));
+      }
+      return res.status(anyCreated ? 201 : 200).json({ items, count: items.length });
     }),
   );
 
