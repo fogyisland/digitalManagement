@@ -58,6 +58,12 @@ const WEBHOOK_EVENTS = [
   'asset.updated',
   'asset.deleted',
   'asset.restored',
+  // An ingest integration that pushes new metadata is not an admin edit: a
+  // receiver subscribed to `asset.updated` should not have to guess whose
+  // change it was.
+  'asset.metadata_updated',
+  'tenant.created',
+  'tenant.updated',
 ];
 
 // Status codes that are worth retrying. Everything else (incl. 4xx) is a

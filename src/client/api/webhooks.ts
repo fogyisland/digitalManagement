@@ -14,6 +14,9 @@ export const WEBHOOK_EVENTS: WebhookEvent[] = [
   'asset.updated',
   'asset.deleted',
   'asset.restored',
+  'asset.metadata_updated',
+  'tenant.created',
+  'tenant.updated',
 ]
 
 /** Human labels for the event checkboxes. */
@@ -22,6 +25,9 @@ export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
   'asset.updated': '资产更新',
   'asset.deleted': '资产删除',
   'asset.restored': '资产恢复',
+  'asset.metadata_updated': '资产元数据更新',
+  'tenant.created': '租户新建',
+  'tenant.updated': '租户更新',
 }
 
 /**

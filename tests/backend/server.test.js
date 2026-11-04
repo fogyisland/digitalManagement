@@ -1355,6 +1355,7 @@ async function phaseFileSizeLimit() {
 
 async function phaseWebhooks() {
   const { app, dbName, storagePath } = await bootServer('webhook');
+  const db = app.locals.db;
   const server = await listen(app);
   const port = server.address().port;
 
@@ -1487,6 +1488,52 @@ async function phaseWebhooks() {
       'webhook_logs row for asset.updated',
     );
 
+    // --- 4b) the ingest metadata path -> 'asset.metadata_updated' ----------
+    // The event exists for the caller that changes metadata *without* going
+    // through the admin update route: an ingest integration pushing a new
+    // title or tag list is not an admin edit, and a receiver subscribed to
+    // the admin event should not have to guess.
+    // tenant-lint: allow the endpoint row is read by id inside one tenant
+    const rawKey = 'dam_metadata_event_key';
+    await db
+      .prepare(
+        'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run([
+        'key-metadata',
+        DEFAULT_TENANT_ID,
+        'metadata event key',
+        rawKey.slice(0, 12),
+        crypto.createHash('sha256').update(rawKey).digest('hex'),
+        'read,write',
+      ]);
+
+    const metadataRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: `/api/ingest/v1/assets/${createdAsset.id}/metadata`,
+      method: 'POST',
+      headers: { 'X-API-Key': rawKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'renamed by ingest', tags: ['封面'] }),
+    });
+    assert.strictEqual(
+      metadataRes.status,
+      200,
+      `ingest metadata expected 200, got ${metadataRes.status}: ${metadataRes.raw}`,
+    );
+    await waitFor(
+      async () => {
+        const rows = await queryFixture(
+          dbName,
+          "SELECT COUNT(*) AS c FROM webhook_logs WHERE endpoint_id = ? AND event = 'asset.metadata_updated'",
+          [createdBody.id],
+        );
+        return rows[0].c >= 1;
+      },
+      10000,
+      'webhook_logs row for asset.metadata_updated',
+    );
+
     // --- 5) DELETE the asset -> 'asset.deleted' ----------------------------
     const delRes = await request({
       hostname: '127.0.0.1',
@@ -1508,6 +1555,34 @@ async function phaseWebhooks() {
       },
       10000,
       'webhook_logs row for asset.deleted',
+    );
+
+    // --- 5b) restore the asset -> 'asset.restored' --------------------------
+    // Restoring is the mirror image of the soft delete, and a receiver that
+    // tracks the library through events has no other way to learn about it.
+    const restoreRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: `/api/v1/assets/${createdAsset.id}/restore`,
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    assert.strictEqual(
+      restoreRes.status,
+      200,
+      `restore expected 200, got ${restoreRes.status}: ${restoreRes.raw}`,
+    );
+    await waitFor(
+      async () => {
+        const rows = await queryFixture(
+          dbName,
+          "SELECT COUNT(*) AS c FROM webhook_logs WHERE endpoint_id = ? AND event = 'asset.restored'",
+          [createdBody.id],
+        );
+        return rows[0].c >= 1;
+      },
+      10000,
+      'webhook_logs row for asset.restored',
     );
 
     // --- 6) DELETE /api/v1/webhooks/:id (soft-disable) ----------------------

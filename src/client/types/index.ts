@@ -44,6 +44,9 @@ export type WebhookEvent =
   | 'asset.updated'
   | 'asset.deleted'
   | 'asset.restored'
+  | 'asset.metadata_updated'
+  | 'tenant.created'
+  | 'tenant.updated'
 
 /* --------------------------------------------------------------------------
    Asset — 镜像 toAsset()

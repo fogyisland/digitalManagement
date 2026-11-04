@@ -69,6 +69,7 @@ import {
 } from './lib/runtime.js';
 import { runRuntimeChecks } from './lib/runtime-checks.js';
 import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
+import { findEventVocabularyDrift } from './lib/event-parity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -164,6 +165,18 @@ function runStaticLint() {
     `tenant-scope lint OK — every business query names a tenant ` +
       `(${describeExemptions().length} exemption(s))`,
   );
+
+  // The webhook vocabulary exists twice — once in the backend, once in the
+  // frontend — and the two have to agree: an event the UI offers but the
+  // backend rejects is a subscription the user can never fix, and an event
+  // the backend sends but the UI never offers is invisible.
+  const drift = findEventVocabularyDrift({ repoRoot: REPO_ROOT });
+  assert.deepEqual(
+    drift,
+    [],
+    `webhook event vocabulary drift:\n${drift.map((v) => `  - ${v}`).join('\n')}`,
+  );
+  console.log('event vocabulary parity OK — backend and frontend agree');
 
   console.log(
     `static route lint OK — ${sites.length} call sites checked against ` +
