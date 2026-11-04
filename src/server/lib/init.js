@@ -154,14 +154,20 @@ async function isInitialized({ envFile, db }) {
 /**
  * Has this installation been configured at all?
  *
- * The one marker the boot can read before the database is reachable: an
- * environment file that carries a signing key. A fresh checkout has none, so
- * it boots into the wizard instead of seeding a library nobody asked for.
+ * The one marker the boot can read before the database is reachable: a
+ * signing key, from the environment file or from the process environment.
+ * A fresh checkout has neither, so it boots into the wizard instead of
+ * seeding a library nobody asked for.
  *
  * @param {string} envFile
  * @returns {boolean}
  */
 function hasConfiguration(envFile) {
+  // A deployment that configures through container environment variables
+  // never writes the file, so the process environment counts too. The wizard
+  // is for the case where neither exists.
+  const fromProcess = String(process.env.JWT_SECRET || '').trim();
+  if (fromProcess.length > 0) return true;
   const env = readEnvFile(envFile);
   return typeof env.JWT_SECRET === 'string' && env.JWT_SECRET.trim().length > 0;
 }

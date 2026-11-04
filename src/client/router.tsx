@@ -15,6 +15,7 @@ const Integrations = lazy(() => import('@/pages/Integrations'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const Users = lazy(() => import('@/pages/Users'));
 const NotFound = lazy(() => import('@/pages/NotFound'));
+const InitWizard = lazy(() => import('@/pages/init/InitWizard'));
 
 function Protected() {
   const user = useAuthStore((s) => s.user);
@@ -35,6 +36,9 @@ function PageLoader() {
 const lazyPage = (C: React.LazyExoticComponent<React.ComponentType>) => <Suspense fallback={<PageLoader />}><C /></Suspense>;
 
 export const router = createBrowserRouter([
+  // The setup wizard lives outside the auth guard on purpose: it is what
+  // creates the first credential, so there is nobody to authenticate yet.
+  { path: '/init', element: lazyPage(InitWizard) },
   { path: '/login', element: lazyPage(Login) },
   { element: <Protected />, children: [
     { element: <MainLayout />, children: [

@@ -163,13 +163,19 @@ async function closeDb(app) {
 /**
  * Boot the server module against the fixture configuration.
  *
+ * `JWT_SECRET` is deliberately **not** in the process environment: an
+ * unconfigured installation is exactly one without a signing key, and the
+ * boot has to recognise that and leave the wizard in charge. The seed step
+ * sets the variable as a side effect, which is what the restart below relies
+ * on.
+ *
  * @param {{envFile: string, dbName: string, storagePath: string}} fixture
  * @returns {Promise<import('express').Express>}
  */
 async function bootServer(fixture) {
   process.env.DB_NAME = fixture.dbName;
   process.env.STORAGE_DIR = fixture.storagePath;
-  process.env.JWT_SECRET = JWT_SECRET;
+  delete process.env.JWT_SECRET;
   process.env.SEED_SAMPLE_ASSETS = '0';
   process.env.ENV_FILE = fixture.envFile;
   process.env.INIT_TOKEN = 'integration-init-token';

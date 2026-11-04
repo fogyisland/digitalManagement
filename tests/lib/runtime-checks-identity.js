@@ -27,6 +27,40 @@ const ADMIN_PASSWORD = 'Admin@123456';
 /** @type {RuntimeCheck[]} */
 export const identityChecks = [
   {
+    name: 'the setup wizard reports an initialized instance and refuses a bad connection',
+    async run(ctx) {
+      // This backend was booted with a complete configuration (the contract
+      // run points it at a throw-away schema and writes a secret), so the
+      // wizard must have closed its steps — but its status stays reachable,
+      // which is what the frontend uses to decide where to send the browser.
+      const status = await rawRequest(ctx.origin, 'GET', '/api/init/status');
+      assert.equal(status.status, 200, '/api/init/status must answer 200');
+      assert.equal(status.body.initialized, true,
+        'a backend booted with a configuration must report itself initialized');
+      assert.deepEqual(status.body.steps, { database: true, admin: true, seed: true },
+        'every wizard step must report itself as done');
+
+      // A finished instance closes the wizard: the steps answer 404 even with
+      // the right token, so a stranger cannot re-run the setup.
+      const closed = await rawRequest(ctx.origin, 'POST', '/api/init/seed', {
+        headers: { 'X-Init-Token': 'anything' },
+      });
+      assert.equal(closed.status, 404, 'a finished instance must close the wizard');
+
+      // And the token gate is real: a database step without the token is
+      // refused before it can write anything. The backend still has its
+      // wizard closed, so the 404 comes first — an uninitialized instance is
+      // the one that tests the 403, and that is `tests/backend/init.test.js`.
+      const unauthenticated = await rawRequest(ctx.origin, 'POST', '/api/init/database', {
+        body: { host: '127.0.0.1', port: 1, user: 'nobody', password: 'x', database: 'nope' },
+      });
+      assert.ok(
+        unauthenticated.status === 404 || unauthenticated.status === 403,
+        `a wizard step must be closed or guard its token, got ${unauthenticated.status}`,
+      );
+    },
+  },
+  {
     name: 'login issues a token pair and echoes the profile',
     async run(ctx) {
       const login = await ctx.authApi.login(ADMIN_USERNAME, ADMIN_PASSWORD);

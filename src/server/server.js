@@ -24,7 +24,13 @@ const fs = require('fs');
 // Load `.env` before anything reads `process.env`. The file is optional: a
 // missing one leaves the environment untouched, and every value in it still
 // has a default in `config.js`.
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+//
+// `ENV_FILE` redirects the whole environment file — both what is read here
+// and what the setup wizard writes — so a test run never touches the
+// developer's own configuration.
+const ROOT_DIR = path.join(__dirname, '..', '..');
+const ENV_FILE = process.env.ENV_FILE || path.join(ROOT_DIR, '.env');
+require('dotenv').config({ path: ENV_FILE });
 
 const { getConfig } = require('./config');
 const { createDb, createPool, ensureDatabase } = require('./lib/db');
@@ -70,7 +76,6 @@ const db = createDb(createPool(config));
 // them. The marker is the environment file's `JWT_SECRET` — the same one the
 // wizard's third step writes. Everything below reads `app.locals.pendingInit`
 // to decide whether to skip the boot work.
-const ENV_FILE = process.env.ENV_FILE || path.join(config.rootDir, '.env');
 const isConfigured = hasConfiguration(ENV_FILE);
 const initToken = resolveInitToken();
 
