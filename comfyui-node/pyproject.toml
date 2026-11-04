@@ -1,0 +1,9 @@
+[project]
+name = "dam-comfyui-node"
+version = "0.1.0"
+description = "ComfyUI nodes that publish their output to the DAM"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+packages = ["dam_node"]
