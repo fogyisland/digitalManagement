@@ -30,6 +30,7 @@ const { getConfig } = require('./config');
 const { createDb, createPool, ensureDatabase } = require('./lib/db');
 const { initSchema } = require('./lib/schema');
 const { seedDatabase } = require('./lib/seed');
+const { hasConfiguration, resolveInitToken } = require('./lib/init');
 const { createUploader, uploadErrorHandler } = require('./lib/upload');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
@@ -43,6 +44,7 @@ const createApiKeysRouter = require('./routes/apikeys');
 const createWebhooksRouter = require('./routes/webhooks');
 const createStatsRouter = require('./routes/stats');
 const createJobsRouter = require('./routes/jobs');
+const createInitRouter = require('./routes/init');
 const createPublicRouter = require('./routes/public');
 
 const config = getConfig();
@@ -62,7 +64,27 @@ fs.mkdirSync(path.join(config.storageDir, 'manifests'), { recursive: true });
 // is usable, and the server only starts listening after that.
 const db = createDb(createPool(config));
 
+// --- Init wizard ------------------------------------------------------------
+// An installation that has never been configured has no database and no
+// secrets, so there is nothing to migrate or seed: the wizard is what creates
+// them. The marker is the environment file's `JWT_SECRET` — the same one the
+// wizard's third step writes. Everything below reads `app.locals.pendingInit`
+// to decide whether to skip the boot work.
+const ENV_FILE = process.env.ENV_FILE || path.join(config.rootDir, '.env');
+const isConfigured = hasConfiguration(ENV_FILE);
+const initToken = resolveInitToken();
+
 const ready = (async () => {
+  if (!isConfigured) {
+    // Nothing to prepare: the schema does not exist yet, and creating one
+    // against a database the operator has not chosen would be a guess.
+    console.log('');
+    console.log('[init] this installation has not been set up yet');
+    console.log(`[init] open http://localhost:${config.port}/init and use this token:`);
+    console.log(`[init]   ${initToken.token}`);
+    console.log('');
+    return;
+  }
   await ensureDatabase(config);
   await initSchema(db);
   await seedDatabase(db, config.storageDir);
@@ -98,6 +120,18 @@ app.get('/api/health/ready', (_req, res) => res.json({ status: 'ready', db: 'ok'
 
 // --- Admin API --------------------------------------------------------------
 const uploader = createUploader();
+// --- Init wizard (always mounted; the router closes itself when done) -------
+// `checkToken` is bound to the token this boot chose, so a wizard request
+// cannot slip past with a token from another instance.
+app.use(
+  '/api/init',
+  createInitRouter({
+    db: isConfigured ? db : null,
+    checkToken: createInitRouter.tokenChecker(initToken.token),
+    onRestart: () => process.exit(0),
+  }),
+);
+
 app.use(
   '/api/v1',
   createAuthRouter({ db }),
@@ -175,5 +209,7 @@ if (require.main === module) {
 // suite, which boots this module without starting a listener.
 app.locals.db = db;
 app.locals.ready = ready;
+app.locals.isConfigured = isConfigured;
+app.locals.initToken = initToken.token;
 
 module.exports = app;

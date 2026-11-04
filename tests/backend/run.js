@@ -21,6 +21,7 @@ const SUITES = [
   'manifest.test.js',
   'manifest-startup.test.js',
   'webhook.smoke.js',
+  'init.test.js',
   'server.test.js',
 ];
 

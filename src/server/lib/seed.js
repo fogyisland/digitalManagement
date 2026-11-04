@@ -36,7 +36,7 @@ const { DEFAULT_TENANT_ID } = require('./tenant-schema');
  * @returns {Promise<void>}
  */
 async function seedDatabase(db, storageDir, options = {}) {
-  const tenantId = options.tenantId || DEFAULT_TENANT_ID;
+  const tenantId = options.tenantId || (await resolveSeedTenant(db));
 
   // The tenant must exist before any row is written, because every business
   // table's `tenant_id` points at it.
@@ -65,6 +65,23 @@ async function seedDatabase(db, storageDir, options = {}) {
       console.warn('[seed] sample assets failed:', error.message);
     });
   }
+}
+
+/**
+ * Which tenant the seed writes into when the caller did not name one.
+ *
+ * On an upgraded installation that is the migration's `default` tenant. On
+ * one the setup wizard created, it is the tenant the operator named — the
+ * boot must seed *that* tenant, not add a second one beside it.
+ *
+ * @param {object} db
+ * @returns {Promise<string>}
+ */
+async function resolveSeedTenant(db) {
+  const existing = await db
+    .prepare('SELECT id FROM tenants ORDER BY created_at ASC LIMIT 1')
+    .get();
+  return existing ? existing.id : DEFAULT_TENANT_ID;
 }
 
 /**
