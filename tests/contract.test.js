@@ -71,6 +71,7 @@ import { runRuntimeChecks } from './lib/runtime-checks.js';
 import { loadInitSteps } from './lib/runtime-checks-init.js';
 import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
 import { findEventVocabularyDrift } from './lib/event-parity.js';
+import { MAX_SOURCE_LINES, findOversizedFiles } from './lib/file-size.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -166,6 +167,18 @@ function runStaticLint() {
     `tenant-scope lint OK — every business query names a tenant ` +
       `(${describeExemptions().length} exemption(s))`,
   );
+
+  // A source file nobody can hold in their head is the file nobody reviews.
+  // The limit is the project's own (CLAUDE.md §1.3), checked over the server
+  // source — the half this plan grew past it.
+  const oversized = findOversizedFiles({ dirs: [SERVER_DIR], repoRoot: REPO_ROOT });
+  assert.deepEqual(
+    oversized,
+    [],
+    `source file length lint failed (split the file; the limit is ${MAX_SOURCE_LINES} lines):\n` +
+      oversized.map((entry) => `  - ${entry.file} — ${entry.lines} lines`).join('\n'),
+  );
+  console.log(`source file length OK — every server file is within ${MAX_SOURCE_LINES} lines`);
 
   // The webhook vocabulary exists twice — once in the backend, once in the
   // frontend — and the two have to agree: an event the UI offers but the
