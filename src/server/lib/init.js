@@ -97,6 +97,13 @@ function renderEnv(values, templateFile) {
  * renamed over the original — a rename is atomic on every platform this
  * project runs on.
  *
+ * The content is rendered *before* anything is opened, so a template that
+ * cannot be read fails with the existing file untouched. And if the swap
+ * itself fails, the staged file is removed: a leftover `<file>.tmp` next to
+ * the real one looks like a configuration somebody wrote, and an operator
+ * recovering from a failed setup has no way to tell which one the server
+ * reads.
+ *
  * @param {string} file
  * @param {Record<string, string>} values
  * @param {string} [templateFile]
@@ -104,11 +111,25 @@ function renderEnv(values, templateFile) {
  */
 function writeEnvFile(file, values, templateFile) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const content = renderEnv(values, templateFile);
   const tmp = `${file}.tmp`;
   // `mode: 0o600` — the file holds the signing key and the database
   // password, so it must not be group- or world-readable.
-  fs.writeFileSync(tmp, renderEnv(values, templateFile), { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(tmp, file);
+  fs.writeFileSync(tmp, content, { encoding: 'utf8', mode: 0o600 });
+  try {
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    // The staged copy is dead weight once the swap has failed, and leaving it
+    // behind is worse than a failed write: the operator gets two files and no
+    // way to tell which one won. A removal that itself fails must not hide
+    // the original error, so it is logged and dropped.
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch (cleanupError) {
+      console.warn('[init] could not remove the staged env file:', cleanupError.message);
+    }
+    throw error;
+  }
 }
 
 /**

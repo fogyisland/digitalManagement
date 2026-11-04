@@ -17,6 +17,7 @@ const { spawn } = require('node:child_process');
 
 /** The suites, in the order they run. */
 const SUITES = [
+  'env-file.test.js',
   'webhook.test.js',
   'manifest.test.js',
   'manifest-startup.test.js',
