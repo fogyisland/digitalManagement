@@ -8,6 +8,11 @@
  *   POST   /tags     {name, color?, description?} -> Tag
  *   PUT    /tags/:id {name?, color?, description?} -> Tag
  *   DELETE /tags/:id -> 204
+ *
+ * A platform administrator's scope covers every tenant, so the reads here
+ * have two statements — one that names the tenant and one that does not.
+ * The two statements are written out rather than assembled at runtime,
+ * because the tenant lint reads the SQL as text.
  */
 
 const express = require('express');
@@ -15,6 +20,7 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toTag } = require('../lib/dto');
 const { slugify } = require('../lib/util');
+const { isAllTenants } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -25,11 +31,13 @@ function createTagsRouter({ db }) {
   const router = express.Router();
 
   router.get('/tags', authRequired(db), asyncHandler(async (req, res) => {
-    const rows = await db
-      .prepare(
-        'SELECT * FROM tags WHERE tenant_id = ? ORDER BY usage_count DESC, name',
-      )
-      .all(req.tenantScope.tenantId);
+    const scope = req.tenantScope;
+    // tenant-lint: allow a superadmin reads across every tenant
+    const rows = isAllTenants(scope)
+      ? await db.prepare('SELECT * FROM tags ORDER BY usage_count DESC, name').all()
+      : await db
+          .prepare('SELECT * FROM tags WHERE tenant_id = ? ORDER BY usage_count DESC, name')
+          .all(scope.tenantId);
     return res.json(rows.map(toTag));
   }));
 

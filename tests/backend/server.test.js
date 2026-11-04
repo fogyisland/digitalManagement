@@ -924,8 +924,28 @@ async function phaseTenantIsolation() {
     const bobToken = await tokenFor('bob', 'Bob@123456');
     const rootToken = await tokenFor('root', 'Root@123456');
 
+    // Each tenant owns a tag and a category, so the superadmin's view of
+    // those resources can be checked — not only its view of the assets.
+    // (The API keys and the webhook endpoints are created later, in the
+    // superadmin section, so the isolation assertions above still see a
+    // tenant with none of them.)
+    for (const tenant of ['tenant-a', 'tenant-b']) {
+      await db
+        .prepare('INSERT INTO tags (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)')
+        .run([`tag-${tenant}`, tenant, `标签 ${tenant}`, `tag-${tenant}`]);
+      await db
+        .prepare('INSERT INTO categories (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)')
+        .run([`cat-${tenant}`, tenant, `分类 ${tenant}`, `cat-${tenant}`]);
+    }
+
     const aliceAsset = await uploadFor(aliceToken, 'alice-image');
     const bobAsset = await uploadFor(bobToken, 'bob-image');
+
+    // A job id on tenant A's asset, so the superadmin's job lookup has
+    // something to find.
+    await db
+      .prepare('UPDATE assets SET job_id = ? WHERE id = ?')
+      .run(['tenant-a-job', aliceAsset.id]);
     assert.notStrictEqual(aliceAsset.id, bobAsset.id, 'the two uploads must be distinct assets');
     assert.strictEqual(
       aliceAsset.tenant_id,
@@ -1182,6 +1202,109 @@ async function phaseTenantIsolation() {
       new Set(rootList.items.map((item) => item.tenant_id)).size,
       2,
       'the superadmin list must carry both tenants',
+    );
+
+    // --- 8b) the platform administrator sees every tenant, everywhere -------
+    //
+    // The asset list was the only route that honoured the wildcard. Every
+    // other resource has to honour it too, or the platform administrator
+    // opens the API-keys page and sees nothing.
+    //
+    // The keys and the endpoints are created here rather than in the setup,
+    // so the isolation assertions above still meet a tenant that has none.
+    for (const tenant of ['tenant-a', 'tenant-b']) {
+      await db
+        .prepare(
+          'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
+        )
+        .run([
+          `key-${tenant}`,
+          tenant,
+          `${tenant} key`,
+          `dam_${tenant}`,
+          crypto.createHash('sha256').update(`dam_${tenant}_raw`).digest('hex'),
+          'read,upload',
+        ]);
+      await db
+        .prepare(
+          'INSERT INTO webhook_endpoints (id, tenant_id, name, url, secret, events, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)',
+        )
+        .run([
+          `hook-${tenant}`,
+          tenant,
+          `${tenant} hook`,
+          'http://127.0.0.1:9/unreachable',
+          'a-secret',
+          'asset.created',
+        ]);
+    }
+
+    const rootStats = JSON.parse((await call(rootToken, 'GET', '/api/v1/stats')).raw);
+    assert.strictEqual(
+      rootStats.total,
+      2,
+      "a superadmin's stats must count every tenant's assets",
+    );
+    assert.strictEqual(
+      rootStats.recent.length,
+      2,
+      "a superadmin's recent list must cover every tenant",
+    );
+
+    const rootDashboard = JSON.parse(
+      (await call(rootToken, 'GET', '/api/v1/stats/dashboard')).raw,
+    );
+    assert.strictEqual(
+      rootDashboard.summary.total_assets,
+      2,
+      "a superadmin's dashboard must count every tenant's assets",
+    );
+    // The superadmin's own row carries `tenant_id = '*'`, so the count is the
+    // tenants' four users plus the superadmin itself.
+    assert.strictEqual(
+      rootDashboard.summary.user_count,
+      5,
+      "a superadmin's dashboard must count every tenant's users",
+    );
+
+    // These routes answer with a bare array; `/users` answers with a page.
+    const rootKeys = JSON.parse((await call(rootToken, 'GET', '/api/v1/api-keys')).raw);
+    assert.ok(
+      Array.isArray(rootKeys) && rootKeys.length > 0,
+      "a superadmin must see the tenants' API keys",
+    );
+
+    const rootHooks = JSON.parse((await call(rootToken, 'GET', '/api/v1/webhooks')).raw);
+    assert.ok(
+      Array.isArray(rootHooks) && rootHooks.length > 0,
+      "a superadmin must see the tenants' webhook endpoints",
+    );
+
+    const rootTags = JSON.parse((await call(rootToken, 'GET', '/api/v1/tags')).raw);
+    assert.ok(
+      Array.isArray(rootTags) && rootTags.length > 0,
+      "a superadmin must see the tenants' tags",
+    );
+
+    const rootCategories = JSON.parse(
+      (await call(rootToken, 'GET', '/api/v1/categories')).raw,
+    );
+    assert.ok(
+      Array.isArray(rootCategories) && rootCategories.length > 0,
+      "a superadmin must see the tenants' categories",
+    );
+
+    const rootUsers = JSON.parse((await call(rootToken, 'GET', '/api/v1/users')).raw);
+    assert.ok(
+      Array.isArray(rootUsers.items) && rootUsers.items.length > 0,
+      "a superadmin must see the tenants' users",
+    );
+
+    const rootJob = await call(rootToken, 'GET', '/api/v1/jobs/by-comfyui/tenant-a-job');
+    assert.strictEqual(
+      rootJob.status,
+      200,
+      `a superadmin must find a job of any tenant, got ${rootJob.status}: ${rootJob.raw}`,
     );
 
     // --- 9) the delivery API is scoped by the key's tenant -------------------

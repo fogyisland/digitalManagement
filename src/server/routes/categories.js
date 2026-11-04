@@ -15,6 +15,7 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toCategory } = require('../lib/dto');
 const { slugify, parsePositiveInt } = require('../lib/util');
+const { isAllTenants } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -26,16 +27,34 @@ function createCategoriesRouter({ db }) {
 
   router.get('/categories', authRequired(db), asyncHandler(async (req, res) => {
     const parentId = req.query.parent_id;
-    const tenantId = req.tenantScope.tenantId;
-    const rows = parentId
-      ? await db
-          .prepare(
-            'SELECT * FROM categories WHERE tenant_id = ? AND parent_id = ? ORDER BY sort_order, name',
-          )
-          .all(tenantId, String(parentId))
-      : await db
-          .prepare('SELECT * FROM categories WHERE tenant_id = ? ORDER BY sort_order, name')
-          .all(tenantId);
+    const scope = req.tenantScope;
+    const tenantId = scope.tenantId;
+    // A platform administrator's scope covers every tenant, so their read
+    // names no tenant at all. The two forms are written out rather than
+    // assembled, because a condition built by concatenation cannot be
+    // audited — and the tenant lint reads the SQL as text.
+    let rows;
+    if (isAllTenants(scope)) {
+      if (parentId) {
+        // tenant-lint: allow a superadmin reads across every tenant
+        rows = await db
+          .prepare('SELECT * FROM categories WHERE parent_id = ? ORDER BY sort_order, name')
+          .all(String(parentId));
+      } else {
+        // tenant-lint: allow a superadmin reads across every tenant
+        rows = await db.prepare('SELECT * FROM categories ORDER BY sort_order, name').all();
+      }
+    } else {
+      rows = parentId
+        ? await db
+            .prepare(
+              'SELECT * FROM categories WHERE tenant_id = ? AND parent_id = ? ORDER BY sort_order, name',
+            )
+            .all(tenantId, String(parentId))
+        : await db
+            .prepare('SELECT * FROM categories WHERE tenant_id = ? ORDER BY sort_order, name')
+            .all(tenantId);
+    }
     return res.json(rows.map(toCategory));
   }));
 

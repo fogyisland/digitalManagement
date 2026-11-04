@@ -20,6 +20,7 @@ const { nanoid } = require('nanoid');
 const { adminRequired } = require('../lib/auth');
 const { toUser, toPage } = require('../lib/dto');
 const { parsePositiveInt } = require('../lib/util');
+const { isAllTenants } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 const ROLES = ['admin', 'editor', 'viewer'];
@@ -63,9 +64,16 @@ function createUsersRouter({ db }) {
     }
 
     // The tenant is part of the filter, not a request parameter: a caller
-    // sees the users of the tenant its credential speaks for.
-    where.unshift('tenant_id = ?');
-    params.unshift(req.tenantScope.tenantId);
+    // sees the users of the tenant its credential speaks for. A platform
+    // administrator's scope covers every tenant, so their filter names no
+    // tenant at all.
+    if (isAllTenants(req.tenantScope)) {
+      // tenant-lint: allow a superadmin reads across every tenant
+      where.unshift('tenant_id IS NOT NULL');
+    } else {
+      where.unshift('tenant_id = ?');
+      params.unshift(req.tenantScope.tenantId);
+    }
 
     // `where[0]` is always the tenant condition, pushed above, so the
     // fragment every query here composes carries it.

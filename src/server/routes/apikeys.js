@@ -18,6 +18,7 @@ const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toApiKey } = require('../lib/dto');
+const { isAllTenants } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 const { toMysqlDateTime } = require('../lib/util');
 
@@ -54,11 +55,19 @@ function createApiKeysRouter({ db }) {
     '/api-keys',
     authRequired(db),
     asyncHandler(async (req, res) => {
-      const rows = await db
-        .prepare(
-          'SELECT id, name, key_prefix, scopes, is_active, last_used_at, expires_at, created_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC',
-        )
-        .all(req.tenantScope.tenantId);
+      const scope = req.tenantScope;
+      // tenant-lint: allow a superadmin reads across every tenant
+      const rows = isAllTenants(scope)
+        ? await db
+            .prepare(
+              'SELECT id, name, key_prefix, scopes, is_active, last_used_at, expires_at, created_at FROM api_keys ORDER BY created_at DESC',
+            )
+            .all()
+        : await db
+            .prepare(
+              'SELECT id, name, key_prefix, scopes, is_active, last_used_at, expires_at, created_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC',
+            )
+            .all(scope.tenantId);
       return res.json(rows.map(toApiKey));
     }),
   );

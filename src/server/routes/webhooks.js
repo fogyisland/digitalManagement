@@ -39,6 +39,7 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toWebhook } = require('../lib/dto');
 const { WEBHOOK_EVENTS } = require('../lib/webhook');
+const { isAllTenants } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -82,11 +83,19 @@ function createWebhooksRouter({ db }) {
   const router = express.Router();
 
   router.get('/webhooks', authRequired(db), asyncHandler(async (req, res) => {
-    const rows = await db
-      .prepare(
-        'SELECT id, name, url, is_active, events, created_at FROM webhook_endpoints WHERE tenant_id = ? ORDER BY created_at DESC',
-      )
-      .all(req.tenantScope.tenantId);
+    const scope = req.tenantScope;
+    // tenant-lint: allow a superadmin reads across every tenant
+    const rows = isAllTenants(scope)
+      ? await db
+          .prepare(
+            'SELECT id, name, url, is_active, events, created_at FROM webhook_endpoints ORDER BY created_at DESC',
+          )
+          .all()
+      : await db
+          .prepare(
+            'SELECT id, name, url, is_active, events, created_at FROM webhook_endpoints WHERE tenant_id = ? ORDER BY created_at DESC',
+          )
+          .all(scope.tenantId);
     return res.json(rows.map(toWebhook));
   }));
 

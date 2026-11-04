@@ -16,7 +16,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
-const { resolveTenantFromUser, tenantScope, loadTenant } = require('./tenant');
+const { resolveTenantFromUser, tenantScope, loadTenant, SUPERADMIN_ROLE } = require('./tenant');
 
 /**
  * Issue a fresh access/refresh token pair for a user.
@@ -239,7 +239,9 @@ function adminRequired(db) {
       // `authRequired` only calls the callback on success; a failure it
       // forwarded to the error handler arrives here as `err`.
       if (err) return next(err);
-      if (req.user.role !== 'admin') {
+      // A platform administrator is at least an administrator: they may
+      // manage every tenant, so they may manage the users of every tenant.
+      if (req.user.role !== 'admin' && req.user.role !== SUPERADMIN_ROLE) {
         return res.status(403).json({ detail: 'Admin role required' });
       }
       return next();
