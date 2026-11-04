@@ -28,10 +28,12 @@ function createJobsRouter({ db }) {
     const jobId = String(req.params.job_id || '').trim();
     if (!jobId) return res.status(400).json({ detail: 'job_id required' });
     const row = await db
-      .prepare("SELECT id FROM assets WHERE job_id = ? AND status != 'deleted' ORDER BY created_at DESC")
-      .get(jobId);
+      .prepare(
+        "SELECT id FROM assets WHERE tenant_id = ? AND job_id = ? AND status != 'deleted' ORDER BY created_at DESC",
+      )
+      .get(req.tenantScope.tenantId, jobId);
     if (!row) return res.status(404).json({ detail: 'Not found' });
-    return res.json(toAsset(await findAssetById(db, row.id)));
+    return res.json(toAsset(await findAssetById(db, req.tenantScope, row.id)));
   }));
 
   return router;

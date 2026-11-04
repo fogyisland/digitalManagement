@@ -197,20 +197,23 @@ function assertEndpoint(endpoint) {
  * `final` and can react.
  *
  * @param {Object} db the database handle
- * @param {string} endpointId
+ * @param {{id: string, tenant_id?: string|null}} endpoint the endpoint the
+ *        delivery belongs to — the log row is owned by its tenant
  * @param {string} event
  * @param {string} body the signed payload
  * @param {{status: string, attempts: number, error: string|null}} final
  * @returns {Promise<void>}
  */
-async function recordLog(db, endpointId, event, body, final) {
+async function recordLog(db, endpoint, event, body, final) {
+  const endpointId = endpoint.id;
   try {
     await db
       .prepare(
-        'INSERT INTO webhook_logs (id, endpoint_id, event, payload, status, attempts, last_error) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO webhook_logs (id, tenant_id, endpoint_id, event, payload, status, attempts, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         nanoid(),
+        endpoint.tenant_id || 'default',
         endpointId,
         event,
         body,
@@ -307,7 +310,7 @@ async function dispatch(db, endpoint, event, payload) {
   // soft-disables, `PUT /webhooks/:id` toggles), and a delivery that was
   // already in flight must not resurrect an endpoint the operator has
   // disabled. The delivery outcome lives in `webhook_logs`.
-  await recordLog(db, endpoint.id, event, body, terminal);
+  await recordLog(db, endpoint, event, body, terminal);
 
   return terminal;
 }

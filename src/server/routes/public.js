@@ -31,7 +31,11 @@ function createPublicRouter({ db, uploader }) {
 
   router.get('/delivery/assets', apiKeyRequired(db, 'read'), asyncHandler(async (req, res) => {
     try {
-      const { items, total, page, page_size: pageSize } = await listAssets(db, req.query);
+      const { items, total, page, page_size: pageSize } = await listAssets(
+        db,
+        req.tenantScope,
+        req.query,
+      );
       return res.json({
         items: items.map(toAsset),
         total,
@@ -77,6 +81,7 @@ function createPublicRouter({ db, uploader }) {
           ownerId: null,
           source: 'public',
           extra,
+          tenantId: req.tenantScope.tenantId,
         });
         results.push(result.asset);
       }

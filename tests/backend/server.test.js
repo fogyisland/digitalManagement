@@ -9,10 +9,11 @@
  *   1. schema     — the migration produces every column and table
  *   2. tenant     — a credential resolves to the tenant it speaks for
  *   3. credential — the token and the API key carry the tenant
- *   4. upload     — a multipart upload echoes the metadata fields back
- *   5. file size  — an oversized upload is rejected with 413
- *   6. webhooks   — CRUD plus the asset event fan-out
- *   7. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
+ *   4. isolation  — one tenant's data never answers another tenant
+ *   5. upload     — a multipart upload echoes the metadata fields back
+ *   6. file size  — an oversized upload is rejected with 413
+ *   7. webhooks   — CRUD plus the asset event fan-out
+ *   8. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
  *                   permanent delete and the chunked upload flow
  *
  * The phases are chained explicitly: a phase only starts once the previous
@@ -769,7 +770,517 @@ async function phaseTenantCredential() {
   }
 }
 
-// --- Phase 4: upload endpoint ------------------------------------------------
+// --- Phase 4: cross-tenant isolation -----------------------------------------
+
+/**
+ * Build a 1x1 PNG upload body for the asset endpoints.
+ *
+ * @param {string} filename
+ * @param {Array<[string, string]>} [fields]
+ * @returns {{boundary: string, body: Buffer}}
+ */
+function pngUpload(filename, fields = []) {
+  const boundary = '----damTenantBoundary';
+  const body = buildMultipart(
+    boundary,
+    fields,
+    [{ name: 'files', filename, contentType: 'image/png', buffer: PNG_1X1 }],
+  );
+  return { boundary, body };
+}
+
+/**
+ * One tenant's data must never be answerable to another tenant's credential.
+ *
+ * The failure mode this phase exists for is the quiet one: a list that
+ * returns everything, or a read by id that returns a row from another
+ * tenant. A cross-tenant read must be **404**, never 403, never 200 — 403
+ * would confirm the resource exists.
+ */
+async function phaseTenantIsolation() {
+  const { app, dbName, storagePath } = await bootServer('isolation');
+  const server = await listen(app);
+  const port = server.address().port;
+  const db = app.locals.db;
+
+  /**
+   * Call an admin endpoint with a bearer token.
+   *
+   * @param {string} token
+   * @param {string} method
+   * @param {string} requestPath
+   * @param {{headers?: Record<string, string>, body?: string|Buffer, binary?: boolean}} [options]
+   * @returns {Promise<{status: number, raw: string}>}
+   */
+  function call(token, method, requestPath, options = {}) {
+    return request({
+      hostname: '127.0.0.1',
+      port,
+      path: requestPath,
+      method,
+      headers: Object.assign(
+        token ? { Authorization: `Bearer ${token}` } : {},
+        options.headers || {},
+      ),
+      body: options.body,
+      binary: options.binary,
+    });
+  }
+
+  /**
+   * Log in and return the access token.
+   *
+   * @param {string} username
+   * @param {string} password
+   * @returns {Promise<string>}
+   */
+  async function tokenFor(username, password) {
+    const res = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/auth/login',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    assert.strictEqual(
+      res.status,
+      200,
+      `login(${username}) expected 200, got ${res.status}: ${res.raw}`,
+    );
+    return JSON.parse(res.raw).access_token;
+  }
+
+  /**
+   * Upload one PNG for the credential's tenant.
+   *
+   * @param {string} token
+   * @param {string} title
+   * @returns {Promise<object>} the created asset
+   */
+  async function uploadFor(token, title) {
+    const { boundary, body } = pngUpload(`${title}.png`, [['title', title]]);
+    const res = await call(token, 'POST', '/api/v1/assets/upload', {
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': String(body.length),
+      },
+      body,
+      binary: true,
+    });
+    assert.strictEqual(res.status, 201, `upload(${title}) expected 201, got ${res.status}: ${res.raw}`);
+    const uploaded = JSON.parse(res.raw);
+    assert.strictEqual(uploaded.items.length, 1, 'the upload must return exactly one asset');
+    return uploaded.items[0];
+  }
+
+  try {
+    // --- two tenants, an administrator each ---------------------------------
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run(['tenant-a', '租户 A', 'tenant-a']);
+    await db
+      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
+      .run(['tenant-b', '租户 B', 'tenant-b']);
+    await db
+      .prepare(
+        'INSERT INTO users (id, tenant_id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run([
+        'u-a',
+        'tenant-a',
+        'alice',
+        'alice@dam.local',
+        bcrypt.hashSync('Alice@123456', 10),
+        'admin',
+      ]);
+    await db
+      .prepare(
+        'INSERT INTO users (id, tenant_id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run([
+        'u-b',
+        'tenant-b',
+        'bob',
+        'bob@dam.local',
+        bcrypt.hashSync('Bob@123456', 10),
+        'admin',
+      ]);
+    // A platform administrator acts across every tenant.
+    await db
+      .prepare(
+        'INSERT INTO users (id, tenant_id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run([
+        'u-root',
+        '*',
+        'root',
+        'root@dam.local',
+        bcrypt.hashSync('Root@123456', 10),
+        'superadmin',
+      ]);
+
+    const aliceToken = await tokenFor('alice', 'Alice@123456');
+    const bobToken = await tokenFor('bob', 'Bob@123456');
+    const rootToken = await tokenFor('root', 'Root@123456');
+
+    const aliceAsset = await uploadFor(aliceToken, 'alice-image');
+    const bobAsset = await uploadFor(bobToken, 'bob-image');
+    assert.notStrictEqual(aliceAsset.id, bobAsset.id, 'the two uploads must be distinct assets');
+    assert.strictEqual(
+      aliceAsset.tenant_id,
+      'tenant-a',
+      'the upload must belong to the caller tenant',
+    );
+    assert.strictEqual(
+      bobAsset.tenant_id,
+      'tenant-b',
+      'the upload must belong to the caller tenant',
+    );
+
+    // --- 1) the list is filtered --------------------------------------------
+    const aliceList = await call(aliceToken, 'GET', '/api/v1/assets?page_size=200');
+    assert.strictEqual(aliceList.status, 200, `list expected 200, got ${aliceList.status}`);
+    const alicePage = JSON.parse(aliceList.raw);
+    assert.deepStrictEqual(
+      alicePage.items.map((item) => item.id),
+      [aliceAsset.id],
+      'tenant A must only see its own assets',
+    );
+    assert.strictEqual(alicePage.total, 1, 'the total must count only the caller tenant');
+
+    const bobList = JSON.parse((await call(bobToken, 'GET', '/api/v1/assets?page_size=200')).raw);
+    assert.deepStrictEqual(
+      bobList.items.map((item) => item.id),
+      [bobAsset.id],
+      'tenant B must only see its own assets',
+    );
+
+    // --- 2) a cross-tenant read is 404, not 403 -----------------------------
+    const traversal = await call(aliceToken, 'GET', `/api/v1/assets/${bobAsset.id}`);
+    assert.strictEqual(
+      traversal.status,
+      404,
+      `a cross-tenant read must answer 404, got ${traversal.status}: ${traversal.raw}`,
+    );
+
+    // --- 3) a cross-tenant write cannot reach the row ------------------------
+    const crossUpdate = await call(aliceToken, 'PUT', `/api/v1/assets/${bobAsset.id}`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'hijacked' }),
+    });
+    assert.strictEqual(
+      crossUpdate.status,
+      404,
+      `a cross-tenant update must answer 404, got ${crossUpdate.status}: ${crossUpdate.raw}`,
+    );
+    const crossDelete = await call(aliceToken, 'DELETE', `/api/v1/assets/${bobAsset.id}`);
+    assert.strictEqual(
+      crossDelete.status,
+      404,
+      `a cross-tenant delete must answer 404, got ${crossDelete.status}: ${crossDelete.raw}`,
+    );
+    const crossRestore = await call(aliceToken, 'POST', `/api/v1/assets/${bobAsset.id}/restore`);
+    assert.strictEqual(
+      crossRestore.status,
+      404,
+      `a cross-tenant restore must answer 404, got ${crossRestore.status}: ${crossRestore.raw}`,
+    );
+
+    // The row is untouched.
+    const bobAfter = await call(bobToken, 'GET', `/api/v1/assets/${bobAsset.id}`);
+    assert.strictEqual(bobAfter.status, 200, 'the other tenant must still see its own asset');
+    assert.strictEqual(
+      JSON.parse(bobAfter.raw).title,
+      'bob-image',
+      'a refused cross-tenant write must not change the row',
+    );
+
+    // --- 4) the trash is per tenant too -------------------------------------
+    assert.strictEqual(
+      (await call(bobToken, 'DELETE', `/api/v1/assets/${bobAsset.id}`)).status,
+      204,
+      'tenant B must be able to delete its own asset',
+    );
+    const aliceTrash = JSON.parse(
+      (await call(aliceToken, 'GET', '/api/v1/assets?status=deleted&page_size=200')).raw,
+    );
+    assert.deepStrictEqual(aliceTrash.items, [], 'another tenant must not see the trash');
+    const bobTrash = JSON.parse(
+      (await call(bobToken, 'GET', '/api/v1/assets?status=deleted&page_size=200')).raw,
+    );
+    assert.deepStrictEqual(
+      bobTrash.items.map((item) => item.id),
+      [bobAsset.id],
+      'a tenant must see its own trash',
+    );
+    assert.strictEqual(
+      (await call(bobToken, 'POST', `/api/v1/assets/${bobAsset.id}/restore`)).status,
+      200,
+      'a tenant must be able to restore its own asset',
+    );
+
+    // --- 5) the catalogue is per tenant -------------------------------------
+    const aliceCategory = JSON.parse(
+      (
+        await call(aliceToken, 'POST', '/api/v1/categories', {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: '共享分类名' }),
+        })
+      ).raw,
+    );
+    const bobCategoryRes = await call(bobToken, 'POST', '/api/v1/categories', {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '共享分类名' }),
+    });
+    assert.strictEqual(
+      bobCategoryRes.status,
+      201,
+      `two tenants must be able to share a category name, got ${bobCategoryRes.status}: ${bobCategoryRes.raw}`,
+    );
+    const bobCategory = JSON.parse(bobCategoryRes.raw);
+    assert.notStrictEqual(
+      aliceCategory.id,
+      bobCategory.id,
+      'the two categories must be distinct rows',
+    );
+
+    const aliceCategories = JSON.parse((await call(aliceToken, 'GET', '/api/v1/categories')).raw);
+    assert.ok(
+      aliceCategories.some((row) => row.id === aliceCategory.id),
+      'tenant A must see its own category',
+    );
+    assert.ok(
+      !aliceCategories.some((row) => row.id === bobCategory.id),
+      "tenant A must not see tenant B's category",
+    );
+    assert.strictEqual(
+      (await call(aliceToken, 'DELETE', `/api/v1/categories/${bobCategory.id}`)).status,
+      404,
+      'a cross-tenant category delete must answer 404',
+    );
+
+    const aliceTag = JSON.parse(
+      (
+        await call(aliceToken, 'POST', '/api/v1/tags', {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: '共享标签名' }),
+        })
+      ).raw,
+    );
+    const bobTagRes = await call(bobToken, 'POST', '/api/v1/tags', {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '共享标签名' }),
+    });
+    assert.strictEqual(
+      bobTagRes.status,
+      201,
+      `two tenants must be able to share a tag name, got ${bobTagRes.status}: ${bobTagRes.raw}`,
+    );
+    const bobTag = JSON.parse(bobTagRes.raw);
+    const aliceTags = JSON.parse((await call(aliceToken, 'GET', '/api/v1/tags')).raw);
+    assert.ok(
+      aliceTags.some((row) => row.id === aliceTag.id),
+      'tenant A must see its own tag',
+    );
+    assert.ok(
+      !aliceTags.some((row) => row.id === bobTag.id),
+      "tenant A must not see tenant B's tag",
+    );
+    assert.strictEqual(
+      (await call(aliceToken, 'DELETE', `/api/v1/tags/${bobTag.id}`)).status,
+      404,
+      'a cross-tenant tag delete must answer 404',
+    );
+
+    // --- 6) users are per tenant --------------------------------------------
+    const aliceUsers = JSON.parse(
+      (await call(aliceToken, 'GET', '/api/v1/users?page_size=200')).raw,
+    );
+    assert.deepStrictEqual(
+      aliceUsers.items.map((row) => row.username),
+      ['alice'],
+      'a tenant sees only its own users',
+    );
+    assert.strictEqual(
+      (
+        await call(aliceToken, 'POST', '/api/v1/users', {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: 'bob', password: 'Bob@123456', role: 'viewer' }),
+        })
+      ).status,
+      201,
+      'a username taken in another tenant must still be free in this one',
+    );
+    assert.strictEqual(
+      (
+        await call(aliceToken, 'PUT', '/api/v1/users/u-b', {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ display_name: 'hijacked' }),
+        })
+      ).status,
+      404,
+      'a cross-tenant user update must answer 404',
+    );
+
+    // --- 7) keys, webhooks and stats are per tenant -------------------------
+    const aliceKeys = JSON.parse((await call(aliceToken, 'GET', '/api/v1/api-keys')).raw);
+    assert.deepStrictEqual(aliceKeys, [], 'a new tenant starts with no API keys');
+
+    const bobWebhookRes = await call(bobToken, 'POST', '/api/v1/webhooks', {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'bob hook', url: 'https://example.invalid/hook' }),
+    });
+    assert.strictEqual(
+      bobWebhookRes.status,
+      201,
+      `webhook create expected 201, got ${bobWebhookRes.status}: ${bobWebhookRes.raw}`,
+    );
+    const bobWebhook = JSON.parse(bobWebhookRes.raw);
+    const aliceWebhooks = JSON.parse((await call(aliceToken, 'GET', '/api/v1/webhooks')).raw);
+    assert.deepStrictEqual(
+      aliceWebhooks,
+      [],
+      "a tenant must not see another tenant's webhooks",
+    );
+    assert.strictEqual(
+      (await call(aliceToken, 'DELETE', `/api/v1/webhooks/${bobWebhook.id}`)).status,
+      404,
+      'a cross-tenant webhook delete must answer 404',
+    );
+
+    const aliceStats = JSON.parse((await call(aliceToken, 'GET', '/api/v1/stats')).raw);
+    assert.strictEqual(aliceStats.total, 1, 'the stats must count only the caller tenant');
+    assert.strictEqual(aliceStats.recent.length, 1, 'the recent list must be scoped too');
+    const aliceDashboard = JSON.parse(
+      (await call(aliceToken, 'GET', '/api/v1/stats/dashboard')).raw,
+    );
+    assert.strictEqual(
+      aliceDashboard.summary.total_assets,
+      1,
+      'the dashboard must be scoped too',
+    );
+    assert.strictEqual(
+      aliceDashboard.summary.user_count,
+      2,
+      'the dashboard user count must count only the tenant (alice + the viewer just created)',
+    );
+
+    // --- 8) the platform administrator sees every tenant ---------------------
+    const rootList = JSON.parse(
+      (await call(rootToken, 'GET', '/api/v1/assets?page_size=200')).raw,
+    );
+    assert.deepStrictEqual(
+      rootList.items.map((item) => item.id).sort(),
+      [aliceAsset.id, bobAsset.id].sort(),
+      "a superadmin must see every tenant's assets",
+    );
+    for (const item of rootList.items) {
+      assert.ok(item.tenant_id, 'every asset must report the tenant it belongs to');
+    }
+    assert.strictEqual(
+      new Set(rootList.items.map((item) => item.tenant_id)).size,
+      2,
+      'the superadmin list must carry both tenants',
+    );
+
+    // --- 9) the delivery API is scoped by the key's tenant -------------------
+    const rawKeyA = 'dam_tenant_a_key';
+    await db
+      .prepare(
+        'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run([
+        'key-a',
+        'tenant-a',
+        'tenant A key',
+        rawKeyA.slice(0, 12),
+        crypto.createHash('sha256').update(rawKeyA).digest('hex'),
+        'read',
+      ]);
+    const delivery = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/public/v1/delivery/assets?page_size=200',
+      method: 'GET',
+      headers: { 'X-API-Key': rawKeyA },
+    });
+    assert.strictEqual(
+      delivery.status,
+      200,
+      `delivery expected 200, got ${delivery.status}: ${delivery.raw}`,
+    );
+    assert.deepStrictEqual(
+      JSON.parse(delivery.raw).items.map((item) => item.id),
+      [aliceAsset.id],
+      "an API key must only return its own tenant's assets",
+    );
+
+    // --- 10) a webhook only fires for its own tenant's events ---------------
+    const hookHits = [];
+    const hookServer = http.createServer((hookReq, hookRes) => {
+      let payload = '';
+      hookReq.on('data', (chunk) => {
+        payload += chunk;
+      });
+      hookReq.on('end', () => {
+        hookHits.push(payload);
+        hookRes.statusCode = 200;
+        hookRes.end('ok');
+      });
+    });
+    await new Promise((resolve) => hookServer.listen(0, '127.0.0.1', resolve));
+    const hookPort = hookServer.address().port;
+
+    await db
+      .prepare('UPDATE webhook_endpoints SET url = ? WHERE id = ?')
+      .run([`http://127.0.0.1:${hookPort}/hook`, bobWebhook.id]);
+
+    // Both tenants now touch their own asset. The update fires an event for
+    // each, and only tenant B's endpoint may receive one — the same file
+    // twice would be a no-op (a duplicate), so the update is what produces a
+    // fresh event on both sides.
+    const aliceUpdate = await call(aliceToken, 'PUT', `/api/v1/assets/${aliceAsset.id}`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'alice-second' }),
+    });
+    assert.strictEqual(aliceUpdate.status, 200, 'tenant A must update its own asset');
+    const bobUpdate = await call(bobToken, 'PUT', `/api/v1/assets/${bobAsset.id}`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'bob-second' }),
+    });
+    assert.strictEqual(bobUpdate.status, 200, 'tenant B must update its own asset');
+
+    await waitFor(() => hookHits.length > 0, 5000, 'the webhook of tenant B must fire');
+    // Give a stray delivery to tenant A's (nonexistent) endpoint time to
+    // arrive, so a cross-tenant leak cannot pass by being merely late.
+    await sleep(300);
+    const fired = hookHits.map((raw) => JSON.parse(raw));
+    assert.ok(
+      fired.every((envelope) => envelope.payload.tenant_id === 'tenant-b'),
+      `a webhook must only receive its own tenant's events, saw: ${fired
+        .map((envelope) => envelope.payload.tenant_id)
+        .join(', ')}`,
+    );
+    assert.ok(
+      !fired.some((envelope) => envelope.payload.title === 'alice-second'),
+      "tenant A's event must not reach tenant B's webhook",
+    );
+
+    if (typeof hookServer.closeAllConnections === 'function') {
+      hookServer.closeAllConnections();
+    }
+    await new Promise((resolve) => hookServer.close(resolve));
+
+    console.log('cross-tenant isolation OK');
+  } finally {
+    await close(server);
+    await closeDb(app);
+    await removeFixture(dbName, storagePath);
+  }
+}
+
+// --- Phase 5: upload endpoint ------------------------------------------------
 
 async function phaseUpload() {
   const { app, dbName, storagePath } = await bootServer('upload');
@@ -1372,6 +1883,7 @@ async function main() {
   await phaseSchema();
   await phaseTenantContext();
   await phaseTenantCredential();
+  await phaseTenantIsolation();
   await phaseUpload();
   await phaseFileSizeLimit();
   await phaseWebhooks();

@@ -33,15 +33,34 @@ function createAuthRouter({ db }) {
     if (!username || !password) {
       return res.status(400).json({ detail: 'username/password required' });
     }
-    const user = await db
-      .prepare('SELECT * FROM users WHERE username = ? AND is_active = 1')
-      .get(String(username));
-    if (!user || !bcrypt.compareSync(String(password), user.password_hash)) {
+    // A username is unique *per tenant*, so the same name may exist in more
+    // than one. An optional `tenant` selector disambiguates; without one, the
+    // credentials have to identify exactly one live user — and a failure is
+    // the same 401 a wrong password gets, never a hint that the name is
+    // shared between tenants.
+    const candidates = await db
+      .prepare(
+        'SELECT * FROM users WHERE username = ? AND is_active = 1 ORDER BY created_at ASC',
+      )
+      .all(String(username));
+    const matching = candidates.filter((row) =>
+      bcrypt.compareSync(String(password), row.password_hash),
+    );
+    const tenantSelector = req.body && req.body.tenant ? String(req.body.tenant) : '';
+    const selected = tenantSelector
+      ? matching.filter((row) => row.tenant_id === tenantSelector)
+      : matching;
+    if (selected.length !== 1) {
       return res.status(401).json({ detail: 'Invalid credentials' });
     }
-    await db.prepare('UPDATE users SET last_login_at = NOW() WHERE id = ?').run(user.id);
+    const user = selected[0];
+    await db
+      .prepare('UPDATE users SET last_login_at = NOW() WHERE id = ? AND tenant_id = ?')
+      .run(user.id, user.tenant_id);
     const tokens = await issueTokenPair(db, user);
-    const fresh = await db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+    const fresh = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(user.id, user.tenant_id);
     return res.json({ ...tokens, user: toUser(fresh) });
   }));
 
@@ -62,7 +81,14 @@ function createAuthRouter({ db }) {
     if (await isRevoked(db, payload.jti)) {
       return res.status(401).json({ detail: 'Refresh token revoked' });
     }
-    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(payload.sub);
+    // The refresh token carries the tenant it was issued for, exactly like
+    // the access token does — a refreshable session cannot be moved.
+    if (!payload.tid) {
+      return res.status(401).json({ detail: 'Refresh token does not carry a tenant' });
+    }
+    const user = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(payload.sub, payload.tid);
     if (!user) return res.status(401).json({ detail: 'User not found' });
     if (!user.is_active) return res.status(403).json({ detail: 'User is disabled' });
 
@@ -81,7 +107,9 @@ function createAuthRouter({ db }) {
   }));
 
   router.get('/auth/me', authRequired(db), asyncHandler(async (req, res) => {
-    const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    const row = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(req.user.id, req.user.tenant_id);
     if (!row) return res.status(404).json({ detail: 'User not found' });
     return res.json(toUser(row));
   }));
@@ -96,15 +124,16 @@ function createAuthRouter({ db }) {
         detail: `new_password must be at least ${MIN_PASSWORD_LENGTH} characters`,
       });
     }
-    const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    const row = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(req.user.id, req.user.tenant_id);
     if (!row) return res.status(404).json({ detail: 'User not found' });
     if (!bcrypt.compareSync(String(old_password), row.password_hash)) {
       return res.status(400).json({ detail: 'Current password is incorrect' });
     }
-    await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
-      bcrypt.hashSync(String(new_password), 10),
-      row.id,
-    );
+    await db
+      .prepare('UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?')
+      .run(bcrypt.hashSync(String(new_password), 10), row.id, row.tenant_id);
     return res.status(204).end();
   }));
 

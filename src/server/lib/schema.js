@@ -1,10 +1,12 @@
 'use strict';
 
 /**
- * Database schema, idempotent migrations and first-boot seeding.
+ * Database schema and idempotent migrations.
  *
- * This module owns every SQL statement the server runs against a fresh or an
- * existing database. `server.js` only wires it into the app lifecycle.
+ * This module owns the DDL: every `CREATE TABLE` and every `ALTER` the
+ * server runs against a fresh or an existing database. The first-boot data
+ * lives next door in `seed.js`; `server.js` only wires both into the app
+ * lifecycle.
  *
  * Migrations are written as "add the column if it is missing" rather than
  * "ALTER unconditionally": MySQL 5.7 has no `ADD COLUMN IF NOT EXISTS`, and
@@ -13,12 +15,6 @@
  * would silently swallow real errors such as a permissions problem.
  */
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const bcrypt = require('bcryptjs');
-const { nanoid } = require('nanoid');
-const { getConfig } = require('../config');
 const { ensureColumns, existingIndexes } = require('./db');
 const {
   DEFAULT_TENANT_ID,
@@ -101,6 +97,8 @@ const BASE_SCHEMA_SQL = [
   password_hash VARCHAR(191) NOT NULL,
   role VARCHAR(32) NOT NULL DEFAULT 'viewer',
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  display_name VARCHAR(191),
+  last_login_at DATETIME,
   created_at ${TIMESTAMP},
   UNIQUE KEY ${tenantUniqueKeyName('users', 'username')} (tenant_id, username)
 ) ENGINE=InnoDB ${CHARSET}`,
@@ -150,6 +148,13 @@ const BASE_SCHEMA_SQL = [
   status VARCHAR(32) NOT NULL DEFAULT 'ready',
   uploaded_by ${ID},
   source VARCHAR(32) NOT NULL DEFAULT 'admin',
+  source_tool TEXT,
+  prompt TEXT,
+  seed BIGINT,
+  model_name VARCHAR(191),
+  job_id VARCHAR(64),
+  metadata_json TEXT,
+  deleted_at DATETIME,
   created_at ${TIMESTAMP},
   updated_at ${TIMESTAMP} ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB ${CHARSET}`,
@@ -276,17 +281,42 @@ const INDEX_DEFS = [
 ];
 
 /**
+ * Is this database empty — no `tenants` table yet?
+ *
+ * Checked *before* the DDL runs, so it distinguishes "this module created the
+ * schema just now" from "the schema was already here". Only the former can
+ * skip the ALTER passes.
+ *
+ * @param {object} db
+ * @returns {Promise<boolean>}
+ */
+async function isSchemaAbsent(db) {
+  const rows = await db.query(
+    `SELECT COUNT(*) AS c FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tenants'`,
+  );
+  return Number(rows[0].c) === 0;
+}
+
+/**
  * Create the indexes that are missing.
  *
  * @param {object} db
  * @returns {Promise<void>}
  */
 async function ensureIndexes(db) {
+  // The index set of a table does not change while its indexes are being
+  // created, so each table is read once instead of once per index —
+  // `information_schema.STATISTICS` is the expensive read here.
+  const indexesByTable = new Map();
   for (const [name, target] of INDEX_DEFS) {
     const table = target.split(' ')[0];
-    const existing = await existingIndexes(db, table);
-    if (existing.has(name)) continue;
+    if (!indexesByTable.has(table)) {
+      indexesByTable.set(table, await existingIndexes(db, table));
+    }
+    if (indexesByTable.get(table).has(name)) continue;
     await db.exec(`CREATE INDEX ${name} ON ${target}`);
+    indexesByTable.get(table).add(name);
   }
 }
 
@@ -297,198 +327,33 @@ async function ensureIndexes(db) {
  * @returns {Promise<void>}
  */
 async function initSchema(db) {
+  const isFreshDatabase = await isSchemaAbsent(db);
   for (const sql of BASE_SCHEMA_SQL) {
     await db.exec(sql);
   }
-  await ensureColumns(db, 'assets', ASSETS_COLUMN_DEFS);
-  await ensureColumns(db, 'users', USERS_COLUMN_DEFS);
-  await ensureColumns(db, 'webhook_endpoints', WEBHOOK_ENDPOINTS_COLUMN_DEFS);
+  // On a database this module just created, the DDL already carries every
+  // column the ALTER passes would add. Running them anyway costs a table
+  // rebuild per column — measured at ~1 s each on the dev instance, which
+  // is what made a fresh boot take 20 s. The passes are kept (and skipped
+  // here) because a database created by an older release still needs them.
+  if (!isFreshDatabase) {
+    await ensureColumns(db, 'assets', ASSETS_COLUMN_DEFS);
+    await ensureColumns(db, 'users', USERS_COLUMN_DEFS);
+    await ensureColumns(db, 'webhook_endpoints', WEBHOOK_ENDPOINTS_COLUMN_DEFS);
+  }
   await ensureIndexes(db);
   // The tenant layer comes last: the columns have to exist before the
   // composite unique keys and the composite primary key can reference them.
+  // On a fresh database both are already part of the DDL, and the function
+  // is a no-op.
   await migrateToMultiTenant(db);
-}
-
-/**
- * Seed the minimum data a fresh installation needs to be usable.
- *
- * Nothing here overwrites existing data — every block checks its own table
- * first, so restarting the server never duplicates or resets anything.
- *
- * @param {object} db
- * @param {string} storageDir
- * @param {{skipSamples?: boolean}} [options] `skipSamples` leaves the sample
- *   images alone — the seed script generates them itself so it can wait for
- *   them instead of letting them finish in the background.
- * @returns {Promise<void>}
- */
-async function seedDatabase(db, storageDir, options = {}) {
-  // The default tenant is the one an existing single-tenant installation
-  // belongs to. It must exist before any row is written, because every
-  // business table's `tenant_id` points at it.
-  const tenantCount = await db
-    .prepare('SELECT COUNT(*) AS c FROM tenants WHERE id = ?')
-    .get([DEFAULT_TENANT_ID]);
-  if (tenantCount.c === 0) {
-    await db
-      .prepare('INSERT INTO tenants (id, name, slug) VALUES (?, ?, ?)')
-      .run([DEFAULT_TENANT_ID, '默认租户', DEFAULT_TENANT_ID]);
-    console.log('[seed] default tenant created');
-  }
-
-  const adminCount = await db.prepare('SELECT COUNT(*) AS c FROM users').get();
-  if (adminCount.c === 0) {
-    const adminId = nanoid();
-    await db
-      .prepare(
-        'INSERT INTO users (id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run([adminId, 'admin', 'admin@dam.local', bcrypt.hashSync('Admin@123456', 10), 'admin']);
-    console.log('[seed] default admin: admin / Admin@123456');
-  }
-
-  const apiKeyCount = await db.prepare('SELECT COUNT(*) AS c FROM api_keys').get();
-  if (apiKeyCount.c === 0) {
-    const rawKey = `dam_${crypto.randomBytes(24).toString('hex')}`;
-    const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
-    await db
-      .prepare(
-        'INSERT INTO api_keys (id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run([nanoid(), 'Demo Key', rawKey.slice(0, 12), keyHash, 'read,upload,delete']);
-    console.log('[seed] demo api key:', rawKey);
-  }
-
-  const categoryCount = await db.prepare('SELECT COUNT(*) AS c FROM categories').get();
-  if (categoryCount.c === 0) {
-    const categories = [
-      { name: '产品图', slug: 'product' },
-      { name: '营销素材', slug: 'marketing' },
-      { name: 'AI 生成', slug: 'ai-generated' },
-      { name: '视频', slug: 'video' },
-    ];
-    for (const category of categories) {
-      await db
-        .prepare('INSERT INTO categories (id, name, slug) VALUES (?, ?, ?)')
-        .run([nanoid(), category.name, category.slug]);
-    }
-
-    const tags = ['封面', '海报', '人物', '风景', '抽象', '品牌', 'SVG', '动效'];
-    for (const tag of tags) {
-      await db.prepare('INSERT INTO tags (id, name, slug) VALUES (?, ?, ?)').run([
-        nanoid(),
-        tag,
-        tag.toLowerCase(),
-      ]);
-    }
-    console.log('[seed] default categories + tags created');
-  }
-
-  const assetCount = await db.prepare('SELECT COUNT(*) AS c FROM assets').get();
-  if (assetCount.c === 0 && getConfig().seedSampleAssets && !options.skipSamples) {
-    await seedSampleAssets(db, storageDir).catch((e) => {
-      console.warn('[seed] sample assets failed:', e.message);
-    });
-  }
-}
-
-/**
- * Create a handful of generated sample images so a fresh install is not an
- * empty library.
- *
- * @param {object} db
- * @param {string} storageDir
- * @returns {Promise<void>}
- */
-async function seedSampleAssets(db, storageDir) {
-  try {
-    const sharp = require('sharp');
-    const sampleDefs = [
-      { title: '梦幻渐变封面', color1: '#5b8cff', color2: '#a78bfa', label: 'Cover' },
-      { title: '日出海报', color1: '#fbbf24', color2: '#f87171', label: 'Sunrise' },
-      { title: '森林绿', color1: '#34d399', color2: '#0d9488', label: 'Forest' },
-      { title: '深海蓝', color1: '#0ea5e9', color2: '#1e3a8a', label: 'Ocean' },
-      { title: '极光紫', color1: '#c084fc', color2: '#7c3aed', label: 'Aurora' },
-      { title: '黄昏橙', color1: '#fb923c', color2: '#dc2626', label: 'Dusk' },
-      { title: '静谧灰', color1: '#64748b', color2: '#1e293b', label: 'Slate' },
-      { title: '樱花粉', color1: '#fda4af', color2: '#f43f5e', label: 'Sakura' },
-      { title: '薄荷绿', color1: '#6ee7b7', color2: '#10b981', label: 'Mint' },
-      { title: '银河黑', color1: '#475569', color2: '#020617', label: 'Galaxy' },
-      { title: '霓虹青', color1: '#22d3ee', color2: '#0891b2', label: 'Neon' },
-      { title: '焦糖棕', color1: '#d97706', color2: '#78350f', label: 'Caramel' },
-    ];
-    const categories = await db.prepare('SELECT id, slug FROM categories').all();
-    const categoryBySlug = Object.fromEntries(categories.map((c) => [c.slug, c.id]));
-
-    for (let index = 0; index < sampleDefs.length; index += 1) {
-      const def = sampleDefs[index];
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
-          <defs>
-            <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="${def.color1}"/>
-              <stop offset="1" stop-color="${def.color2}"/>
-            </linearGradient>
-          </defs>
-          <rect width="1024" height="1024" fill="url(#g)"/>
-          <circle cx="512" cy="380" r="160" fill="rgba(255,255,255,0.18)"/>
-          <circle cx="700" cy="600" r="100" fill="rgba(255,255,255,0.12)"/>
-          <text x="512" y="540" text-anchor="middle" font-family="sans-serif" font-size="80" font-weight="700" fill="rgba(255,255,255,0.95)">${def.label}</text>
-          <text x="512" y="620" text-anchor="middle" font-family="sans-serif" font-size="32" fill="rgba(255,255,255,0.7)">DAM Sample #${index + 1}</text>
-        </svg>`;
-      const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
-      const id = nanoid();
-      const storageName = `${id}.png`;
-      const storagePath = path.join('originals', storageName);
-      fs.mkdirSync(path.join(storageDir, 'originals'), { recursive: true });
-      fs.mkdirSync(path.join(storageDir, 'thumbnails'), { recursive: true });
-      fs.writeFileSync(path.join(storageDir, storagePath), buffer);
-      const thumbnailPath = path.join('thumbnails', `${id}.webp`);
-      await sharp(buffer)
-        .resize(400, 400, { fit: 'cover' })
-        .webp({ quality: 82 })
-        .toFile(path.join(storageDir, thumbnailPath));
-      const hash = crypto.createHash('sha256').update(buffer).digest('hex');
-      const meta = await sharp(buffer).metadata();
-      const categoryId =
-        categoryBySlug[index % 2 === 0 ? 'ai-generated' : 'marketing'] ||
-        categoryBySlug['ai-generated'];
-
-      await db
-        .prepare(
-          `INSERT INTO assets (id, title, filename, original_name, mime_type, file_size, file_hash, asset_type,
-             width, height, storage_path, thumbnail_path, status, source, category_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run([
-          id,
-          def.title,
-          storageName,
-          `${def.label.toLowerCase()}.png`,
-          'image/png',
-          buffer.length,
-          hash,
-          'image',
-          meta.width,
-          meta.height,
-          storagePath,
-          thumbnailPath,
-          'ready',
-          'seed',
-          categoryId,
-        ]);
-    }
-    console.log(`[seed] ${sampleDefs.length} sample assets created`);
-  } catch (e) {
-    console.warn('[seed] sample assets failed:', e.message);
-  }
 }
 
 module.exports = {
   initSchema,
-  seedDatabase,
-  seedSampleAssets,
   ASSETS_COLUMN_DEFS,
   USERS_COLUMN_DEFS,
+  WEBHOOK_ENDPOINTS_COLUMN_DEFS,
   TENANTS_TABLE_SQL,
   TENANT_SCOPED_TABLES,
   TENANT_UNIQUE_KEYS,

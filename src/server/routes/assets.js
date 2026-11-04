@@ -111,6 +111,7 @@ function createAssetsRouter({ db, uploader }) {
           ownerId: req.user.id,
           source: 'admin',
           extra: perFile,
+          tenantId: req.tenantScope.tenantId,
         });
         results.push(result.asset);
       }
@@ -143,6 +144,7 @@ function createAssetsRouter({ db, uploader }) {
         ...uploadExtras(body),
         source_tool: body.source_tool || 'import-url',
       },
+      tenantId: req.tenantScope.tenantId,
     });
     return res.status(201).json(toAsset(result.asset));
   }));
@@ -153,10 +155,12 @@ function createAssetsRouter({ db, uploader }) {
     const body = req.body || {};
 
     const existing = await db
-      .prepare("SELECT id FROM assets WHERE job_id = ? AND status != 'deleted' ORDER BY created_at DESC")
-      .get(jobId);
+      .prepare(
+        "SELECT id FROM assets WHERE tenant_id = ? AND job_id = ? AND status != 'deleted' ORDER BY created_at DESC",
+      )
+      .get(req.tenantScope.tenantId, jobId);
     if (existing) {
-      return res.json(toAsset(await findAssetById(db, existing.id)));
+      return res.json(toAsset(await findAssetById(db, req.tenantScope, existing.id)));
     }
 
     // With a `url` the real output is downloaded now; without one the asset
@@ -181,11 +185,13 @@ function createAssetsRouter({ db, uploader }) {
         ownerId: req.user.id,
         source: 'comfyui',
         extra: { ...uploadExtras(body), job_id: jobId, source_tool: body.source_tool || 'comfyui' },
+        tenantId: req.tenantScope.tenantId,
       });
       return res.status(201).json(toAsset(result.asset));
     }
 
     const asset = await createPlaceholderAsset(db, {
+      tenantId: req.tenantScope.tenantId,
       jobId,
       ownerId: req.user.id,
       title: body.title || null,
@@ -199,9 +205,13 @@ function createAssetsRouter({ db, uploader }) {
 
   // --- Parameterised paths ---------------------------------------------------
 
-  router.get('/assets', asyncHandler(async (req, res) => {
+  router.get('/assets', authRequired(db), asyncHandler(async (req, res) => {
     try {
-      const { items, total, page, page_size: pageSize } = await listAssets(db, req.query);
+      const { items, total, page, page_size: pageSize } = await listAssets(
+        db,
+        req.tenantScope,
+        req.query,
+      );
       return res.json({
         items: items.map(toAsset),
         total: Number(total),
@@ -217,14 +227,14 @@ function createAssetsRouter({ db, uploader }) {
     }
   }));
 
-  router.get('/assets/:id', asyncHandler(async (req, res) => {
-    const asset = await findAssetById(db, req.params.id);
+  router.get('/assets/:id', authRequired(db), asyncHandler(async (req, res) => {
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) return res.status(404).json({ detail: 'Not found' });
     return res.json(toAsset(asset));
   }));
 
-  router.get('/assets/:id/manifest', asyncHandler(async (req, res) => {
-    const asset = await findAssetById(db, req.params.id);
+  router.get('/assets/:id/manifest', authRequired(db), asyncHandler(async (req, res) => {
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) {
       return res.status(404).json({ code: 'NOT_FOUND', message: 'Asset not found', request_id: nanoid() });
     }
@@ -248,7 +258,7 @@ function createAssetsRouter({ db, uploader }) {
   }));
 
   router.put('/assets/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const asset = await findAssetById(db, req.params.id);
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) return res.status(404).json({ detail: 'Not found' });
     const { title, description, category_id, tag_names, status } = req.body || {};
     if (status !== undefined && status !== null && !['ready', 'processing', 'failed'].includes(String(status))) {
@@ -267,36 +277,36 @@ function createAssetsRouter({ db, uploader }) {
         asset.id,
       );
     if (tag_names !== undefined && tag_names !== null) {
-      await attachTags(db, asset.id, tag_names);
+      await attachTags(db, req.tenantScope.tenantId, asset.id, tag_names);
     }
-    const updated = await findAssetById(db, asset.id);
+    const updated = await findAssetById(db, req.tenantScope, asset.id);
     await emitAssetEvent(db, 'asset.updated', updated);
     return res.json(toAsset(updated));
   }));
 
   router.delete('/assets/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const asset = await findAssetById(db, req.params.id);
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) return res.status(404).json({ detail: 'Not found' });
     if (parseBoolean(req.query.permanent)) {
-      await permanentlyDeleteAsset(db, getConfig().storageDir, asset);
+      await permanentlyDeleteAsset(db, getConfig().storageDir, req.tenantScope, asset);
     } else {
-      await softDeleteAsset(db, asset);
+      await softDeleteAsset(db, req.tenantScope, asset);
     }
     return res.status(204).end();
   }));
 
   router.post('/assets/:id/restore', authRequired(db), asyncHandler(async (req, res) => {
-    const asset = await findAssetById(db, req.params.id);
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) return res.status(404).json({ detail: 'Not found' });
     if (asset.status !== 'deleted') {
       return res.status(400).json({ detail: 'Asset is not in the trash' });
     }
-    const restored = await restoreAsset(db, asset);
+    const restored = await restoreAsset(db, req.tenantScope, asset);
     return res.json(toAsset(restored));
   }));
 
   router.post('/assets/:id/download', authRequired(db), asyncHandler(async (req, res) => {
-    const asset = await findAssetById(db, req.params.id);
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) return res.status(404).json({ detail: 'Not found' });
     const absolute = path.join(getConfig().storageDir, asset.storage_path);
     if (!fs.existsSync(absolute)) {
@@ -327,6 +337,7 @@ function createAssetsRouter({ db, uploader }) {
  */
 async function createPlaceholderAsset(db, input) {
   const storageDir = getConfig().storageDir;
+  const tenantId = input.tenantId || 'default';
   const id = nanoid();
   const relativePath = path.join('placeholders', `${id}.json`);
   const descriptor = {
@@ -345,12 +356,13 @@ async function createPlaceholderAsset(db, input) {
   const fileHash = crypto.createHash('sha256').update(`comfyui-placeholder:${input.jobId}`).digest('hex');
   await db
     .prepare(
-      `INSERT INTO assets (id, title, filename, original_name, mime_type, file_size, file_hash, asset_type,
+      `INSERT INTO assets (id, tenant_id, title, filename, original_name, mime_type, file_size, file_hash, asset_type,
        storage_path, thumbnail_path, uploaded_by, source, status, source_tool, prompt, seed, model_name, job_id, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
     id,
+    tenantId,
     input.title || `ComfyUI job ${input.jobId}`,
     `${id}.json`,
     input.jobId,
@@ -370,7 +382,7 @@ async function createPlaceholderAsset(db, input) {
     input.jobId,
     input.metadata ? JSON.stringify(input.metadata) : null,
   );
-  return await findAssetById(db, id);
+  return await findAssetById(db, { tenantId, isSuperadmin: false }, id);
 }
 
 module.exports = createAssetsRouter;

@@ -51,13 +51,14 @@ function sessionDir(storageDir, sessionId) {
  * Read the received chunk indexes of a session.
  *
  * @param {object} db
+ * @param {string} tenantId
  * @param {string} sessionId
  * @returns {Promise<{session: any, received: number[]}|null>}
  */
-async function loadSession(db, sessionId) {
+async function loadSession(db, tenantId, sessionId) {
   const session = await db
-    .prepare('SELECT * FROM upload_sessions WHERE id = ?')
-    .get(String(sessionId));
+    .prepare('SELECT * FROM upload_sessions WHERE tenant_id = ? AND id = ?')
+    .get(String(tenantId), String(sessionId));
   if (!session) return null;
   let received = [];
   try {
@@ -74,14 +75,17 @@ async function loadSession(db, sessionId) {
  * Persist the received chunk indexes of a session.
  *
  * @param {object} db
+ * @param {string} tenantId
  * @param {string} sessionId
  * @param {number[]} received
  * @returns {Promise<void>}
  */
-async function saveReceived(db, sessionId, received) {
+async function saveReceived(db, tenantId, sessionId, received) {
   await db
-    .prepare("UPDATE upload_sessions SET received_chunks = ?, updated_at = NOW() WHERE id = ?")
-    .run(JSON.stringify(received), sessionId);
+    .prepare(
+      "UPDATE upload_sessions SET received_chunks = ?, updated_at = NOW() WHERE tenant_id = ? AND id = ?",
+    )
+    .run(JSON.stringify(received), String(tenantId), sessionId);
 }
 
 /**
@@ -124,12 +128,13 @@ function createUploadRouter({ db, uploader }) {
 
     await db
       .prepare(
-        `INSERT INTO upload_sessions (id, owner_id, filename, file_size, mime_type, file_hash, chunk_size,
+        `INSERT INTO upload_sessions (id, tenant_id, owner_id, filename, file_size, mime_type, file_hash, chunk_size,
          total_chunks, received_chunks, title, description, category_id, tag_names, status, expires_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NOW(), NOW())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NOW(), NOW())`,
       )
       .run(
         sessionId,
+        req.tenantScope.tenantId,
         req.user.id,
         filename,
         fileSize,
@@ -162,7 +167,7 @@ function createUploadRouter({ db, uploader }) {
     uploader.single('chunk'),
     asyncHandler(async (req, res) => {
       const sessionId = String(req.params.session_id || '');
-      const loaded = await loadSession(db, sessionId);
+      const loaded = await loadSession(db, req.tenantScope.tenantId, sessionId);
       if (!loaded) return res.status(404).json({ detail: 'Upload session not found' });
       const { session, received } = loaded;
       if (session.status !== 'pending') {
@@ -191,7 +196,7 @@ function createUploadRouter({ db, uploader }) {
       if (!received.includes(chunkIndex)) {
         received.push(chunkIndex);
         received.sort((a, b) => a - b);
-        await saveReceived(db, sessionId, received);
+        await saveReceived(db, req.tenantScope.tenantId, sessionId, received);
       }
 
       return res.json({
@@ -207,7 +212,7 @@ function createUploadRouter({ db, uploader }) {
     const sessionId = String(body.session_id || '').trim();
     if (!sessionId) return res.status(400).json({ detail: 'session_id required' });
 
-    const loaded = await loadSession(db, sessionId);
+    const loaded = await loadSession(db, req.tenantScope.tenantId, sessionId);
     if (!loaded) return res.status(404).json({ detail: 'Upload session not found' });
     const { session, received } = loaded;
     if (session.owner_id !== req.user.id && req.user.role !== 'admin') {
@@ -248,6 +253,9 @@ function createUploadRouter({ db, uploader }) {
       },
       ownerId: session.owner_id,
       source: 'chunked-upload',
+      // The session already belongs to the caller's tenant — an upload can
+      // never land in a tenant the credential does not speak for.
+      tenantId: session.tenant_id || req.tenantScope.tenantId,
       extra: {
         title: body.title || session.title || null,
         description: body.description !== undefined ? body.description : session.description,
@@ -257,8 +265,10 @@ function createUploadRouter({ db, uploader }) {
     });
 
     await db
-      .prepare("UPDATE upload_sessions SET status = 'completed', updated_at = NOW() WHERE id = ?")
-      .run(sessionId);
+      .prepare(
+        "UPDATE upload_sessions SET status = 'completed', updated_at = NOW() WHERE tenant_id = ? AND id = ?",
+      )
+      .run(req.tenantScope.tenantId, sessionId);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch (e) {

@@ -68,6 +68,38 @@ async function resolveTenantFromUser(db, user) {
 }
 
 /**
+ * Whether a scope covers every tenant.
+ *
+ * @param {{tenantId: string}|null|undefined} scope
+ * @returns {boolean}
+ */
+function isAllTenants(scope) {
+  return Boolean(scope) && scope.tenantId === ALL_TENANTS;
+}
+
+/**
+ * The tenant condition for a query.
+ *
+ * Returns the clause fragment *and* its parameter, so a caller cannot add
+ * one without the other. A platform administrator's scope covers every
+ * tenant, so the fragment is empty — their reads are unfiltered by design.
+ *
+ * @param {{tenantId: string, isSuperadmin: boolean}} scope
+ * @param {string} [column] the qualified column, e.g. `a.tenant_id`
+ * @returns {{sql: string, params: unknown[]}}
+ */
+function tenantClause(scope, column = 'tenant_id') {
+  if (!scope) {
+    throw Object.assign(new Error('A query cannot run without a tenant scope'), {
+      status: 403,
+      code: 'NO_TENANT_SCOPE',
+    });
+  }
+  if (isAllTenants(scope)) return { sql: '', params: [] };
+  return { sql: `${column} = ?`, params: [scope.tenantId] };
+}
+
+/**
  * The scope a request runs in.
  *
  * `isSuperadmin` is the flag the business layer reads: a superadmin's reads
@@ -90,6 +122,8 @@ module.exports = {
   SUPERADMIN_ROLE,
   ALL_TENANTS,
   ALL_TENANTS_NAME,
+  isAllTenants,
+  tenantClause,
   loadTenant,
   resolveTenantFromUser,
   tenantScope,

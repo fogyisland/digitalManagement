@@ -19,6 +19,7 @@ const { getConfig } = require('../../src/server/config');
 
 const ASSETS_TABLE = `CREATE TABLE assets (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
   title VARCHAR(191),
   asset_type VARCHAR(32),
   file_size BIGINT,
@@ -41,6 +42,7 @@ const ASSETS_TABLE = `CREATE TABLE assets (
 
 const MANIFEST_TABLE = `CREATE TABLE manifest_writes (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
   asset_id VARCHAR(64),
   op VARCHAR(32),
   status VARCHAR(32),

@@ -25,30 +25,44 @@ const { asyncHandler } = require('../lib/http');
 function createStatsRouter({ db }) {
   const router = express.Router();
 
-  router.get('/stats', authRequired(db), asyncHandler(async (_req, res) => {
+  router.get('/stats', authRequired(db), asyncHandler(async (req, res) => {
+    // Every counter is scoped to the caller's tenant: a platform
+    // administrator's `tenantId` is the wildcard, so their scope adds no
+    // condition and their totals cover the whole platform.
+    const tenantId = req.tenantScope.tenantId;
     const total = (
-      await db.prepare("SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted'").get()
+      await db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted'",
+        )
+        .get(tenantId)
     ).c;
     const images = (
       await db
-        .prepare("SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND asset_type = 'image'")
-        .get()
+        .prepare(
+          "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND asset_type = 'image'",
+        )
+        .get(tenantId)
     ).c;
     const videos = (
       await db
-        .prepare("SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND asset_type = 'video'")
-        .get()
+        .prepare(
+          "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND asset_type = 'video'",
+        )
+        .get(tenantId)
     ).c;
     const totalSize = (
       await db
-        .prepare("SELECT COALESCE(SUM(file_size), 0) AS s FROM assets WHERE status != 'deleted'")
-        .get()
+        .prepare(
+          "SELECT COALESCE(SUM(file_size), 0) AS s FROM assets WHERE tenant_id = ? AND status != 'deleted'",
+        )
+        .get(tenantId)
     ).s;
     const recent = await db
       .prepare(
-        `SELECT ${ASSET_COLUMNS} FROM assets a WHERE a.status != 'deleted' ORDER BY a.created_at DESC LIMIT 10`,
+        `SELECT ${ASSET_COLUMNS} FROM assets a WHERE a.tenant_id = ? AND a.status != 'deleted' ORDER BY a.created_at DESC LIMIT 10`,
       )
-      .all();
+      .all(tenantId);
     return res.json({
       total: Number(total),
       images: Number(images),
@@ -58,30 +72,43 @@ function createStatsRouter({ db }) {
     });
   }));
 
-  router.get('/stats/dashboard', authRequired(db), asyncHandler(async (_req, res) => {
+  router.get('/stats/dashboard', authRequired(db), asyncHandler(async (req, res) => {
+    const tenantId = req.tenantScope.tenantId;
     const summary = {
       total_assets: Number(
-        (await db.prepare("SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted'").get()).c,
+        (
+          await db
+            .prepare(
+              "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted'",
+            )
+            .get(tenantId)
+        ).c,
       ),
       image_count: Number(
         (
           await db
-            .prepare("SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND asset_type = 'image'")
-            .get()
+            .prepare(
+              "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND asset_type = 'image'",
+            )
+            .get(tenantId)
         ).c,
       ),
       video_count: Number(
         (
           await db
-            .prepare("SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND asset_type = 'video'")
-            .get()
+            .prepare(
+              "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND asset_type = 'video'",
+            )
+            .get(tenantId)
         ).c,
       ),
       total_size_bytes: Number(
         (
           await db
-            .prepare("SELECT COALESCE(SUM(file_size), 0) AS s FROM assets WHERE status != 'deleted'")
-            .get()
+            .prepare(
+              "SELECT COALESCE(SUM(file_size), 0) AS s FROM assets WHERE tenant_id = ? AND status != 'deleted'",
+            )
+            .get(tenantId)
         ).s,
       ),
       storage_used_gb: 0,
@@ -89,32 +116,44 @@ function createStatsRouter({ db }) {
         (
           await db
             .prepare(
-              "SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND DATE(created_at) = CURDATE()",
+              "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND DATE(created_at) = CURDATE()",
             )
-            .get()
+            .get(tenantId)
         ).c,
       ),
       week_uploads: Number(
         (
           await db
             .prepare(
-              "SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND created_at >= NOW() - INTERVAL 7 DAY",
+              "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND created_at >= NOW() - INTERVAL 7 DAY",
             )
-            .get()
+            .get(tenantId)
         ).c,
       ),
       month_uploads: Number(
         (
           await db
             .prepare(
-              "SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND created_at >= NOW() - INTERVAL 30 DAY",
+              "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND created_at >= NOW() - INTERVAL 30 DAY",
             )
-            .get()
+            .get(tenantId)
         ).c,
       ),
-      tag_count: Number((await db.prepare('SELECT COUNT(*) AS c FROM tags').get()).c),
-      category_count: Number((await db.prepare('SELECT COUNT(*) AS c FROM categories').get()).c),
-      user_count: Number((await db.prepare('SELECT COUNT(*) AS c FROM users').get()).c),
+      tag_count: Number(
+        (
+          await db.prepare('SELECT COUNT(*) AS c FROM tags WHERE tenant_id = ?').get(tenantId)
+        ).c,
+      ),
+      category_count: Number(
+        (
+          await db
+            .prepare('SELECT COUNT(*) AS c FROM categories WHERE tenant_id = ?')
+            .get(tenantId)
+        ).c,
+      ),
+      user_count: Number(
+        (await db.prepare('SELECT COUNT(*) AS c FROM users WHERE tenant_id = ?').get(tenantId)).c,
+      ),
     };
     summary.storage_used_gb = summary.total_size_bytes / (1024 ** 3);
 
@@ -132,20 +171,20 @@ function createStatsRouter({ db }) {
       trendDates.push(`${yyyy}-${mm}-${dd}`);
     }
     const dayCountStmt = db.prepare(
-      "SELECT COUNT(*) AS c FROM assets WHERE status != 'deleted' AND DATE(created_at) = ?",
+      "SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND status != 'deleted' AND DATE(created_at) = ?",
     );
     const upload_trend = [];
     for (const date of trendDates) {
-      const row = await dayCountStmt.get(date);
+      const row = await dayCountStmt.get(tenantId, date);
       upload_trend.push({ date, count: Number(row.c) });
     }
 
     const recent_assets = (
       await db
         .prepare(
-          `SELECT ${ASSET_COLUMNS} FROM assets a WHERE a.status != 'deleted' ORDER BY a.created_at DESC LIMIT 10`,
+          `SELECT ${ASSET_COLUMNS} FROM assets a WHERE a.tenant_id = ? AND a.status != 'deleted' ORDER BY a.created_at DESC LIMIT 10`,
         )
-        .all()
+        .all(tenantId)
     ).map(toAsset);
 
     return res.json({ summary, upload_trend, recent_assets });

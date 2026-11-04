@@ -184,6 +184,25 @@ function createDb(pool) {
     },
 
     /**
+     * Run a statement over the text protocol and take every row.
+     *
+     * `prepare().all()` uses MySQL's *binary* prepared-statement protocol.
+     * On MySQL 5.7 that protocol is pathologically slow against
+     * `information_schema` — each call re-materialises the catalogue, and a
+     * boot that runs ~30 of them takes tens of seconds. The text protocol
+     * answers the same query in a millisecond, so the schema-metadata reads
+     * (the only heavy `information_schema` users) go through here.
+     *
+     * @param {string} sql
+     * @param {unknown[]} [params]
+     * @returns {Promise<object[]>}
+     */
+    async query(sql, params = []) {
+      const [rows] = await pool.query(sql, normalizeParams(params));
+      return rows;
+    },
+
+    /**
      * Run raw SQL — DDL and the like.
      *
      * @param {string} sql
@@ -263,12 +282,11 @@ async function connect(config) {
  * @returns {Promise<Set<string>>}
  */
 async function existingColumns(db, table) {
-  const rows = await db
-    .prepare(
-      `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-    )
-    .all([table]);
+  const rows = await db.query(
+    `SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    [table],
+  );
   return new Set(rows.map((row) => row.name));
 }
 
@@ -280,12 +298,11 @@ async function existingColumns(db, table) {
  * @returns {Promise<Set<string>>}
  */
 async function existingIndexes(db, table) {
-  const rows = await db
-    .prepare(
-      `SELECT DISTINCT INDEX_NAME AS name FROM information_schema.STATISTICS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-    )
-    .all([table]);
+  const rows = await db.query(
+    `SELECT DISTINCT INDEX_NAME AS name FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    [table],
+  );
   return new Set(rows.map((row) => row.name));
 }
 
@@ -297,13 +314,12 @@ async function existingIndexes(db, table) {
  * @returns {Promise<string[]>}
  */
 async function primaryKeyColumns(db, table) {
-  const rows = await db
-    .prepare(
-      `SELECT COLUMN_NAME AS name FROM information_schema.STATISTICS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY'
-        ORDER BY SEQ_IN_INDEX`,
-    )
-    .all([table]);
+  const rows = await db.query(
+    `SELECT COLUMN_NAME AS name FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = 'PRIMARY'
+      ORDER BY SEQ_IN_INDEX`,
+    [table],
+  );
   return rows.map((row) => row.name);
 }
 

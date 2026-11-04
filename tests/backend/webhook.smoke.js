@@ -56,6 +56,7 @@ async function setupDatabase() {
   await db.exec(`
     CREATE TABLE webhook_endpoints (
       id VARCHAR(64) NOT NULL PRIMARY KEY,
+      tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
       name VARCHAR(191) NOT NULL,
       url VARCHAR(1024) NOT NULL,
       secret VARCHAR(191) NOT NULL,
@@ -66,6 +67,7 @@ async function setupDatabase() {
   await db.exec(`
     CREATE TABLE webhook_logs (
       id VARCHAR(64) NOT NULL PRIMARY KEY,
+      tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
       endpoint_id VARCHAR(64) NOT NULL,
       event VARCHAR(191) NOT NULL,
       payload TEXT NOT NULL,

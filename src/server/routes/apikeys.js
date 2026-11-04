@@ -53,12 +53,12 @@ function createApiKeysRouter({ db }) {
   router.get(
     '/api-keys',
     authRequired(db),
-    asyncHandler(async (_req, res) => {
+    asyncHandler(async (req, res) => {
       const rows = await db
         .prepare(
-          'SELECT id, name, key_prefix, scopes, is_active, last_used_at, expires_at, created_at FROM api_keys ORDER BY created_at DESC',
+          'SELECT id, name, key_prefix, scopes, is_active, last_used_at, expires_at, created_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC',
         )
-        .all();
+        .all(req.tenantScope.tenantId);
       return res.json(rows.map(toApiKey));
     }),
   );
@@ -88,11 +88,22 @@ function createApiKeysRouter({ db }) {
         return res.status(400).json({ detail: 'expires_at must be a valid date' });
       }
 
+      // A key is born inside the caller's tenant — the tenant is never a
+      // request field, since a credential that could name its own tenant
+      // would be able to name somebody else's.
       await db
         .prepare(
-          'INSERT INTO api_keys (id, name, key_prefix, key_hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(id, String(name), prefix, hash, effectiveScopes.join(','), expiresAt);
+        .run(
+          id,
+          req.tenantScope.tenantId,
+          String(name),
+          prefix,
+          hash,
+          effectiveScopes.join(','),
+          expiresAt,
+        );
 
       // The raw key is returned exactly once — it is never stored in clear.
       return res.status(201).json({
@@ -111,7 +122,10 @@ function createApiKeysRouter({ db }) {
     '/api-keys/:id',
     authRequired(db),
     asyncHandler(async (req, res) => {
-      const key = await db.prepare('SELECT * FROM api_keys WHERE id = ?').get(req.params.id);
+      const tenantId = req.tenantScope.tenantId;
+      const key = await db
+        .prepare('SELECT * FROM api_keys WHERE id = ? AND tenant_id = ?')
+        .get(req.params.id, tenantId);
       if (!key) return res.status(404).json({ detail: 'Not found' });
       const { name, scopes, expires_at, is_active } = req.body || {};
 
@@ -137,7 +151,7 @@ function createApiKeysRouter({ db }) {
 
       await db
         .prepare(
-          'UPDATE api_keys SET name = ?, scopes = ?, expires_at = ?, is_active = ? WHERE id = ?',
+          'UPDATE api_keys SET name = ?, scopes = ?, expires_at = ?, is_active = ? WHERE id = ? AND tenant_id = ?',
         )
         .run(
           name === undefined || name === null ? key.name : String(name),
@@ -145,8 +159,11 @@ function createApiKeysRouter({ db }) {
           nextExpiresAt,
           is_active === undefined || is_active === null ? key.is_active : is_active ? 1 : 0,
           key.id,
+          tenantId,
         );
-      const row = await db.prepare('SELECT * FROM api_keys WHERE id = ?').get(key.id);
+      const row = await db
+        .prepare('SELECT * FROM api_keys WHERE id = ? AND tenant_id = ?')
+        .get(key.id, tenantId);
       return res.json(toApiKey(row));
     }),
   );
@@ -155,9 +172,14 @@ function createApiKeysRouter({ db }) {
     '/api-keys/:id',
     authRequired(db),
     asyncHandler(async (req, res) => {
-      const key = await db.prepare('SELECT id FROM api_keys WHERE id = ?').get(req.params.id);
+      const tenantId = req.tenantScope.tenantId;
+      const key = await db
+        .prepare('SELECT id FROM api_keys WHERE id = ? AND tenant_id = ?')
+        .get(req.params.id, tenantId);
       if (!key) return res.status(404).json({ detail: 'Not found' });
-      await db.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').run(key.id);
+      await db
+        .prepare('UPDATE api_keys SET is_active = 0 WHERE id = ? AND tenant_id = ?')
+        .run(key.id, tenantId);
       return res.status(204).end();
     }),
   );

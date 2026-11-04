@@ -24,8 +24,12 @@ const { asyncHandler } = require('../lib/http');
 function createTagsRouter({ db }) {
   const router = express.Router();
 
-  router.get('/tags', asyncHandler(async (_req, res) => {
-    const rows = await db.prepare('SELECT * FROM tags ORDER BY usage_count DESC, name').all();
+  router.get('/tags', authRequired(db), asyncHandler(async (req, res) => {
+    const rows = await db
+      .prepare(
+        'SELECT * FROM tags WHERE tenant_id = ? ORDER BY usage_count DESC, name',
+      )
+      .all(req.tenantScope.tenantId);
     return res.json(rows.map(toTag));
   }));
 
@@ -33,47 +37,57 @@ function createTagsRouter({ db }) {
     const { name, color, description } = req.body || {};
     if (!name) return res.status(400).json({ detail: 'name required' });
     const id = nanoid();
+    const tenantId = req.tenantScope.tenantId;
     try {
-      await db.prepare('INSERT INTO tags (id, name, slug, color) VALUES (?, ?, ?, ?)').run(
-        id,
-        String(name),
-        slugify(name),
-        color || null,
-      );
+      await db
+        .prepare('INSERT INTO tags (id, tenant_id, name, slug, color) VALUES (?, ?, ?, ?, ?)')
+        .run(id, tenantId, String(name), slugify(name), color || null);
     } catch (e) {
       return res.status(400).json({ detail: e.message });
     }
-    const row = await db.prepare('SELECT * FROM tags WHERE id = ?').get(id);
+    const row = await db
+      .prepare('SELECT * FROM tags WHERE id = ? AND tenant_id = ?')
+      .get(id, tenantId);
     return res.status(201).json(toTag(row));
   }));
 
   router.put('/tags/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const tag = await db.prepare('SELECT * FROM tags WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const tag = await db
+      .prepare('SELECT * FROM tags WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!tag) return res.status(404).json({ detail: 'Not found' });
     const { name, color } = req.body || {};
     if (name !== undefined && name !== null && String(name) !== tag.name) {
       try {
-        await db.prepare('UPDATE tags SET name = ?, slug = ? WHERE id = ?').run(
-          String(name),
-          slugify(name),
-          tag.id,
-        );
+        await db
+          .prepare('UPDATE tags SET name = ?, slug = ? WHERE id = ? AND tenant_id = ?')
+          .run(String(name), slugify(name), tag.id, tenantId);
       } catch (e) {
         return res.status(400).json({ detail: e.message });
       }
     }
     if (color !== undefined) {
-      await db.prepare('UPDATE tags SET color = ? WHERE id = ?').run(color || null, tag.id);
+      await db
+        .prepare('UPDATE tags SET color = ? WHERE id = ? AND tenant_id = ?')
+        .run(color || null, tag.id, tenantId);
     }
-    const row = await db.prepare('SELECT * FROM tags WHERE id = ?').get(tag.id);
+    const row = await db
+      .prepare('SELECT * FROM tags WHERE id = ? AND tenant_id = ?')
+      .get(tag.id, tenantId);
     return res.json(toTag(row));
   }));
 
   router.delete('/tags/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const tag = await db.prepare('SELECT * FROM tags WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const tag = await db
+      .prepare('SELECT * FROM tags WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!tag) return res.status(404).json({ detail: 'Not found' });
-    await db.prepare('DELETE FROM asset_tags WHERE tag_id = ?').run(tag.id);
-    await db.prepare('DELETE FROM tags WHERE id = ?').run(tag.id);
+    await db
+      .prepare('DELETE FROM asset_tags WHERE tenant_id = ? AND tag_id = ?')
+      .run(tenantId, tag.id);
+    await db.prepare('DELETE FROM tags WHERE id = ? AND tenant_id = ?').run(tag.id, tenantId);
     return res.status(204).end();
   }));
 

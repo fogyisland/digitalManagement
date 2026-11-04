@@ -78,6 +78,7 @@ function toAsset(row) {
     job_id: row.job_id ?? null,
     metadata_json: row.metadata_json ?? null,
     tag_names: parseTagNames(row.tag_names_csv),
+    tenant_id: row.tenant_id ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

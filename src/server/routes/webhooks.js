@@ -66,12 +66,12 @@ function normalizeEvents(value) {
 function createWebhooksRouter({ db }) {
   const router = express.Router();
 
-  router.get('/webhooks', authRequired(db), asyncHandler(async (_req, res) => {
+  router.get('/webhooks', authRequired(db), asyncHandler(async (req, res) => {
     const rows = await db
       .prepare(
-        'SELECT id, name, url, is_active, events, created_at FROM webhook_endpoints ORDER BY created_at DESC',
+        'SELECT id, name, url, is_active, events, created_at FROM webhook_endpoints WHERE tenant_id = ? ORDER BY created_at DESC',
       )
-      .all();
+      .all(req.tenantScope.tenantId);
     return res.json(rows.map(toWebhook));
   }));
 
@@ -93,11 +93,20 @@ function createWebhooksRouter({ db }) {
     }
     const id = nanoid();
     const secret = crypto.randomBytes(24).toString('hex');
+    // The endpoint belongs to the caller's tenant — its deliveries and its
+    // log rows are that tenant's alone.
     await db
       .prepare(
-        'INSERT INTO webhook_endpoints (id, name, url, secret, events) VALUES (?, ?, ?, ?, ?)',
+        'INSERT INTO webhook_endpoints (id, tenant_id, name, url, secret, events) VALUES (?, ?, ?, ?, ?, ?)',
       )
-      .run(id, String(name).trim(), url, secret, normalized.events.join(','));
+      .run(
+        id,
+        req.tenantScope.tenantId,
+        String(name).trim(),
+        url,
+        secret,
+        normalized.events.join(','),
+      );
     return res.status(201).json({
       id,
       name: String(name).trim(),
@@ -109,7 +118,10 @@ function createWebhooksRouter({ db }) {
   }));
 
   router.put('/webhooks/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const endpoint = await db.prepare('SELECT * FROM webhook_endpoints WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const endpoint = await db
+      .prepare('SELECT * FROM webhook_endpoints WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!endpoint) return res.status(404).json({ detail: 'Not found' });
 
     const { name, url, events, is_active } = req.body || {};
@@ -155,20 +167,27 @@ function createWebhooksRouter({ db }) {
 
     await db
       .prepare(
-        'UPDATE webhook_endpoints SET name = ?, url = ?, events = ?, is_active = ? WHERE id = ?',
+        'UPDATE webhook_endpoints SET name = ?, url = ?, events = ?, is_active = ? WHERE id = ? AND tenant_id = ?',
       )
-      .run(nextName, nextUrl, nextEvents, nextActive, endpoint.id);
+      .run(nextName, nextUrl, nextEvents, nextActive, endpoint.id, tenantId);
 
-    const row = await db.prepare('SELECT * FROM webhook_endpoints WHERE id = ?').get(endpoint.id);
+    const row = await db
+      .prepare('SELECT * FROM webhook_endpoints WHERE id = ? AND tenant_id = ?')
+      .get(endpoint.id, tenantId);
     return res.json(toWebhook(row));
   }));
 
   router.delete('/webhooks/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const endpoint = await db.prepare('SELECT id FROM webhook_endpoints WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const endpoint = await db
+      .prepare('SELECT id FROM webhook_endpoints WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!endpoint) return res.status(404).json({ detail: 'Not found' });
     // Soft-disable: keep the row for history + signature verification, but
     // stop emitting new events.
-    await db.prepare('UPDATE webhook_endpoints SET is_active = 0 WHERE id = ?').run(endpoint.id);
+    await db
+      .prepare('UPDATE webhook_endpoints SET is_active = 0 WHERE id = ? AND tenant_id = ?')
+      .run(endpoint.id, tenantId);
     return res.status(204).end();
   }));
 

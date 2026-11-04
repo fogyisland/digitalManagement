@@ -24,7 +24,8 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') 
 
 const { getConfig } = require('../config');
 const { connect } = require('../lib/db');
-const { initSchema, seedDatabase, seedSampleAssets } = require('../lib/schema');
+const { initSchema } = require('../lib/schema');
+const { seedDatabase, seedSampleAssets } = require('../lib/seed');
 
 /** The directories under the storage root that hold asset files. */
 const STORAGE_SUBDIRS = ['originals', 'thumbnails', 'previews', 'placeholders', 'tmp'];

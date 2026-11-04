@@ -28,7 +28,8 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const { getConfig } = require('./config');
 const { createDb, createPool, ensureDatabase } = require('./lib/db');
-const { initSchema, seedDatabase } = require('./lib/schema');
+const { initSchema } = require('./lib/schema');
+const { seedDatabase } = require('./lib/seed');
 const { createUploader, uploadErrorHandler } = require('./lib/upload');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
@@ -69,6 +70,8 @@ const ready = (async () => {
   // is started as the entry point: the backend is also embedded (the test
   // suite boots this module directly), and a missing index makes
   // `/storage/manifests/index.json` answer 404 for every consumer.
+  // The manifest index covers every tenant, so every live tenant's pending
+  // writes are replayed before the index is regenerated once.
   try {
     await replayPendingManifestWrites(db, config.storageDir);
     await writeManifestIndex(db, config.storageDir);

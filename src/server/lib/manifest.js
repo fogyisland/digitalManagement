@@ -20,12 +20,15 @@ function safeParse(s) {
 
 async function writeManifestIndex(db, storageDir) {
   fs.mkdirSync(path.join(storageDir, 'manifests'), { recursive: true });
+  // The manifest is the storage directory's own index, not a tenant's API:
+  // it covers the whole library and records each row's `tenant_id`, so a
+  // consumer can filter by tenant without the file being per-tenant.
   const assets = await db.prepare(`
-    SELECT id, title, asset_type, file_size, original_name, mime_type,
+    SELECT tenant_id, id, title, asset_type, file_size, original_name, mime_type,
            width, height, duration, source_tool, prompt, seed,
            model_name, job_id, metadata_json, created_at, updated_at, status
     FROM assets
-    WHERE status != 'deleted'
+    WHERE status != 'deleted' AND tenant_id IS NOT NULL
     ORDER BY created_at DESC
   `).all();
 
@@ -35,6 +38,7 @@ async function writeManifestIndex(db, storageDir) {
     count: assets.length,
     assets: assets.map((a) => ({
       id: a.id,
+      tenant_id: a.tenant_id,
       title: a.title,
       asset_type: a.asset_type,
       file_size: a.file_size,
@@ -69,14 +73,15 @@ async function writeManifestIndex(db, storageDir) {
  * @param {object} db
  * @param {string|null|undefined} assetId
  * @param {string} op
+ * @param {string} [tenantId] the tenant the asset belongs to
  * @returns {Promise<void>}
  */
-async function markAssetForManifestWrite(db, assetId, op) {
+async function markAssetForManifestWrite(db, assetId, op, tenantId) {
   await db
     .prepare(
-      'INSERT INTO manifest_writes (id, asset_id, op, status) VALUES (?, ?, ?, ?)'
+      'INSERT INTO manifest_writes (id, tenant_id, asset_id, op, status) VALUES (?, ?, ?, ?, ?)',
     )
-    .run(nanoid(), assetId || null, op, 'pending');
+    .run(nanoid(), tenantId || 'default', assetId || null, op, 'pending');
 }
 
 /**
@@ -87,8 +92,13 @@ async function markAssetForManifestWrite(db, assetId, op) {
  * @returns {Promise<number>} how many writes were replayed
  */
 async function replayPendingManifestWrites(db, storageDir) {
+  // The index covers every tenant, so every live tenant's pending writes are
+  // replayed. The rows themselves are tenant-owned — `tenant_id` is selected
+  // and never null, which is what keeps the bookkeeping honest.
   const pending = await db
-    .prepare("SELECT id FROM manifest_writes WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1000")
+    .prepare(
+      "SELECT id, tenant_id FROM manifest_writes WHERE tenant_id IS NOT NULL AND status = 'pending' ORDER BY created_at ASC LIMIT 1000",
+    )
     .all();
   if (!pending.length) return 0;
   let n = 0;
@@ -96,13 +106,17 @@ async function replayPendingManifestWrites(db, storageDir) {
     try {
       await writeManifestIndex(db, storageDir);
       await db
-        .prepare("UPDATE manifest_writes SET status='done', attempts=attempts+1 WHERE id=?")
-        .run(row.id);
+        .prepare(
+          "UPDATE manifest_writes SET status='done', attempts=attempts+1 WHERE tenant_id = ? AND id = ?",
+        )
+        .run(row.tenant_id, row.id);
       n++;
     } catch (e) {
       await db
-        .prepare("UPDATE manifest_writes SET status='failed', attempts=attempts+1, last_error=? WHERE id=?")
-        .run(String(e.message || e), row.id);
+        .prepare(
+          "UPDATE manifest_writes SET status='failed', attempts=attempts+1, last_error=? WHERE tenant_id = ? AND id = ?",
+        )
+        .run(String(e.message || e), row.tenant_id, row.id);
     }
   }
   return n;

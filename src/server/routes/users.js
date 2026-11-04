@@ -62,7 +62,12 @@ function createUsersRouter({ db }) {
       return res.status(400).json({ detail: `Unsupported status: ${status}` });
     }
 
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    // The tenant is part of the filter, not a request parameter: a caller
+    // sees the users of the tenant its credential speaks for.
+    where.unshift('tenant_id = ?');
+    params.unshift(req.tenantScope.tenantId);
+
+    const whereSql = `WHERE ${where.join(' AND ')}`;
     const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM users ${whereSql}`).get(...params)).c);
     const offset = (page - 1) * pageSize;
     const rows = await db
@@ -83,21 +88,35 @@ function createUsersRouter({ db }) {
     }
     const safeRole = ROLES.includes(role) ? role : 'viewer';
     const id = nanoid();
+    const tenantId = req.tenantScope.tenantId;
     try {
       await db
         .prepare(
-          'INSERT INTO users (id, username, email, display_name, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO users (id, tenant_id, username, email, display_name, password_hash, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(id, String(username), email || null, display_name || null, bcrypt.hashSync(String(password), 10), safeRole);
+        .run(
+          id,
+          tenantId,
+          String(username),
+          email || null,
+          display_name || null,
+          bcrypt.hashSync(String(password), 10),
+          safeRole,
+        );
     } catch (e) {
       return res.status(400).json({ detail: e.message });
     }
-    const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    const row = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(id, tenantId);
     return res.status(201).json(toUser(row));
   }));
 
   router.put('/users/:id', requireAdmin, asyncHandler(async (req, res) => {
-    const target = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const target = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!target) return res.status(404).json({ detail: 'Not found' });
 
     const { email, display_name, role, status } = req.body || {};
@@ -117,8 +136,10 @@ function createUsersRouter({ db }) {
       const adminCount = Number(
         (
           await db
-            .prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND is_active = 1")
-            .get()
+            .prepare(
+              "SELECT COUNT(*) AS c FROM users WHERE tenant_id = ? AND role = 'admin' AND is_active = 1",
+            )
+            .get(tenantId)
         ).c,
       );
       if (adminCount <= 1) {
@@ -135,7 +156,7 @@ function createUsersRouter({ db }) {
           : 0;
     await db
       .prepare(
-        'UPDATE users SET email = ?, display_name = ?, role = ?, is_active = ? WHERE id = ?',
+        'UPDATE users SET email = ?, display_name = ?, role = ?, is_active = ? WHERE id = ? AND tenant_id = ?',
       )
       .run(
         email !== undefined ? email : target.email,
@@ -143,13 +164,19 @@ function createUsersRouter({ db }) {
         nextRole,
         nextIsActive,
         target.id,
+        tenantId,
       );
-    const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(target.id);
+    const row = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(target.id, tenantId);
     return res.json(toUser(row));
   }));
 
   router.delete('/users/:id', requireAdmin, asyncHandler(async (req, res) => {
-    const target = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const target = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!target) return res.status(404).json({ detail: 'Not found' });
     if (target.id === req.user.id) {
       return res.status(400).json({ detail: 'You cannot delete your own account' });
@@ -158,20 +185,25 @@ function createUsersRouter({ db }) {
       const adminCount = Number(
         (
           await db
-            .prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND is_active = 1")
-            .get()
+            .prepare(
+              "SELECT COUNT(*) AS c FROM users WHERE tenant_id = ? AND role = 'admin' AND is_active = 1",
+            )
+            .get(tenantId)
         ).c,
       );
       if (adminCount <= 1) {
         return res.status(400).json({ detail: 'The last active admin cannot be deleted' });
       }
     }
-    await db.prepare('DELETE FROM users WHERE id = ?').run(target.id);
+    await db.prepare('DELETE FROM users WHERE id = ? AND tenant_id = ?').run(target.id, tenantId);
     return res.status(204).end();
   }));
 
   router.post('/users/:id/reset-password', requireAdmin, asyncHandler(async (req, res) => {
-    const target = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const target = await db
+      .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!target) return res.status(404).json({ detail: 'Not found' });
     const newPassword =
       (req.query && req.query.new_password) || (req.body && req.body.new_password);
@@ -183,10 +215,9 @@ function createUsersRouter({ db }) {
         detail: `new_password must be at least ${MIN_PASSWORD_LENGTH} characters`,
       });
     }
-    await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
-      bcrypt.hashSync(String(newPassword), 10),
-      target.id,
-    );
+    await db
+      .prepare('UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?')
+      .run(bcrypt.hashSync(String(newPassword), 10), target.id, tenantId);
     return res.status(204).end();
   }));
 

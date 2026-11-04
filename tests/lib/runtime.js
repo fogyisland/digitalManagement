@@ -112,12 +112,18 @@ export function sleep(ms) {
 /**
  * Poll `GET /api/health` until the server answers.
  *
+ * The default budget is deliberately generous: the backend creates and
+ * seeds a whole schema before it listens, and on a machine where a single
+ * `CREATE TABLE` costs most of a second that is ~15 s of real work. A tight
+ * timeout here produces a "did not become healthy" failure that says
+ * nothing about the code.
+ *
  * @param {number} port
  * @param {import('node:child_process').ChildProcess} child
  * @param {number} timeoutMs
  * @returns {Promise<void>}
  */
-export async function waitForHealth(port, child, timeoutMs = 20000) {
+export async function waitForHealth(port, child, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = 'no attempt made';
   while (Date.now() < deadline) {

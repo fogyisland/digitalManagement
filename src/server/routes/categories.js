@@ -24,13 +24,18 @@ const { asyncHandler } = require('../lib/http');
 function createCategoriesRouter({ db }) {
   const router = express.Router();
 
-  router.get('/categories', asyncHandler(async (req, res) => {
+  router.get('/categories', authRequired(db), asyncHandler(async (req, res) => {
     const parentId = req.query.parent_id;
+    const tenantId = req.tenantScope.tenantId;
     const rows = parentId
       ? await db
-          .prepare('SELECT * FROM categories WHERE parent_id = ? ORDER BY sort_order, name')
-          .all(String(parentId))
-      : await db.prepare('SELECT * FROM categories ORDER BY sort_order, name').all();
+          .prepare(
+            'SELECT * FROM categories WHERE tenant_id = ? AND parent_id = ? ORDER BY sort_order, name',
+          )
+          .all(tenantId, String(parentId))
+      : await db
+          .prepare('SELECT * FROM categories WHERE tenant_id = ? ORDER BY sort_order, name')
+          .all(tenantId);
     return res.json(rows.map(toCategory));
   }));
 
@@ -38,13 +43,15 @@ function createCategoriesRouter({ db }) {
     const { name, parent_id, description, sort_order } = req.body || {};
     if (!name) return res.status(400).json({ detail: 'name required' });
     const id = nanoid();
+    const tenantId = req.tenantScope.tenantId;
     try {
       await db
         .prepare(
-          'INSERT INTO categories (id, name, slug, parent_id, description, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO categories (id, tenant_id, name, slug, parent_id, description, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           id,
+          tenantId,
           String(name),
           slugify(name),
           parent_id || null,
@@ -54,18 +61,23 @@ function createCategoriesRouter({ db }) {
     } catch (e) {
       return res.status(400).json({ detail: e.message });
     }
-    const row = await db.prepare('SELECT * FROM categories WHERE id = ?').get(id);
+    const row = await db
+      .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
+      .get(id, tenantId);
     return res.status(201).json(toCategory(row));
   }));
 
   router.put('/categories/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const category = await db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const category = await db
+      .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!category) return res.status(404).json({ detail: 'Not found' });
     const { name, parent_id, description, sort_order } = req.body || {};
     await db
       .prepare(
         `UPDATE categories SET name = COALESCE(?, name), slug = COALESCE(?, slug), parent_id = ?,
-         description = ?, sort_order = COALESCE(?, sort_order) WHERE id = ?`,
+         description = ?, sort_order = COALESCE(?, sort_order) WHERE id = ? AND tenant_id = ?`,
       )
       .run(
         name || null,
@@ -74,19 +86,31 @@ function createCategoriesRouter({ db }) {
         description !== undefined ? description : category.description,
         sort_order === undefined || sort_order === null ? null : parsePositiveInt(sort_order, 0, 1e6),
         category.id,
+        tenantId,
       );
-    const row = await db.prepare('SELECT * FROM categories WHERE id = ?').get(category.id);
+    const row = await db
+      .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
+      .get(category.id, tenantId);
     return res.json(toCategory(row));
   }));
 
   router.delete('/categories/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const category = await db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id);
+    const tenantId = req.tenantScope.tenantId;
+    const category = await db
+      .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId);
     if (!category) return res.status(404).json({ detail: 'Not found' });
     // Detach the category from its assets and children instead of leaving
     // dangling references behind.
-    await db.prepare('UPDATE assets SET category_id = NULL WHERE category_id = ?').run(category.id);
-    await db.prepare('UPDATE categories SET parent_id = NULL WHERE parent_id = ?').run(category.id);
-    await db.prepare('DELETE FROM categories WHERE id = ?').run(category.id);
+    await db
+      .prepare('UPDATE assets SET category_id = NULL WHERE tenant_id = ? AND category_id = ?')
+      .run(tenantId, category.id);
+    await db
+      .prepare('UPDATE categories SET parent_id = NULL WHERE tenant_id = ? AND parent_id = ?')
+      .run(tenantId, category.id);
+    await db
+      .prepare('DELETE FROM categories WHERE id = ? AND tenant_id = ?')
+      .run(category.id, tenantId);
     return res.status(204).end();
   }));
 
