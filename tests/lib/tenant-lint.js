@@ -32,11 +32,19 @@
  *
  * Tables that are deliberately cross-tenant are listed as exemptions with
  * the reason they are exempt — an exemption nobody can read is a hole.
+ *
+ * The first pass reads the SQL *text*, which by construction cannot see a
+ * condition assembled at runtime. A second pass closes that gap for the one
+ * case the text check deliberately accepts: a statement carrying the
+ * `-- tenant` marker promises a builder emits the tenant condition, so the
+ * builder is now audited too — the tenant fragment has to be the one the
+ * conditions are joined onto (pushed first, or unshifted), and no other
+ * fragment may carry a bare `OR` that would escape it.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { maskSource } from './source-scan.js';
+import { maskSource, skipQuoted } from './source-scan.js';
 
 /**
  * The tables whose rows belong to one tenant.
@@ -192,6 +200,175 @@ function readSqlArgument(original, from) {
 }
 
 /**
+ * Every `receiver.push(<literal>)` / `receiver.unshift(<literal>)` in a file,
+ * grouped by the array's name.
+ *
+ * These are the fragments a WHERE clause is composed from. The order and the
+ * shape of the fragments are what decide whether the composed condition can
+ * be widened later, so they are collected rather than inferred.
+ *
+ * @param {string} source the unmasked file contents
+ * @param {string} masked the masked copy (same offsets)
+ * @returns {Map<string, Array<{kind: string, text: string, line: number, isLiteral: boolean}>>}
+ */
+function collectClauseBuilders(source, masked) {
+  const groups = new Map();
+  const pattern = /\b([A-Za-z_$][\w$]*)\s*\.\s*(push|unshift)\s*\(/g;
+  pattern.lastIndex = 0;
+  let match;
+  while ((match = pattern.exec(masked)) !== null) {
+    const receiver = match[1];
+    const kind = match[2];
+    const openIndex = masked.indexOf('(', match.index + match[0].length - 1);
+    if (openIndex === -1) continue;
+    const argument = readSqlArgument(source, openIndex + 1);
+    if (argument === null) continue;
+    let cursor = openIndex + 1;
+    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    const quote = source[cursor];
+    const isLiteral =
+      (quote === "'" || quote === '"' || quote === '`') &&
+      isSelfContained(source, cursor, argument);
+    if (!groups.has(receiver)) groups.set(receiver, []);
+    groups.get(receiver).push({
+      kind,
+      text: argument.text.trim(),
+      line: lineOf(source, match.index),
+      isLiteral,
+    });
+  }
+  return groups;
+}
+
+/**
+ * Is the argument one self-contained string literal?
+ *
+ * A fragment is audited by reading its text. Two shapes carry a value the
+ * lint cannot see and are therefore *not* literals for this purpose: a
+ * template with a `${...}` hole, and a literal concatenated with something
+ * else (`'a = ?' + extra`). In both, part of the condition exists only at
+ * runtime.
+ *
+ * @param {string} source
+ * @param {number} start index of the opening quote
+ * @param {{end: number}} argument the span `readSqlArgument` stopped at
+ * @returns {boolean}
+ */
+function isSelfContained(source, start, argument) {
+  const quote = source[start];
+  const literalEnd = skipQuoted(source, start);
+  if (literalEnd > argument.end) return false;
+  if (source.slice(literalEnd, argument.end).trim() !== '') return false;
+  if (quote !== '`') return true;
+  return !source.slice(start + 1, literalEnd - 1).includes('${');
+}
+
+/**
+ * Drop every parenthesised span, keeping the rest.
+ *
+ * `(a LIKE ? OR b LIKE ?)` is a closed group and cannot widen anything, while
+ * `a LIKE ? OR b` binds against whatever is joined next to it. Only the
+ * second shape is a problem, and this is what tells them apart without a SQL
+ * parser.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function stripParenthesised(text) {
+  let out = '';
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === '(') {
+      depth += 1;
+      continue;
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0) out += ch;
+  }
+  return out;
+}
+
+/**
+ * Does this fragment carry an OR that is not inside its own parentheses?
+ *
+ * @param {string} fragment
+ * @returns {boolean}
+ */
+function hasTopLevelOr(fragment) {
+  return /\bOR\b/i.test(stripParenthesised(fragment));
+}
+
+/**
+ * Audit the clause builders of one file.
+ *
+ * A builder is an array of condition fragments joined with `AND` into the
+ * WHERE clause. The text lint reads the *statement*, and the statement cannot
+ * show the fragments: a fragment pushed into a `WHERE ${where.join(' AND ')}`
+ * template is invisible to it. So the builder is where the tenant condition
+ * has to be checked, and these are the ways it can be lost after the text
+ * lint has passed:
+ *
+ *   - the tenant fragment is the first one, or it is `unshift`ed, so every
+ *     other fragment is joined *after* it;
+ *   - no fragment carries a top-level `OR` that would escape that join;
+ *   - no fragment is an expression this lint cannot read — a runtime value
+ *     could be a condition too, and an unreadable fragment is an unaudited
+ *     one.
+ *
+ * A fragment near `// tenant-lint: allow <reason>` is skipped, for the same
+ * reason the statement check skips such a call: the marker is the file saying
+ * "this condition is unscoped on purpose", and the reason makes it reviewable.
+ *
+ * @param {string} relative the repo-relative path, for the report
+ * @param {string} source the file, for the allow-marker escape hatch
+ * @param {Map<string, Array<object>>} groups
+ * @returns {{problems: string[], hasTenantBuilder: boolean}}
+ */
+function auditClauseBuilders(relative, source, groups) {
+  const problems = [];
+  let hasTenantBuilder = false;
+
+  for (const [name, fragments] of groups) {
+    const tenants = fragments.filter((fragment) => /\btenant_id\b/i.test(fragment.text));
+    if (tenants.length === 0) continue;
+    hasTenantBuilder = true;
+
+    for (const fragment of fragments) {
+      if (hasAllowMarker(source, fragment.line)) continue;
+      if (!fragment.isLiteral) {
+        problems.push(
+          `${relative}:${fragment.line} — the "${name}" clause pushes an expression this ` +
+            'lint cannot read; push a string literal so the tenant condition stays auditable',
+        );
+        continue;
+      }
+      if (hasTopLevelOr(fragment.text)) {
+        problems.push(
+          `${relative}:${fragment.line} — the "${name}" fragment "${fragment.text}" carries a ` +
+            'top-level OR; the conditions are joined with AND, so that OR escapes the tenant ' +
+            "slice — wrap it in its own parentheses",
+        );
+      }
+    }
+
+    const anchored =
+      tenants.some((fragment) => fragment.kind === 'unshift') ||
+      /\btenant_id\b/i.test(fragments[0].text);
+    if (!anchored) {
+      problems.push(
+        `${relative}:${tenants[0].line} — the tenant condition on the "${name}" clause is not ` +
+          'the first one; push or unshift it before every filter so a later OR cannot widen it',
+      );
+    }
+  }
+
+  return { problems, hasTenantBuilder };
+}
+
+/**
  * Which business tables does this SQL text touch?
  *
  * Word-boundary matched against the table names, so `asset_tags` is not
@@ -225,6 +402,7 @@ export function findUnscopedQueries({ srcDir, repoRoot }) {
     const source = fs.readFileSync(file, 'utf8');
     const masked = maskSource(source);
     const callPattern = /\bdb\s*\.\s*(prepare|query)\s*\(/g;
+    const markerLines = [];
     let match;
     while ((match = callPattern.exec(masked)) !== null) {
       const openIndex = masked.indexOf('(', match.index + match[0].length - 1);
@@ -235,7 +413,11 @@ export function findUnscopedQueries({ srcDir, repoRoot }) {
       if (tables.length === 0) continue;
       if (/\btenant_id\b/i.test(argument.text)) continue;
       // The marker the spec names for a condition composed from a builder.
-      if (/--\s*tenant\b/.test(argument.text)) continue;
+      // It is trusted only as far as the builder below can be audited.
+      if (/--\s*tenant\b/.test(argument.text)) {
+        markerLines.push(lineOf(source, match.index));
+        continue;
+      }
       // An unscoped query that is unscoped on purpose, with its reason.
       const callLine = lineOf(source, match.index);
       if (hasAllowMarker(source, callLine)) continue;
@@ -251,6 +433,21 @@ export function findUnscopedQueries({ srcDir, repoRoot }) {
         `${relative}:${callLine} — a query on ${tables.join(', ')} has no tenant condition`,
       );
     }
+
+    // The text check above can read a statement that names the tenant. It
+    // cannot read one whose condition is composed at runtime — so every
+    // clause builder in the file is audited, and a file that hands its
+    // condition over via the `-- tenant` marker is additionally required to
+    // have one.
+    const groups = collectClauseBuilders(source, masked);
+    const { problems, hasTenantBuilder } = auditClauseBuilders(relative, source, groups);
+    if (markerLines.length > 0 && !hasTenantBuilder) {
+      problems.unshift(
+        `${relative}:${markerLines[0]} — the query carries the "-- tenant" marker but this file ` +
+          'composes no tenant condition; the marker cannot stand in for one',
+      );
+    }
+    violations.push(...problems);
   }
 
   return violations;

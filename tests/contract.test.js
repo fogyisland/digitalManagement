@@ -70,6 +70,7 @@ import {
 import { runRuntimeChecks } from './lib/runtime-checks.js';
 import { loadInitSteps } from './lib/runtime-checks-init.js';
 import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
+import { findComposedClauseProblems } from './lib/tenant-clause-fixtures.js';
 import { findEventVocabularyDrift } from './lib/event-parity.js';
 import { MAX_SOURCE_LINES, findOversizedFiles } from './lib/file-size.js';
 
@@ -167,6 +168,20 @@ function runStaticLint() {
     `tenant-scope lint OK — every business query names a tenant ` +
       `(${describeExemptions().length} exemption(s))`,
   );
+
+  // The text check above cannot see a condition assembled at runtime. Where a
+  // statement defers to a builder via the `-- tenant` marker, the builder
+  // itself is audited: the tenant fragment has to be the one the conditions
+  // are joined onto, and no fragment may carry a bare OR that escapes it. The
+  // fixtures under `tests/fixtures/tenant-lint/` are the rule's own tests —
+  // without them a rule that silently stopped matching would look like a pass.
+  const composed = findComposedClauseProblems();
+  assert.deepEqual(
+    composed,
+    [],
+    `tenant composed-clause lint failed:\n${composed.map((v) => `  - ${v}`).join('\n')}`,
+  );
+  console.log('tenant composed-clause lint OK — every marker-bearing builder is auditable');
 
   // A source file nobody can hold in their head is the file nobody reviews.
   // The limit is the project's own (CLAUDE.md §1.3), checked over the server
