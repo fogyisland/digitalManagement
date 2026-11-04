@@ -11,6 +11,21 @@
  *
  * The secret is shown exactly once, in the POST response.
  *
+ * Every delivery is signed and carries these headers:
+ *
+ *   X-DAM-Timestamp     Unix seconds, part of the signed material
+ *   X-DAM-Signature     `sha256=` + HMAC-SHA256(secret, `${timestamp}.${body}`)
+ *   X-DAM-Signature-V1  `sha256=` + HMAC-SHA256(secret, body)  [legacy]
+ *   X-DAM-Event         the event name
+ *   X-DAM-Attempt       the attempt number, 1..3
+ *   X-DAM-Delivery      the `webhook_logs` id of this delivery
+ *
+ * Receivers should verify `X-DAM-Signature` against the raw body and reject a
+ * timestamp more than a few minutes off their own clock — that is what stops
+ * a captured delivery from being replayed. `X-DAM-Signature-V1` exists so a
+ * receiver that has not been upgraded yet keeps verifying successfully; it
+ * will be removed once every receiver checks the timestamp.
+ *
  * `events` is the subscription list. An empty list means "every event" —
  * that is the behaviour of every endpoint created before the column
  * existed, and it keeps the default safe. The vocabulary is fixed by

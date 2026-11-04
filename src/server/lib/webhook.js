@@ -11,12 +11,23 @@
  *      dispatch attempt, including the attempt count and last error.
  *   5. Surface the result to the caller. Never swallow failures.
  *
- * Signature contract:
- *   Header:  X-DAM-Signature: sha256=<lowercase-hex>
- *   Hex is HMAC-SHA256 over the **raw body bytes** (the exact string the
- *   receiver will hash on its end). Any re-serialization on the receiver
- *   side will produce a mismatch, so receivers must hash the raw request
- *   body, not re-serialize the parsed JSON.
+ * Signature contract (v2, current):
+ *   X-DAM-Timestamp: <unix seconds>
+ *   X-DAM-Signature: sha256=<hex> = HMAC-SHA256(secret, `${timestamp}.${body}`)
+ *   X-DAM-Signature-V1: sha256=<hex> = HMAC-SHA256(secret, body)   [legacy]
+ *
+ * The timestamp is inside the signed material, so a receiver that checks the
+ * timestamp against its own clock (a few minutes either way) cannot have a
+ * captured delivery replayed at it later: the old signature still verifies,
+ * but the timestamp it was signed with no longer does.
+ *
+ * The **raw body bytes** are what both signatures cover — the exact string
+ * the receiver reads from the socket. Re-serializing the parsed JSON on the
+ * receiver side produces a mismatch.
+ *
+ * V1 is shipped alongside V2 for as long as existing receivers need it: a
+ * receiver verifies V2 first and falls back to the body-only form. New
+ * receivers should check V2 and the timestamp.
  */
 
 const crypto = require('crypto');
@@ -26,10 +37,10 @@ const { URL } = require('url');
 const { nanoid } = require('nanoid');
 
 // --- Tunables ---------------------------------------------------------------
-const MAX_ATTEMPTS = 3;                 // total tries per dispatch (initial + 2 retries)
-const BASE_BACKOFF_MS = 200;            // backoff base; doubles each retry
-const MAX_BACKOFF_MS = 5000;             // upper bound for a single sleep
-const REQUEST_TIMEOUT_MS = 5000;        // per-attempt socket timeout
+const MAX_ATTEMPTS = 3; // total tries per dispatch (initial + 2 retries)
+const BASE_BACKOFF_MS = 200; // backoff base; doubles each retry
+const MAX_BACKOFF_MS = 5000; // upper bound for a single sleep
+const REQUEST_TIMEOUT_MS = 5000; // per-attempt socket timeout
 
 /**
  * The event vocabulary an endpoint can subscribe to.
@@ -56,20 +67,28 @@ function isRetryableStatus(status) {
 }
 
 /**
- * Compute HMAC-SHA256(secret, body) and return **lowercase hex**.
+ * Compute the delivery signature and return **lowercase hex**.
+ *
+ * With a `timestamp` the signed material is `${timestamp}.${body}` — the v2
+ * form, which cannot be replayed. Without one it is the body alone, which is
+ * the v1 form; the dispatcher ships both so an un-upgraded receiver keeps
+ * working.
  *
  * @param {string} secret endpoint secret
  * @param {string|Buffer} body raw body bytes that will be transmitted
+ * @param {string|number} [timestamp] Unix seconds, included in the signature
  * @returns {string} lowercase hex digest (64 chars)
  */
-function signPayload(secret, body) {
+function signPayload(secret, body, timestamp) {
   if (typeof secret !== 'string' || secret.length === 0) {
     throw new TypeError('signPayload: secret must be a non-empty string');
   }
   if (body === null || body === undefined) {
     throw new TypeError('signPayload: body must not be null/undefined');
   }
-  return crypto.createHmac('sha256', secret).update(body).digest('hex');
+  const material =
+    timestamp === undefined || timestamp === null ? body : `${timestamp}.${body}`;
+  return crypto.createHmac('sha256', secret).update(material).digest('hex');
 }
 
 /**
@@ -201,29 +220,26 @@ function assertEndpoint(endpoint) {
  *        delivery belongs to — the log row is owned by its tenant
  * @param {string} event
  * @param {string} body the signed payload
+ * The row's id is also the **delivery id** sent as `X-DAM-Delivery`, so a
+ * receiver can name the delivery it is complaining about and the operator can
+ * find the row. The id therefore has to exist before the request goes out:
+ * the row is inserted up front as `pending` and updated with the outcome.
+ *
  * @param {{status: string, attempts: number, error: string|null}} final
+ * @param {string} deliveryId the id the row was inserted with
  * @returns {Promise<void>}
  */
-async function recordLog(db, endpoint, event, body, final) {
+async function recordLog(db, endpoint, event, body, final, deliveryId) {
   const endpointId = endpoint.id;
   try {
     await db
       .prepare(
-        'INSERT INTO webhook_logs (id, tenant_id, endpoint_id, event, payload, status, attempts, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        "UPDATE webhook_logs SET status = ?, attempts = ?, last_error = ? WHERE id = ? AND tenant_id = ?",
       )
-      .run(
-        nanoid(),
-        endpoint.tenant_id || 'default',
-        endpointId,
-        event,
-        body,
-        final.status,
-        final.attempts,
-        final.error,
-      );
+      .run(final.status, final.attempts, final.error, deliveryId, endpoint.tenant_id || 'default');
   } catch (e) {
     // Visible, structured, contextual — never silent.
-    console.error('[webhook] failed to insert webhook_logs row', {
+    console.error('[webhook] failed to update webhook_logs row', {
       endpointId,
       event,
       status: final.status,
@@ -234,6 +250,37 @@ async function recordLog(db, endpoint, event, body, final) {
 }
 
 /**
+ * Reserve the delivery's log row.
+ *
+ * Written before the first attempt so its id can travel as `X-DAM-Delivery`.
+ * A failure to reserve is not fatal — the delivery is still worth making —
+ * but it is logged, because an untraceable delivery is a support problem.
+ *
+ * @param {object} db
+ * @param {object} endpoint
+ * @param {string} event
+ * @param {string} body
+ * @returns {Promise<string>} the delivery id
+ */
+async function openDelivery(db, endpoint, event, body) {
+  const id = nanoid();
+  try {
+    await db
+      .prepare(
+        "INSERT INTO webhook_logs (id, tenant_id, endpoint_id, event, payload, status, attempts) VALUES (?, ?, ?, ?, ?, 'pending', 0)",
+      )
+      .run(id, endpoint.tenant_id || 'default', endpoint.id, event, body);
+  } catch (e) {
+    console.error('[webhook] failed to reserve webhook_logs row', {
+      endpointId: endpoint.id,
+      event,
+      err: e.message,
+    });
+  }
+  return id;
+}
+
+/**
  * Dispatch a webhook.
  *
  * @param {Object} db the database handle, with `webhook_logs` +
@@ -241,7 +288,8 @@ async function recordLog(db, endpoint, event, body, final) {
  * @param {Object} endpoint {id, url, secret, [name], [is_active]}
  * @param {string} event short event name (e.g. "asset.created")
  * @param {Object} payload JSON-serializable payload
- * @returns {Promise<{status:'done'|'failed', attempts:number, error:string|null}>}
+ * @returns {Promise<{status:'done'|'failed', attempts:number, error:string|null,
+ *                    deliveryId: string}>}
  *          The promise rejects only if `db` is missing / endpoint is
  *          malformed. Transport-level failures are reported as
  *          `{status:'failed', attempts, error}` so callers can always rely
@@ -260,11 +308,25 @@ async function dispatch(db, endpoint, event, payload) {
   }
 
   const body = JSON.stringify({ event, payload, ts: new Date().toISOString() });
-  const sig = signPayload(endpoint.secret, body);
+
+  // The delivery id names the log row, so it has to exist before the request
+  // leaves: a receiver that reports a bad delivery quotes this id back.
+  const deliveryId = await openDelivery(db, endpoint, event, body);
+
+  // The timestamp is signed together with the body (v2). It is generated
+  // once per dispatch, not per attempt: the retries are the same delivery,
+  // and a receiver that deduplicates on `X-DAM-Delivery` sees one delivery.
+  const timestamp = String(Math.floor(Date.now() / 1000));
   const headers = {
-    'X-DAM-Signature': 'sha256=' + sig,
+    'X-DAM-Signature': `sha256=${signPayload(endpoint.secret, body, timestamp)}`,
+    // The body-only signature ships alongside for as long as receivers that
+    // predate v2 need it; new receivers should verify the v2 header and the
+    // timestamp instead.
+    'X-DAM-Signature-V1': `sha256=${signPayload(endpoint.secret, body)}`,
+    'X-DAM-Timestamp': timestamp,
     'X-DAM-Event': event,
     'X-DAM-Attempt': '1',
+    'X-DAM-Delivery': deliveryId,
   };
 
   let attempts = 0;
@@ -310,9 +372,9 @@ async function dispatch(db, endpoint, event, payload) {
   // soft-disables, `PUT /webhooks/:id` toggles), and a delivery that was
   // already in flight must not resurrect an endpoint the operator has
   // disabled. The delivery outcome lives in `webhook_logs`.
-  await recordLog(db, endpoint, event, body, terminal);
+  await recordLog(db, endpoint, event, body, terminal, deliveryId);
 
-  return terminal;
+  return { ...terminal, deliveryId };
 }
 
 module.exports = {

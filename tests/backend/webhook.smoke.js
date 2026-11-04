@@ -109,10 +109,22 @@ const server = http.createServer((req, res) => {
     const body = Buffer.concat(chunks).toString('utf8');
     const scenario = scenariosRef.current;
     const sigHeader = req.headers['x-dam-signature'] || '';
+    const sigHeaderV1 = req.headers['x-dam-signature-v1'] || '';
     const eventHeader = req.headers['x-dam-event'] || '';
     const attemptHeader = req.headers['x-dam-attempt'] || '0';
+    const timestampHeader = req.headers['x-dam-timestamp'] || '';
+    const deliveryHeader = req.headers['x-dam-delivery'] || '';
     try {
-      scenario({ body, sigHeader, eventHeader, attemptHeader, res });
+      scenario({
+        body,
+        sigHeader,
+        sigHeaderV1,
+        eventHeader,
+        attemptHeader,
+        timestampHeader,
+        deliveryHeader,
+        res,
+      });
     } catch (e) {
       console.error('[smoke server] scenario threw', e);
       try { res.statusCode = 500; res.end('scenario error'); } catch (_) {}
@@ -153,6 +165,24 @@ async function fetchLogs(endpointId) {
 
   const w = require('../../src/server/lib/webhook');
 
+  // --- signature v2 --------------------------------------------------------
+  // The old signature covered the body alone, so a captured delivery could be
+  // replayed forever. The new one covers the timestamp as well, and the old
+  // signature still ships alongside it so a receiver that has not been
+  // upgraded keeps verifying successfully.
+  const ts = '1700000000';
+  const v2 = w.signPayload('topsecret', '{"a":1}', ts);
+  const manualV2 = require('crypto')
+    .createHmac('sha256', 'topsecret')
+    .update(`${ts}.{"a":1}`)
+    .digest('hex');
+  assert.strictEqual(v2, manualV2, 'the v2 signature must cover "<timestamp>.<body>"');
+  assert.notStrictEqual(
+    v2,
+    w.signPayload('topsecret', '{"a":1}'),
+    'the v2 signature must differ from the body-only signature',
+  );
+
   // --- unit checks ---------------------------------------------------------
   const sig = w.signPayload('topsecret', '{"a":1}');
   assert.strictEqual(sig.length, 64, 'hex sig must be 64 chars');
@@ -190,10 +220,49 @@ async function fetchLogs(endpointId) {
   assert.ok(b2 >= 200 && b2 <= 1600, `b2 out of range: ${b2}`);
 
   // --- dispatch happy path -------------------------------------------------
-  scenariosRef.current = ({ sigHeader, eventHeader, body, res }) => {
+  scenariosRef.current = ({
+    sigHeader,
+    sigHeaderV1,
+    eventHeader,
+    attemptHeader,
+    timestampHeader,
+    deliveryHeader,
+    body,
+    res,
+  }) => {
     assert.strictEqual(eventHeader, 'asset.created');
     assert.ok(sigHeader.startsWith('sha256='), 'signature header format');
     assert.ok(body.includes('"event":"asset.created"'));
+
+    // --- v2: the signature covers "<timestamp>.<body>" ---------------------
+    assert.ok(/^\d+$/.test(timestampHeader), 'X-DAM-Timestamp must be Unix seconds');
+    assert.ok(
+      Math.abs(Date.now() / 1000 - Number(timestampHeader)) < 120,
+      'X-DAM-Timestamp must be the current time',
+    );
+    const expectedV2 = require('crypto')
+      .createHmac('sha256', 'sec-ok')
+      .update(`${timestampHeader}.${body}`)
+      .digest('hex');
+    assert.strictEqual(
+      sigHeader,
+      `sha256=${expectedV2}`,
+      'X-DAM-Signature must sign "<timestamp>.<body>"',
+    );
+
+    // --- v1: the body-only signature still ships alongside ----------------
+    assert.ok(sigHeaderV1.length > 0, 'X-DAM-Signature-V1 must still be sent');
+    const expectedV1 = require('crypto')
+      .createHmac('sha256', 'sec-ok')
+      .update(body)
+      .digest('hex');
+    assert.ok(
+      sigHeaderV1 === expectedV1 || sigHeaderV1 === `sha256=${expectedV1}`,
+      `X-DAM-Signature-V1 must sign the body alone, got ${sigHeaderV1}`,
+    );
+
+    // --- the delivery id is traceable to a webhook_logs row ---------------
+    assert.ok(deliveryHeader.length > 0, 'X-DAM-Delivery must be present');
     res.statusCode = 200;
     res.end('ok');
   };
@@ -212,6 +281,15 @@ async function fetchLogs(endpointId) {
   assert.strictEqual(logs.length, 1, 'one log row per dispatch');
   assert.strictEqual(logs[0].status, 'done');
   assert.strictEqual(logs[0].attempts, 1);
+  assert.ok(
+    okRes.deliveryId,
+    'dispatch must report the delivery id so it can be traced to the log row',
+  );
+  assert.strictEqual(
+    okRes.deliveryId,
+    logs[0].id,
+    'the delivery id must be the id of the webhook_logs row it wrote',
+  );
 
   // --- dispatch failure: always 500 ---------------------------------------
   scenariosRef.current = ({ res }) => {
