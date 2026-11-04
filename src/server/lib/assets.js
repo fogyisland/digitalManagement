@@ -159,14 +159,14 @@ async function listAssets(db, scope, query) {
   const pageSize = parsePositiveInt(query.page_size, 20, MAX_PAGE_SIZE);
   const { whereSql, params } = buildAssetWhere(scope, query);
   const countRow = await db
-    .prepare(`SELECT COUNT(*) AS c FROM assets a ${whereSql}`)
+    .prepare(`SELECT COUNT(*) AS c FROM assets a ${whereSql} -- tenant`)
     .get(...params);
   const total = Number(countRow.c);
   const orderSql = ORDER_BY[String(query.order_by || '')] || ORDER_BY.created_at_desc;
   const offset = (page - 1) * pageSize;
   const items = await db
     .prepare(
-      `SELECT ${ASSET_COLUMNS} FROM assets a ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ?`,
+      `SELECT ${ASSET_COLUMNS} FROM assets a ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ? -- tenant`,
     )
     .all(...params, pageSize, offset);
   return { items, total, page, page_size: pageSize };
@@ -187,6 +187,9 @@ async function findAssetById(db, scope, id) {
     });
   }
   const isSuperadmin = isAllTenants(scope);
+  // A platform administrator's scope covers every tenant, so this branch
+  // deliberately has no tenant condition.
+  // tenant-lint: allow a superadmin reads across every tenant
   const row = isSuperadmin
     ? await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets a WHERE a.id = ?`).get(String(id))
     : await db
@@ -261,6 +264,9 @@ async function detachAllTags(db, assetId) {
       )
       .run(row.tenant_id, row.tag_id);
   }
+  // An asset id is a nanoid — globally unique — so the links of one asset
+  // cannot belong to two tenants. The tenant is on every row above anyway.
+  // tenant-lint: allow the asset id already identifies one tenant's rows
   await db.prepare('DELETE FROM asset_tags WHERE asset_id = ?').run(assetId);
 }
 
@@ -453,6 +459,7 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
  */
 async function softDeleteAsset(db, scope, asset) {
   if (isAllTenants(scope)) {
+    // tenant-lint: allow a superadmin acts across every tenant
     await db
       .prepare(
         "UPDATE assets SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = ?",
@@ -479,6 +486,7 @@ async function softDeleteAsset(db, scope, asset) {
  */
 async function restoreAsset(db, scope, asset) {
   if (isAllTenants(scope)) {
+    // tenant-lint: allow a superadmin acts across every tenant
     await db
       .prepare(
         "UPDATE assets SET status = 'ready', deleted_at = NULL, updated_at = NOW() WHERE id = ?",
@@ -513,6 +521,7 @@ async function permanentlyDeleteAsset(db, storageDir, scope, asset) {
   }
   await detachAllTags(db, asset.id);
   if (isAllTenants(scope)) {
+    // tenant-lint: allow a superadmin acts across every tenant
     await db.prepare('DELETE FROM assets WHERE id = ?').run(asset.id);
   } else {
     await db

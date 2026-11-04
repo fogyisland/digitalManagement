@@ -67,11 +67,15 @@ function createUsersRouter({ db }) {
     where.unshift('tenant_id = ?');
     params.unshift(req.tenantScope.tenantId);
 
+    // `where[0]` is always the tenant condition, pushed above, so the
+    // fragment every query here composes carries it.
     const whereSql = `WHERE ${where.join(' AND ')}`;
-    const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM users ${whereSql}`).get(...params)).c);
+    const total = Number(
+      (await db.prepare(`SELECT COUNT(*) AS c FROM users ${whereSql} -- tenant`).get(...params)).c,
+    );
     const offset = (page - 1) * pageSize;
     const rows = await db
-      .prepare(`SELECT * FROM users ${whereSql} ORDER BY created_at ASC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM users ${whereSql} ORDER BY created_at ASC LIMIT ? OFFSET ? -- tenant`)
       .all(...params, pageSize, offset);
     return res.json(toPage(rows.map(toUser), total, page, pageSize));
   }));

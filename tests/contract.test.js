@@ -68,11 +68,13 @@ import {
   waitForHealth,
 } from './lib/runtime.js';
 import { runRuntimeChecks } from './lib/runtime-checks.js';
+import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BACKEND_SRC = path.join(REPO_ROOT, 'src', 'server', 'server.js');
 const BACKEND_ROUTES = path.join(REPO_ROOT, 'src', 'server', 'routes');
+const SERVER_DIR = path.join(REPO_ROOT, 'src', 'server');
 const SRC_DIR = path.join(REPO_ROOT, 'src', 'client');
 
 /* ==========================================================================
@@ -145,6 +147,22 @@ function runStaticLint() {
     violations,
     [],
     `API contract lint failed:\n${violations.map((v) => `  - ${v}`).join('\n')}`,
+  );
+
+  // Every business query has to carry the tenant condition. This is the
+  // half of the multi-tenant design that does not rely on a handler
+  // remembering: the SQL is read as text and a missing `tenant_id` fails the
+  // build, naming the file and line.
+  const unscoped = findUnscopedQueries({ srcDir: SERVER_DIR, repoRoot: REPO_ROOT });
+  assert.deepEqual(
+    unscoped,
+    [],
+    `tenant-scope lint failed (add "tenant_id" to the query, or list it as an ` +
+      `exemption with a reason):\n${unscoped.map((v) => `  - ${v}`).join('\n')}`,
+  );
+  console.log(
+    `tenant-scope lint OK — every business query names a tenant ` +
+      `(${describeExemptions().length} exemption(s))`,
   );
 
   console.log(

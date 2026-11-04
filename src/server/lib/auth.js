@@ -287,9 +287,11 @@ function apiKeyRequired(db, requiredScope) {
       if (tenant.status !== 'active') {
         return res.status(403).json({ detail: 'Tenant is suspended' });
       }
+      // The row was just read, so its own tenant is the condition: the
+      // bookkeeping update cannot touch another tenant's key.
       await db
-        .prepare("UPDATE api_keys SET last_used_at = NOW() WHERE id = ?")
-        .run(key.id);
+        .prepare('UPDATE api_keys SET last_used_at = NOW() WHERE id = ? AND tenant_id = ?')
+        .run(key.id, key.tenant_id);
       req.apiKey = key;
       req.tenant = tenant;
       // A key speaks for exactly one tenant — never for all of them.

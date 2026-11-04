@@ -38,6 +38,10 @@ function createAuthRouter({ db }) {
     // credentials have to identify exactly one live user — and a failure is
     // the same 401 a wrong password gets, never a hint that the name is
     // shared between tenants.
+    //
+    // This lookup is the one place where the tenant cannot be a filter: it is
+    // what establishes which tenant the credential belongs to.
+    // tenant-lint: allow the tenant is what this query establishes
     const candidates = await db
       .prepare(
         'SELECT * FROM users WHERE username = ? AND is_active = 1 ORDER BY created_at ASC',

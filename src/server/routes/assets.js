@@ -264,10 +264,13 @@ function createAssetsRouter({ db, uploader }) {
     if (status !== undefined && status !== null && !['ready', 'processing', 'failed'].includes(String(status))) {
       return res.status(400).json({ detail: `Unsupported status: ${status}` });
     }
+    // The row was read through the tenant scope above, so its own tenant is
+    // the condition — the update can never reach another tenant's asset even
+    // if an id were guessed.
     await db
       .prepare(
         `UPDATE assets SET title = COALESCE(?, title), description = ?, category_id = ?, status = COALESCE(?, status),
-         updated_at = NOW() WHERE id = ?`,
+         updated_at = NOW() WHERE id = ? AND tenant_id = ?`,
       )
       .run(
         title || null,
@@ -275,6 +278,7 @@ function createAssetsRouter({ db, uploader }) {
         category_id !== undefined ? category_id : asset.category_id,
         status || null,
         asset.id,
+        asset.tenant_id,
       );
     if (tag_names !== undefined && tag_names !== null) {
       await attachTags(db, req.tenantScope.tenantId, asset.id, tag_names);
