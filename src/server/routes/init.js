@@ -9,13 +9,17 @@
  * endpoint except `GET /api/init/status` answers 404.
  *
  * The router is mounted at `/api/init`, so the paths below are relative to
- * that prefix. Contract (mirrored by `frontend/src/api/init.ts`):
+ * that prefix. Contract (mirrored by `src/client/pages/init/initApi.ts`):
  *   GET  /status       -> { initialized, steps }
  *   POST /database     {host, port, user, password, database} -> { ok, database }
  *   POST /admin        {username, password, email?, tenantName} -> { ok, tenant_id, user_id }
- *   POST /seed         -> { ok, api_key, jwt_secret_written }
+ *   POST /seed         -> { ok, jwt_secret_written }
  *   GET  /env-preview  -> { content }   (secrets masked)
- *   POST /restart      -> 202
+ *
+ * The seed step is the one that ends the wizard: it seeds the catalogue,
+ * hot-reloads the running application onto the configured database, and only
+ * then writes the signing key. A failure before the key is written leaves the
+ * instance uninitialized and the wizard open for another try.
  *
  * Every endpoint but `status` requires `X-Init-Token`: the token comes from
  * `INIT_TOKEN` or is generated per boot and printed to the console. A wizard
@@ -40,7 +44,6 @@ const {
   writeEnvFile,
   mergeEnv,
   initStatus,
-  hasConfiguration,
   isStrongPassword,
 } = require('../lib/init');
 
@@ -73,6 +76,17 @@ const DEV_PLACEHOLDER_SECRET = 'dam-dev-secret-change-me-in-production';
  * @returns {Promise<object|null>} null when no database has been configured
  */
 let cachedDb = { key: '', handle: null };
+
+/**
+ * The seed step while it is running.
+ *
+ * Two clicks on the finish button arrive as two requests. They share one
+ * run: a second `rebind` would overwrite the pool the first one just
+ * installed and leak it, and both would end the same previous pool. The
+ * second request answers with the first one's result, not with 409 — the
+ * operator should see the same success on both screens.
+ */
+let seedInFlight = null;
 
 async function usableDb(serverDb) {
   if (serverDb) return serverDb;
@@ -108,10 +122,19 @@ async function closeWizardDb() {
 }
 
 /**
- * @param {{db: object|null, checkToken: (req: import('express').Request) => boolean, onRestart?: () => void}} deps
+ * @param {{
+ *   db: object|null,
+ *   checkToken: (req: import('express').Request) => boolean,
+ *   reload: () => Promise<{ok: true}>,
+ * }} deps `reload` points the running application at the configuration the
+ *   wizard just wrote; it is required, because a wizard that cannot finish
+ *   itself would leave the operator with nothing to do but restart by hand.
  * @returns {import('express').Router}
  */
-function createInitRouter({ db, checkToken, onRestart }) {
+function createInitRouter({ db, checkToken, reload }) {
+  if (typeof reload !== 'function') {
+    throw new Error('createInitRouter needs a reload function');
+  }
   const router = express.Router();
 
   // --- the gate -------------------------------------------------------------
@@ -287,22 +310,27 @@ function createInitRouter({ db, checkToken, onRestart }) {
     }
   }));
 
-  // --- step 3: the secrets and the seed data --------------------------------
+  // --- step 3: the seed, the hot reload and the secret -----------------------
   router.post('/seed', asyncHandler(async (_req, res) => {
+    if (!seedInFlight) {
+      seedInFlight = runSeed().finally(() => {
+        seedInFlight = null;
+      });
+    }
+    return res.json(await seedInFlight);
+  }));
+
+  /**
+   * Seed the catalogue, reload the application, then write the secret.
+   *
+   * The order is the whole point: the secret is what marks the instance as
+   * initialized, so it is written last — a failure in any earlier step
+   * leaves the wizard open and the operator able to try again.
+   *
+   * @returns {Promise<{ok: true, jwt_secret_written: true}>}
+   */
+  async function runSeed() {
     const envFile = envFileOf();
-    const existing = readEnvFile(envFile);
-    // An existing secret is never rotated: doing so would invalidate every
-    // token already handed out.
-    const jwtSecret =
-      existing.JWT_SECRET && existing.JWT_SECRET.trim().length > 0
-        ? existing.JWT_SECRET
-        : crypto.randomBytes(32).toString('hex');
-
-    writeEnvFile(envFile, mergeEnv(envFile, { JWT_SECRET: jwtSecret }), templateFileOf());
-    // The seed runs through this module's own process environment, so the
-    // values the wizard wrote have to be visible here too.
-    process.env.JWT_SECRET = jwtSecret;
-
     const env = readEnvFile(envFile);
     const { connect } = require('../lib/db');
     const wizardDb = await connect({
@@ -319,40 +347,34 @@ function createInitRouter({ db, checkToken, onRestart }) {
         .prepare('SELECT id FROM tenants ORDER BY created_at ASC LIMIT 1')
         .get();
       if (!firstTenant) {
-        return res.status(400).json({ detail: 'The administrator step has not run yet' });
+        const error = new Error('The administrator step has not run yet');
+        error.status = 400;
+        throw error;
       }
-      // The key is minted *before* the seed runs, so the seed's own
-      // placeholder key is skipped and the plaintext the operator is shown
-      // here is the one that ends up in the database.
-      const existingKey = await wizardDb
-        .prepare('SELECT COUNT(*) AS c FROM api_keys WHERE tenant_id = ?')
-        .get(firstTenant.id);
-      let apiKey = null;
-      if (Number(existingKey.c) === 0) {
-        apiKey = `dam_${crypto.randomBytes(24).toString('hex')}`;
-        await wizardDb
-          .prepare(
-            'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
-          )
-          .run(
-            nanoid(),
-            firstTenant.id,
-            'Setup Key',
-            apiKey.slice(0, 12),
-            crypto.createHash('sha256').update(apiKey).digest('hex'),
-            'read,upload,delete',
-          );
-      }
-
       await seedDatabase(wizardDb, env.STORAGE_DIR || getConfig().storageDir, {
         tenantId: firstTenant.id,
       });
-
-      return res.json({ ok: true, api_key: apiKey, jwt_secret_written: true });
     } finally {
       await wizardDb.pool.end().catch(() => {});
     }
-  }));
+
+    // The application is moved onto the configured database here. It fails
+    // loudly: the secret below is not written, so the instance stays
+    // uninitialized and the wizard stays open.
+    await reload();
+
+    // The secret goes last, and an existing one is never rotated — rotating
+    // it would invalidate every token already handed out.
+    const latest = readEnvFile(envFile);
+    const jwtSecret =
+      latest.JWT_SECRET && latest.JWT_SECRET.trim().length > 0
+        ? latest.JWT_SECRET
+        : crypto.randomBytes(32).toString('hex');
+    writeEnvFile(envFile, mergeEnv(envFile, { JWT_SECRET: jwtSecret }), templateFileOf());
+    process.env.JWT_SECRET = jwtSecret;
+
+    return { ok: true, jwt_secret_written: true };
+  }
 
   // --- the preview ----------------------------------------------------------
   router.get('/env-preview', asyncHandler(async (_req, res) => {
@@ -367,20 +389,6 @@ function createInitRouter({ db, checkToken, onRestart }) {
       .map(([key, value]) => `${key}=${value}`)
       .join('\n');
     return res.json({ content: `${content}\n` });
-  }));
-
-  // --- restart --------------------------------------------------------------
-  router.post('/restart', asyncHandler(async (_req, res) => {
-    if (!hasConfiguration(envFileOf())) {
-      return res.status(400).json({ detail: 'The wizard has not written the configuration yet' });
-    }
-    res.status(202).json({ ok: true, message: 'Restarting — the process manager brings it back' });
-    // The response must reach the client before the process goes away.
-    if (typeof onRestart === 'function') {
-      setTimeout(onRestart, 100);
-    } else {
-      setTimeout(() => process.exit(0), 100);
-    }
   }));
 
   return router;

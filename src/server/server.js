@@ -37,6 +37,7 @@ const { createDb, createPool, ensureDatabase } = require('./lib/db');
 const { initSchema } = require('./lib/schema');
 const { seedDatabase } = require('./lib/seed');
 const { hasConfiguration, resolveInitToken } = require('./lib/init');
+const { reloadConfiguration } = require('./lib/reload');
 const { createUploader, uploadErrorHandler } = require('./lib/upload');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
@@ -136,7 +137,18 @@ app.use(
   createInitRouter({
     db: isConfigured ? db : null,
     checkToken: createInitRouter.tokenChecker(initToken.token),
-    onRestart: () => process.exit(0),
+    // The wizard finishes by moving the running application onto the
+    // database it just wrote into the file — no restart, no operator.
+    reload: async () => {
+      const result = await reloadConfiguration({ db, envFile: ENV_FILE });
+      app.locals.isConfigured = true;
+      app.locals.ready = Promise.resolve();
+      // The wizard kept a connection of its own while it configured the
+      // instance; the application now has its own pool on the same schema,
+      // so the wizard's is one too many.
+      await createInitRouter.closeWizardDb();
+      return result;
+    },
   }),
 );
 

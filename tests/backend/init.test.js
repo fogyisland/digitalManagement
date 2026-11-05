@@ -401,14 +401,32 @@ async function main() {
       'the repeated admin step must reuse the tenant it created',
     );
 
-    // --- 6) the seed step writes the secrets ------------------------------
-    const seed = await request(port, 'POST', '/api/init/seed', { headers: initHeaders });
-    assert.strictEqual(seed.status, 200, `seed step expected 200, got ${seed.status}: ${seed.raw}`);
-    assert.ok(seed.body.api_key, 'the seed step must hand out the first API key');
-    assert.ok(
-      String(seed.body.api_key).startsWith('dam_'),
-      'the API key must carry the project prefix',
-    );
+    // --- 6) the seed step hot-reloads the instance ------------------------
+    // The operator double-clicks. Both calls have to answer with the same
+    // success, not one 200 and one 409 — the frontend button's spinner is a
+    // courtesy, not concurrency control.
+    const [seed, seedTwin] = await Promise.all([
+      request(port, 'POST', '/api/init/seed', { headers: initHeaders }),
+      request(port, 'POST', '/api/init/seed', { headers: initHeaders }),
+    ]);
+    for (const [label, response] of [['first', seed], ['concurrent', seedTwin]]) {
+      assert.strictEqual(
+        response.status,
+        200,
+        `the ${label} seed step expected 200, got ${response.status}: ${response.raw}`,
+      );
+      assert.strictEqual(response.body.ok, true, `the ${label} seed step must report success`);
+      assert.strictEqual(
+        response.body.api_key,
+        undefined,
+        'the seed step must not hand out an API key — keys come only from POST /api/v1/api-keys',
+      );
+      assert.strictEqual(
+        response.body.jwt_secret_written,
+        true,
+        `the ${label} seed step must report that it wrote the secret`,
+      );
+    }
 
     const envAfterSeed = fs.readFileSync(envFile, 'utf8');
     const secretMatch = /^JWT_SECRET=(.*)$/m.exec(envAfterSeed);
@@ -418,17 +436,38 @@ async function main() {
       `JWT_SECRET must be at least 32 characters, got ${secretMatch[1].trim().length}`,
     );
 
-    const keys = await querySchema(dbName, 'SELECT id, tenant_id, key_hash FROM api_keys');
-    const seededKeys = keys.filter((row) => row.tenant_id === tenants[0].id);
-    assert.strictEqual(seededKeys.length, 1, 'the seed step must create one key for the tenant');
+    const keys = await querySchema(dbName, 'SELECT id, tenant_id FROM api_keys');
+    assert.strictEqual(
+      keys.filter((row) => row.tenant_id === tenants[0].id).length,
+      0,
+      'the seed step must not create a key for the tenant',
+    );
 
-    const delivery = await request(port, 'GET', '/api/public/v1/delivery/assets', {
-      headers: { 'X-API-Key': seed.body.api_key },
+    const categories = await querySchema(dbName, 'SELECT id FROM categories');
+    assert.strictEqual(categories.length, 4, 'the seed step must create the four starter categories');
+    const tags = await querySchema(dbName, 'SELECT id FROM tags');
+    assert.strictEqual(tags.length, 8, 'the seed step must create the eight starter tags');
+
+    // The reload happened without a restart: the administrator created on the
+    // second page can log in, and the admin API answers them, right now.
+    // `bootServer()` boots this module in the same process, and tokens are
+    // signed with `getConfig().jwtSecret`, which re-reads `process.env` on
+    // every call — so this passing proves the hot load, not a restart.
+    const login = await request(port, 'POST', '/api/v1/auth/login', {
+      body: { username: 'owner', password: 'Owner@123456' },
     });
     assert.strictEqual(
-      delivery.status,
+      login.status,
       200,
-      `the handed-out key must work, got ${delivery.status}: ${delivery.raw}`,
+      `the administrator must be able to log in without a restart, got ${login.status}: ${login.raw}`,
+    );
+    const assets = await request(port, 'GET', '/api/v1/assets', {
+      headers: { Authorization: `Bearer ${login.body.access_token}` },
+    });
+    assert.strictEqual(
+      assets.status,
+      200,
+      `the admin API must answer without a restart, got ${assets.status}: ${assets.raw}`,
     );
 
     // --- 7) the instance is initialized now -------------------------------
@@ -456,6 +495,16 @@ async function main() {
       statusStillOpen.status,
       200,
       'the status endpoint stays open so the frontend can decide where to go',
+    );
+
+    // The signing key survives the wizard closing: the value the seed wrote
+    // is still the value on disk. Rotating it would invalidate every token
+    // already handed out.
+    const envAfterClose = fs.readFileSync(envFile, 'utf8');
+    assert.strictEqual(
+      /^JWT_SECRET=(.*)$/m.exec(envAfterClose)[1].trim(),
+      secretMatch[1].trim(),
+      'a finished instance must not rotate its signing key',
     );
 
     // --- 9) the restarted server reads the file it wrote ------------------
