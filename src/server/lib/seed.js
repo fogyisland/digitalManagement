@@ -4,9 +4,10 @@
  * First-boot seeding.
  *
  * A fresh installation needs a tenant to hang everything from, an
- * administrator to log in as, a key for the delivery API, the starter
- * categories and tags, and (unless it is turned off) a handful of sample
- * images so the library is not empty on the first visit.
+ * administrator to log in as, the starter categories and tags, and (unless
+ * it is turned off) a handful of sample images so the library is not empty
+ * on the first visit. API keys are not seeded: the only source of one is
+ * `POST /api/v1/api-keys`, so nothing hands out a secret nobody asked for.
  *
  * Nothing here overwrites existing data. Every block checks its own table
  * first, so restarting the server never duplicates or resets anything.
@@ -54,7 +55,6 @@ async function seedDatabase(db, storageDir, options = {}) {
   // explicitly. A row that relies on the column's `DEFAULT` would have its
   // owner decided by the DDL rather than by the seed.
   await seedAdmin(db, tenantId);
-  await seedApiKey(db, tenantId);
   await seedCatalogue(db, tenantId);
 
   const assetCount = await db
@@ -112,59 +112,57 @@ async function seedAdmin(db, tenantId) {
 }
 
 /**
- * Mint the demo API key if the tenant has none.
- *
- * @param {object} db
- * @param {string} tenantId
- * @returns {Promise<void>}
- */
-async function seedApiKey(db, tenantId) {
-  const keyCount = await db
-    .prepare('SELECT COUNT(*) AS c FROM api_keys WHERE tenant_id = ?')
-    .get([tenantId]);
-  if (keyCount.c > 0) return;
-  const rawKey = `dam_${crypto.randomBytes(24).toString('hex')}`;
-  const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
-  await db
-    .prepare(
-      'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?)',
-    )
-    .run([nanoid(), tenantId, 'Demo Key', rawKey.slice(0, 12), keyHash, 'read,upload,delete']);
-  console.log('[seed] demo api key:', rawKey);
-}
-
-/**
  * Create the starter categories and tags.
+ *
+ * Each table is counted and seeded on its own. One gate over the two of
+ * them would make a failure in the category insert lock the tags out for
+ * good: the categories would be there, so the gate would answer "done" on
+ * every later boot. Each table's rows go in inside one transaction, so a
+ * partial insert rolls back instead of leaving half a catalogue behind;
+ * a table that already holds rows is still left alone, so a default the
+ * operator deleted does not come back on the next boot.
  *
  * @param {object} db
  * @param {string} tenantId
  * @returns {Promise<void>}
  */
 async function seedCatalogue(db, tenantId) {
-  const categoryCount = await db
-    .prepare('SELECT COUNT(*) AS c FROM categories WHERE tenant_id = ?')
-    .get([tenantId]);
-  if (categoryCount.c > 0) return;
-
   const categories = [
     { name: '产品图', slug: 'product' },
     { name: '营销素材', slug: 'marketing' },
     { name: 'AI 生成', slug: 'ai-generated' },
     { name: '视频', slug: 'video' },
   ];
-  for (const category of categories) {
-    await db
-      .prepare('INSERT INTO categories (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)')
-      .run([nanoid(), tenantId, category.name, category.slug]);
+
+  const categoryCount = await db
+    .prepare('SELECT COUNT(*) AS c FROM categories WHERE tenant_id = ?')
+    .get([tenantId]);
+  if (categoryCount.c === 0) {
+    await db.transaction(async (tx) => {
+      for (const category of categories) {
+        await tx
+          .prepare('INSERT INTO categories (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)')
+          .run([nanoid(), tenantId, category.name, category.slug]);
+      }
+    });
+    console.log('[seed] default categories created');
   }
 
   const tags = ['封面', '海报', '人物', '风景', '抽象', '品牌', 'SVG', '动效'];
-  for (const tag of tags) {
-    await db
-      .prepare('INSERT INTO tags (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)')
-      .run([nanoid(), tenantId, tag, tag.toLowerCase()]);
+
+  const tagCount = await db
+    .prepare('SELECT COUNT(*) AS c FROM tags WHERE tenant_id = ?')
+    .get([tenantId]);
+  if (tagCount.c === 0) {
+    await db.transaction(async (tx) => {
+      for (const tag of tags) {
+        await tx
+          .prepare('INSERT INTO tags (id, tenant_id, name, slug) VALUES (?, ?, ?, ?)')
+          .run([nanoid(), tenantId, tag, tag.toLowerCase()]);
+      }
+    });
+    console.log('[seed] default tags created');
   }
-  console.log('[seed] default categories + tags created');
 }
 
 /** The gradient cards a fresh installation gets. */

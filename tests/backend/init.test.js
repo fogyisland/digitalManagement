@@ -686,6 +686,48 @@ async function main() {
       }
     }
 
+    // --- 13) the seed creates no API key, and the catalogue seeds per table
+    const { seedDatabase } = require('../../src/server/lib/seed');
+    const seedDb = app.locals.db;
+    const seedTenantId = 'seed-tenant-test';
+    const seedStorage = path.join(TESTS_DIR, 'test-seed-storage');
+    fs.rmSync(seedStorage, { recursive: true, force: true });
+    const countFor = async (table) =>
+      (
+        await seedDb
+          .prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE tenant_id = ?`)
+          .get([seedTenantId])
+      ).c;
+    await seedDb
+      .prepare('INSERT INTO tenants (id, name, slug, status) VALUES (?, ?, ?, ?)')
+      .run([seedTenantId, '种子租户', seedTenantId, 'active']);
+
+    await seedDatabase(seedDb, seedStorage, { tenantId: seedTenantId, skipSamples: true });
+    assert.strictEqual(await countFor('categories'), 4, 'the seed must create the four starter categories');
+    assert.strictEqual(await countFor('tags'), 8, 'the seed must create the eight starter tags');
+    assert.strictEqual(
+      await countFor('api_keys'),
+      0,
+      'the seed must not hand out an API key — keys come only from POST /api/v1/api-keys',
+    );
+
+    // A second seed must not duplicate anything.
+    await seedDatabase(seedDb, seedStorage, { tenantId: seedTenantId, skipSamples: true });
+    assert.strictEqual(await countFor('categories'), 4, 'a repeated seed must not duplicate the categories');
+    assert.strictEqual(await countFor('tags'), 8, 'a repeated seed must not duplicate the tags');
+
+    // The two tables are counted separately: a missing tag set is restored
+    // even when the categories are still there.
+    await seedDb.prepare('DELETE FROM tags WHERE tenant_id = ?').run([seedTenantId]);
+    await seedDatabase(seedDb, seedStorage, { tenantId: seedTenantId, skipSamples: true });
+    assert.strictEqual(
+      await countFor('tags'),
+      8,
+      'a missing tag set must be seeded again even though the categories already exist',
+    );
+    assert.strictEqual(await countFor('categories'), 4, 'the restored tag seed must not touch the categories');
+    fs.rmSync(seedStorage, { recursive: true, force: true });
+
     console.log('init wizard OK');
   } finally {
     await close(server);
