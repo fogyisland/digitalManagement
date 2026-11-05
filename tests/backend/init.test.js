@@ -800,6 +800,35 @@ async function main() {
       else process.env.SEED_SAMPLE_ASSETS = sampleFlag;
     }
 
+    // --- 15) the template does not make an installation look configured ---
+    // Copying `.env.example` to `.env` used to be enough to make the instance
+    // skip the wizard — with a placeholder secret nobody had chosen.
+    const { hasConfiguration, initStatus } = require('../../src/server/lib/init');
+    const templateDir = path.join(TESTS_DIR, 'test-template-env');
+    const templateCopy = path.join(templateDir, '.env');
+    fs.mkdirSync(templateDir, { recursive: true });
+    fs.copyFileSync(path.join(__dirname, '..', '..', '.env.example'), templateCopy);
+    // `hasConfiguration` looks at the process environment first; the check
+    // is about the file, so the environment must not answer for it.
+    const templateSecret = process.env.JWT_SECRET;
+    delete process.env.JWT_SECRET;
+    try {
+      assert.strictEqual(
+        hasConfiguration(templateCopy),
+        false,
+        'a plain copy of .env.example must not count as a configuration',
+      );
+      const templateStatus = await initStatus({ envFile: templateCopy, db: app.locals.db });
+      assert.strictEqual(
+        templateStatus.initialized,
+        false,
+        'a plain copy of .env.example must leave the wizard open',
+      );
+    } finally {
+      if (templateSecret !== undefined) process.env.JWT_SECRET = templateSecret;
+      fs.rmSync(templateDir, { recursive: true, force: true });
+    }
+
     console.log('init wizard OK');
   } finally {
     await close(server);
