@@ -32,7 +32,7 @@ import { Alert, Button, Card, Input, Space, Spin, Steps, Typography } from 'antd
 import { KeyOutlined } from '@ant-design/icons';
 import InitDatabase from './InitDatabase';
 import InitAdmin from './InitAdmin';
-import InitReview from './InitReview';
+import InitSeed from './InitSeed';
 import { describeInitError, initApi, setInitToken } from './initApi';
 import { stepFromStatus } from './initSteps';
 import type { InitStep } from './initSteps';
@@ -184,7 +184,7 @@ export default function InitWizard(): JSX.Element {
               items={[
                 { title: '数据库' },
                 { title: '管理员' },
-                { title: '确认' },
+                { title: '种子数据' },
               ]}
             />
 
@@ -210,7 +210,7 @@ export default function InitWizard(): JSX.Element {
             ) : null}
 
             {step === 2 ? (
-              <InitReview
+              <InitSeed
                 database={database}
                 admin={admin}
                 onBack={() => setStep(1)}

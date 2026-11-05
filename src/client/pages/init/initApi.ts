@@ -14,7 +14,6 @@
  *   POST /admin        AdminInput    -> InitResult
  *   POST /seed         -> SeedResult
  *   GET  /env-preview  -> { content }
- *   POST /restart      -> 202
  *
  * The `X-Init-Token` header is required on everything but `status`; the token
  * is printed by the backend on boot (or comes from `INIT_TOKEN`).
@@ -55,7 +54,6 @@ export interface InitResult {
 }
 
 export interface SeedResult extends InitResult {
-  api_key: string | null;
   jwt_secret_written: boolean;
 }
 
@@ -119,12 +117,13 @@ export const initApi = {
   /** `POST /admin` — creates the first tenant and its administrator. */
   saveAdmin: (input: AdminInput) => call<InitResult>('post', '/admin', input),
 
-  /** `POST /seed` — writes the JWT secret and hands out the first API key. */
+  /**
+   * `POST /seed` — seeds the catalogue, hot-reloads the running instance
+   * onto the configured database, and writes the JWT secret last. The
+   * process keeps running: the reply means the instance is live.
+   */
   runSeed: () => call<SeedResult>('post', '/seed'),
 
   /** `GET /env-preview` — the file that will be written, secrets masked. */
   envPreview: () => call<{ content: string }>('get', '/env-preview'),
-
-  /** `POST /restart` — asks the process to exit so its manager brings it back. */
-  restart: () => call<InitResult>('post', '/restart'),
 };

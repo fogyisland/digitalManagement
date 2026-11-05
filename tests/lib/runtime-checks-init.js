@@ -92,7 +92,81 @@ export const initChecks = [
       );
     },
   },
+  {
+    // The third page ends the wizard by hot-reloading the running process,
+    // so there is no restart to ask for. The call used to live in
+    // `initApi.restart()`, and the wizard's own axios instance escapes the
+    // call-site scan in `tests/contract.test.js` — this is what catches it.
+    name: 'the wizard never asks the backend to restart the process',
+    async run(ctx) {
+      const source = readInitSource(ctx.srcDir, 'initApi.ts');
+      assert.ok(
+        !/initApi\.restart/.test(source) && !/\brestart\s*:/.test(source) && !/['"`]\/restart['"`]/.test(source),
+        'the wizard still asks for a restart — POST /api/init/restart is gone: the seed step hot-reloads the instance, so a call would answer 404 and the operator would be told the setup failed',
+      );
+    },
+  },
+
+  {
+    // The seed step hands out no key. A page that still reads one shows an
+    // empty box at the exact moment the operator expects a credential.
+    name: 'the seed response carries no API key',
+    async run(ctx) {
+      const source = readInitSource(ctx.srcDir, 'initApi.ts');
+      assert.ok(
+        !source.includes('api_key'),
+        'the wizard still expects an API key from the seed step — keys come only from POST /api/v1/api-keys, so the field would always arrive empty',
+      );
+    },
+  },
+
+  {
+    // Same finding, at the page: the third page must not read the key either.
+    name: 'the third page shows no API key and asks for no restart',
+    async run(ctx) {
+      const source = readInitSource(ctx.srcDir, 'InitSeed.tsx');
+      assert.ok(
+        !source.includes('api_key'),
+        'the third page still shows an API key — the seed step no longer creates one, so the box would be empty and the operator would think the setup failed',
+      );
+      assert.ok(
+        !/initApi\.restart/.test(source),
+        'the third page still calls initApi.restart() — the endpoint is gone and the instance is already live by the time the seed answers',
+      );
+    },
+  },
+
+  {
+    // The constant was renamed with the page. The value stays 2 and the
+    // mapping above still holds; a stale name means the wizard and the
+    // checks no longer talk about the same third page.
+    name: 'the step module names the third page what it now is',
+    async run(ctx) {
+      const source = readInitSource(ctx.srcDir, 'initSteps.ts');
+      assert.ok(
+        source.includes('STEP_SEED'),
+        'initSteps.ts has no STEP_SEED — the third page is the seed page now',
+      );
+      assert.ok(
+        !source.includes('STEP_REVIEW'),
+        'initSteps.ts still exports STEP_REVIEW — the third page is no longer a review-and-restart page',
+      );
+    },
+  },
 ];
+
+/**
+ * Read a file from the wizard's source directory.
+ *
+ * @param {string} srcDir the frontend source directory
+ * @param {string} file the file name inside `pages/init`
+ * @returns {string}
+ */
+function readInitSource(srcDir, file) {
+  const location = path.join(srcDir, 'pages', 'init', file);
+  assert.ok(fs.existsSync(location), `the wizard source is missing: ${location}`);
+  return fs.readFileSync(location, 'utf8');
+}
 
 /**
  * Load the wizard's step module.

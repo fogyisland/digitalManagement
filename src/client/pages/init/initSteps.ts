@@ -25,8 +25,8 @@ export const STEP_DATABASE = 0;
 /** The administrator page. */
 export const STEP_ADMIN = 1;
 
-/** The confirmation page. */
-export const STEP_REVIEW = 2;
+/** The seed page — the last one; finishing it initializes the instance. */
+export const STEP_SEED = 2;
 
 /** The steps the backend reports. */
 export interface InitSteps {
@@ -41,7 +41,7 @@ export interface InitSteps {
  * A step is only reachable when the steps before it are done, so a status
  * that reports a later step without the earlier ones still lands on the
  * first unfinished step. The seed step does not change the answer on its
- * own: it writes the configuration, which happens on the confirmation page.
+ * own: it writes the configuration, which happens on the seed page.
  *
  * @param steps the `steps` object from `GET /api/init/status`
  * @returns the step to open on
@@ -49,5 +49,5 @@ export interface InitSteps {
 export function stepFromStatus(steps: InitSteps): InitStep {
   if (!steps || !steps.database) return STEP_DATABASE;
   if (!steps.admin) return STEP_ADMIN;
-  return STEP_REVIEW;
+  return STEP_SEED;
 }
