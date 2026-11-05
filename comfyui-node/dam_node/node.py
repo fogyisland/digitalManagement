@@ -267,14 +267,17 @@ class DAMRegisterJob:
         }
 
     def register(self, job_id, title="", prompt=""):
-        """Register the job, so a later `DAMUpload` can fill it in."""
+        """Register the job, so a later `DAMUpload` can fill it in.
+
+        Nothing leaves this process: the asset row is created when the upload
+        happens, so the status must not read as "the DAM has it". It names the
+        moment the registration takes effect instead — an operator who reads
+        "已登记" and stops here goes looking for an asset that does not exist.
+        """
         resolved_job = str(job_id or "").strip()
         if not resolved_job:
             return ("", "缺少 job_id")
-        # Registration is a local promise: the asset row is created when the
-        # upload happens. Reporting success here would claim work the DAM has
-        # not seen.
-        return (resolved_job, "已登记，上传后可在 DAM 中查到")
+        return (resolved_job, "已生成 job 标识，上传时在 DAM 中生效")
 
 
 class DAMLookupJob:

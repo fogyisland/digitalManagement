@@ -7,7 +7,7 @@ ComfyUI 节点：把生成的图片直接送进 DAM（数字资产管理平台�
 | 节点 | 作用 | 输出 |
 |---|---|---|
 | **DAM 上传** | 把一张 `IMAGE` 渲染成 PNG 并上传 | `asset_id`、状态文案 |
-| **DAM 登记任务** | 在产物还没生成时先登记一个 job | `job_id`、状态文案 |
+| **DAM 登记任务** | 在产物还没生成时先确定一个 job 标识（本地动作，不联网） | `job_id`、状态文案 |
 | **DAM 查询任务** | 反查某个 job 对应的资产 | `asset_id`、状态文案 |
 
 节点本身**只用 Python 标准库**，不需要装 `requests`、`Pillow`，也不改 ComfyUI 的环境。
@@ -117,6 +117,12 @@ Content-Type: multipart/form-data
 字段名是 `files`，附带 `title` / `tag_names` / `prompt` / `seed` / `source_tool`。DAM 侧复用内部上传的全部逻辑：去重、缩略图、清单、Webhook 推送，所以节点不需要关心这些。
 
 `DAM 查询任务` 调的是管理端接口 `GET /api/v1/jobs/by-comfyui/{job_id}`，用同一个 Key 以 Bearer 形式鉴权。查不到时返回空 `asset_id` 和一句说明，不会让工作流报错。
+
+### 关于「DAM 登记任务」
+
+登记是**本地**动作：节点只校验 `job_id` 并原样返回，不发任何 HTTP 请求，DAM 那边此时还没有这个 job。资产行是在 `DAM 上传` 真正上传时创建的，所以登记节点的状态文案写的是「已生成 job 标识，上传时在 DAM 中生效」。看到这句就去 DAM 里搜，会什么都搜不到 —— 别把它当成上传成功。
+
+它的用处只有一个：让工作流里靠前的步骤先拿到一个稳定、可复用的 `job_id`，再把它同时喂给 `DAM 上传`（写入）和 `DAM 查询任务`（读出）。
 
 ---
 

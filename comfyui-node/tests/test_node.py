@@ -158,6 +158,41 @@ class NodeContractTest(unittest.TestCase):
         self.assertIn("job_id", DAMLookupJob.INPUT_TYPES()["required"])
         self.assertEqual(DAMLookupJob.RETURN_TYPES, ("STRING", "STRING"))
 
+    def test_register_reports_what_it_actually_did(self):
+        """Registration is local — the node must not claim the DAM holds it.
+
+        `DAMRegisterJob` makes no HTTP call: the asset row is created later,
+        by `DAMUpload`. A status sentence that reads as success ("已登记，上传后
+        可在 DAM 中查到") tells an operator the work is done, so they skip the
+        upload and then hunt for an asset that was never created. The status
+        has to say when the registration takes effect, and it must not claim
+        the asset is already findable.
+        """
+        from dam_node.node import DAMRegisterJob
+
+        job_id, status = DAMRegisterJob().register("job-20261105-a")
+        self.assertEqual(job_id, "job-20261105-a", "the id must be passed through")
+        self.assertIn("上传", status, "the status has to say when it takes effect")
+        self.assertNotRegex(
+            status,
+            r"已登记|可在 ?DAM ?中查到|上传成功",
+            "the status must not claim the DAM already holds the job",
+        )
+
+    def test_the_readme_marks_registration_as_local(self):
+        """The status sentence is a few characters in the node; the README is
+        where the rule is read before a workflow is wired up. Registration
+        being local is the one fact an operator cannot see from the UI."""
+        readme = os.path.join(os.path.dirname(__file__), "..", "README.md")
+        with open(readme, encoding="utf-8") as handle:
+            text = " ".join(handle.read().split())
+        sentences = [sentence for sentence in text.split("。") if "登记" in sentence]
+        self.assertTrue(
+            any("本地" in sentence for sentence in sentences),
+            "the README has to say the registration is local — no sentence "
+            "mentioning 登记 says so",
+        )
+
     def test_the_node_mappings_are_complete(self):
         from dam_node.node import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
