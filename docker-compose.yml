@@ -40,7 +40,7 @@ services:
       DB_NAME: digital_management
       # Change this before exposing the container to anything but localhost.
       JWT_SECRET: please-change-me-in-production-32chars-minimum
-      SEED_SAMPLE_ASSETS: "1"
+      SEED_SAMPLE_ASSETS: "0"
     ports:
       - "8000:8000"
     volumes:

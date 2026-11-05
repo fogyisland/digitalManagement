@@ -777,6 +777,29 @@ async function main() {
     assert.strictEqual(await countFor('categories'), 4, 'the restored tag seed must not touch the categories');
     fs.rmSync(seedStorage, { recursive: true, force: true });
 
+    // --- 14) sample images are opt-in --------------------------------------
+    // `getConfig()` re-reads the process environment on every call, so the
+    // default is checked by calling it, not by inspecting a cached object.
+    const { getConfig } = require('../../src/server/config');
+    const sampleFlag = process.env.SEED_SAMPLE_ASSETS;
+    try {
+      delete process.env.SEED_SAMPLE_ASSETS;
+      assert.strictEqual(
+        getConfig().seedSampleAssets,
+        false,
+        'an unset SEED_SAMPLE_ASSETS must mean off — a new installation starts empty',
+      );
+
+      process.env.SEED_SAMPLE_ASSETS = '1';
+      assert.strictEqual(getConfig().seedSampleAssets, true, 'SEED_SAMPLE_ASSETS=1 must mean on');
+
+      process.env.SEED_SAMPLE_ASSETS = '0';
+      assert.strictEqual(getConfig().seedSampleAssets, false, 'SEED_SAMPLE_ASSETS=0 must mean off');
+    } finally {
+      if (sampleFlag === undefined) delete process.env.SEED_SAMPLE_ASSETS;
+      else process.env.SEED_SAMPLE_ASSETS = sampleFlag;
+    }
+
     console.log('init wizard OK');
   } finally {
     await close(server);

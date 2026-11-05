@@ -272,7 +272,7 @@ JWT_SECRET=<32 字符以上随机串>    # 生产环境必须修改
 ACCESS_TOKEN_TTL=1h
 REFRESH_TOKEN_TTL=30d
 UPLOAD_MAX_FILE_SIZE_MB=2048
-SEED_SAMPLE_ASSETS=1             # 设为 0 则不生成示例资产
+SEED_SAMPLE_ASSETS=0             # 设为 1 才生成 12 张示例资产
 APP_BASE_URL=                    # 留空则按请求推导
 ```
 

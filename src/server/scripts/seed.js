@@ -117,7 +117,7 @@ async function main() {
       console.log(`[seed] removed ${removed.rows} asset row(s) and ${removed.files + cleared} file(s)`);
     }
 
-    // The basic rows (admin, demo API key, categories, tags) are inserted
+    // The basic rows (admin, categories, tags) are inserted
     // only when their table is empty, so this never duplicates anything.
     await seedDatabase(db, config.storageDir, { skipSamples: true });
 
@@ -127,7 +127,7 @@ async function main() {
         await seedSampleAssets(db, config.storageDir);
         console.log('[seed] sample assets generated');
       } else {
-        console.log('[seed] sample assets skipped (SEED_SAMPLE_ASSETS=0)');
+        console.log('[seed] sample assets skipped (set SEED_SAMPLE_ASSETS=1 to generate them)');
       }
     } else {
       console.log(`[seed] library already holds ${assetCount.c} asset(s) — nothing to generate`);

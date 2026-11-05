@@ -104,8 +104,9 @@ function getConfig() {
     maxFileSize:
       parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '2048', 10) * 1024 * 1024,
     // The sample library is a first-boot convenience, not part of the
-    // product data. Tests and production installs turn it off.
-    seedSampleAssets: process.env.SEED_SAMPLE_ASSETS !== '0',
+    // product data: a new installation starts with an empty library and the
+    // twelve sample images are opt-in.
+    seedSampleAssets: process.env.SEED_SAMPLE_ASSETS === '1',
     accessTokenTtl,
     refreshTokenTtl,
     accessTokenTtlSeconds: ttlToSeconds(accessTokenTtl),
