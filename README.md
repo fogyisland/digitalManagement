@@ -68,6 +68,22 @@ npm start
 
 打开浏览器：**http://localhost:8000**
 
+### 首次使用：初始化向导（推荐）
+
+一台空机器（全新数据库、没有 `.env`）不需要手写任何配置：
+
+1. `npm install && npm run build && npm start`
+2. 后端启动时会在控制台打印一行 `X-Init-Token`，复制它
+3. 浏览器打开 `http://localhost:8000/init`，粘贴令牌
+4. 依次完成三页：**数据库 → 管理员 → 种子数据**
+5. 第三页确认写入后，服务**热加载**新配置——不重启，直接「完成并进入系统」
+
+向导会自己生成 JWT 密钥并写入 `.env`，同时创建首个租户、管理员账号和初始分类/标签。API Key 不在向导里发放：进入系统后在「集成」页按外部系统各自申请。
+
+### 手动环境变量部署（不用向导）
+
+已经有运维流程、想直接用 `.env` 管配置的，也可以完全绕开向导：复制 `.env.example`，手工填好 `DB_*` 各项与一个 32 字符以上的随机 `JWT_SECRET`，再启动即可——检测到完整配置时初始化接口自动关闭。
+
 默认账号：
 - 用户名：`admin`
 - 密码：`Admin@123456`
@@ -268,7 +284,7 @@ DB_PASSWORD=
 DB_NAME=digital_management      # 不存在会自动创建
 DB_POOL_SIZE=10                 # 连接池大小
 STORAGE_DIR=./storage            # 上传文件目录
-JWT_SECRET=<32 字符以上随机串>    # 生产环境必须修改
+JWT_SECRET=                       # 走向导部署时留空（向导自动生成）；手动部署填 32+ 字符随机串
 ACCESS_TOKEN_TTL=1h
 REFRESH_TOKEN_TTL=30d
 UPLOAD_MAX_FILE_SIZE_MB=2048
@@ -293,7 +309,7 @@ npm run test:backend  # 后端 suite
 
 1. **修改默认密码**：首次登录后立即修改
 2. **修改 JWT_SECRET**：生产环境必须使用 32+ 字符随机字符串
-3. **修改默认 API Key**：如启用了外部投递
+3. **按系统申请 API Key**：在「集成」页为每个外部系统单独申请，用完即撤；向导不再发放默认 Key
 4. **启用 HTTPS**：通过 Nginx/Caddy 反向代理
 5. **定期备份**：MySQL 数据库 + `storage/`
 6. **限制存储目录**：通过文件系统权限限制 `storage/` 仅服务进程可写

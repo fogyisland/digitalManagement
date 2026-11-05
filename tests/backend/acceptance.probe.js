@@ -7,7 +7,8 @@
  * path (the contract runtime checks). What is *not* proven end to end is:
  *
  *   - criterion 2: an empty database walks the whole `/init` flow, the
- *     server restarts, the login works and the **sample assets** are there;
+ *     server hot-loads, the login works immediately and the **sample
+ *     assets** are there;
  *   - criterion 4: the ComfyUI door files an asset that
  *     `GET /jobs/by-comfyui/{job_id}` finds — driven through the actual
  *     Python client's request shape, not a hand-written fetch.
@@ -107,16 +108,21 @@ async function waitForHealth(targetPort) {
  */
 async function startBackend() {
   port = await freePort();
+  // `JWT_SECRET` must reach the child exactly as a fresh deployment would
+  // see it: absent, never an empty string. dotenv does not override a
+  // variable that already exists — an empty string counts — so injecting
+  // one here would shadow the secret the wizard wrote and stall every
+  // token the restart is meant to keep accepting.
+  const childEnv = { ...process.env, JWT_SECRET: undefined };
+  delete childEnv.JWT_SECRET;
   child = spawn(process.execPath, [SERVER], {
     env: {
-      ...process.env,
+      ...childEnv,
       PORT: String(port),
       HOST: '127.0.0.1',
       ENV_FILE: envFile,
       DB_NAME: SCHEMA,
       STORAGE_DIR: storageDir,
-      // The wizard generates its own JWT secret; the boot must not have one.
-      JWT_SECRET: '',
       INIT_TOKEN,
       SEED_SAMPLE_ASSETS: '1',
     },
@@ -218,7 +224,11 @@ function multipart(bytes, filename, fields = {}) {
 /**
  * Walk the whole `/init` flow on a fresh instance.
  *
- * @returns {Promise<{apiKey: string, adminPassword: string}>}
+ * The seed step hot-reloads the instance — the process keeps running — and
+ * hands out no credential: the key the later criteria use is requested the
+ * way an operator would, through the admin API after logging in.
+ *
+ * @returns {Promise<{adminPassword: string}>}
  */
 async function runWizard() {
   const status = await call('/api/init/status');
@@ -251,10 +261,16 @@ async function runWizard() {
 
   const seed = await postJson('/api/init/seed', {}, initHeaders);
   assert.equal(seed.status, 200, `the seed step must answer 200: ${JSON.stringify(seed.body)}`);
-  assert.ok(seed.body.api_key, 'the seed step must hand out an API key');
-  console.log('[criterion 2] the seed step mints the key and the JWT secret');
+  assert.equal(seed.body.ok, true, 'the seed step must report success');
+  assert.equal(
+    seed.body.api_key,
+    undefined,
+    'the seed step must hand out no API key — keys are requested on the 集成 page',
+  );
+  assert.equal(seed.body.jwt_secret_written, true, 'the seed step must write the JWT secret');
+  console.log('[criterion 2] the seed step hot-loads the instance and writes the JWT secret');
 
-  return { apiKey: seed.body.api_key, adminPassword };
+  return { adminPassword };
 }
 
 /**
@@ -278,23 +294,20 @@ async function main() {
      * Criterion 2 — the empty-database flow, end to end.
      * ------------------------------------------------------------------- */
     await startBackend();
-    const { apiKey, adminPassword } = await runWizard();
+    const { adminPassword } = await runWizard();
 
-    // Restart: the server must now find itself configured.
-    await stopBackend();
-    await startBackend();
-
-    const afterRestart = await call('/api/init/status');
-    assert.equal(afterRestart.body.initialized, true, 'a restart must find the instance initialized');
-    console.log('[criterion 2] a restart finds the instance initialized');
+    // The wizard hot-loaded the running process: no restart anywhere.
+    const afterWizard = await call('/api/init/status');
+    assert.equal(afterWizard.body.initialized, true, 'the hot reload must find the instance initialized right away');
+    console.log('[criterion 2] the instance reports itself initialized without a restart');
 
     const login = await postJson('/api/v1/auth/login', {
       username: 'owner',
       password: adminPassword,
     });
-    assert.equal(login.status, 200, `the owner must be able to log in after the restart: ${JSON.stringify(login.body)}`);
+    assert.equal(login.status, 200, `the owner must be able to log in without a restart: ${JSON.stringify(login.body)}`);
     const token = login.body.access_token;
-    console.log('[criterion 2] the owner logs in after the restart');
+    console.log('[criterion 2] the owner logs in without a restart');
 
     const list = await call('/api/v1/assets?page_size=200', {
       headers: { authorization: `Bearer ${token}` },
@@ -303,6 +316,31 @@ async function main() {
     const assets = Array.isArray(list.body.items) ? list.body.items : [];
     assert.ok(assets.length > 0, 'the seeded instance must show the sample assets');
     console.log(`[criterion 2] the library shows ${assets.length} sample asset(s)`);
+
+    // The wizard handed out no key: one is requested the way an operator
+    // would, through the admin API — exactly what the 集成 page does.
+    const apiKeyResponse = await postJson('/api/v1/api-keys', {
+      name: 'Acceptance Key',
+      scopes: 'read,upload,delete',
+    }, { authorization: `Bearer ${token}` });
+    assert.equal(
+      apiKeyResponse.status,
+      201,
+      `requesting an API key must answer 201: ${JSON.stringify(apiKeyResponse.body)}`,
+    );
+    const apiKey = apiKeyResponse.body.key;
+    assert.ok(apiKey, 'the requested key must arrive in the response body');
+    assert.ok(String(apiKey).startsWith('dam_'), 'the key must carry the project prefix');
+    console.log('[criterion 2] the operator requested an API key through the admin API');
+
+    // The rest of the flow survives a restart too: the file the wizard
+    // wrote is what the next boot reads.
+    await stopBackend();
+    await startBackend();
+
+    const afterRestart = await call('/api/init/status');
+    assert.equal(afterRestart.body.initialized, true, 'a restart must find the instance initialized');
+    console.log('[criterion 2] a restart finds the instance initialized');
 
     /* ---------------------------------------------------------------------
      * Criterion 3 — an external system pushes an image with the API key.
@@ -320,6 +358,7 @@ async function main() {
     const afterPush = await call('/api/v1/assets?page_size=200', {
       headers: { authorization: `Bearer ${token}` },
     });
+    assert.equal(afterPush.status, 200, `the asset list after the push must answer 200: ${JSON.stringify(afterPush.body).slice(0, 400)}`);
     const afterPushItems = afterPush.body.items || [];
     assert.ok(
       afterPushItems.some((item) => item.id === pushedAsset.id),
