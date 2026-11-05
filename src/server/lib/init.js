@@ -264,12 +264,48 @@ function isStrongPassword(password) {
   return value.length >= 10 && /[A-Za-z]/.test(value) && /\d/.test(value);
 }
 
+/**
+ * The keys the wizard owns. Everything else in the file is a template
+ * default and must not overwrite what the process was started with.
+ */
+const WIZARD_ENV_KEYS = [
+  'DB_HOST',
+  'DB_PORT',
+  'DB_USER',
+  'DB_PASSWORD',
+  'DB_NAME',
+  'JWT_SECRET',
+];
+
+/**
+ * Apply the wizard-owned keys of an environment file to this process.
+ *
+ * The file the wizard writes is rendered from `.env.example`, so it carries
+ * every template default (`PORT`, `HOST`, `STORAGE_DIR`, ...). Copying the
+ * whole file into `process.env` would overwrite values the operator
+ * injected through the shell or the container — the hot reload would move
+ * the application's storage directory out from under it. Only the six keys
+ * the wizard owns are applied.
+ *
+ * @param {string} envFile
+ * @returns {void}
+ */
+function applyEnvToProcess(envFile) {
+  const values = readEnvFile(envFile);
+  for (const key of WIZARD_ENV_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      process.env[key] = values[key];
+    }
+  }
+}
+
 module.exports = {
   readEnvFile,
   renderEnv,
   hasConfiguration,
   writeEnvFile,
   mergeEnv,
+  applyEnvToProcess,
   isInitialized,
   initStatus,
   resolveInitToken,

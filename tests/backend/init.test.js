@@ -531,6 +531,60 @@ async function main() {
     await originalPool.end();
     await otherPool.end();
 
+    // --- 11) only the wizard-owned keys reach the process -----------------
+    // The rendered .env carries every template default, so applying the
+    // whole file would overwrite the storage directory the process was
+    // started with. Only the six keys the wizard owns are applied.
+    const { applyEnvToProcess } = require('../../src/server/lib/init');
+    const applyEnvFile = path.join(TESTS_DIR, 'test-apply-env.env');
+    const savedEnv = {
+      DB_NAME: process.env.DB_NAME,
+      JWT_SECRET: process.env.JWT_SECRET,
+      STORAGE_DIR: process.env.STORAGE_DIR,
+      PORT: process.env.PORT,
+    };
+    fs.writeFileSync(
+      applyEnvFile,
+      [
+        'DB_NAME=dam_reload_test',
+        'JWT_SECRET=abc',
+        'STORAGE_DIR=./storage',
+        'PORT=8000',
+        '',
+      ].join('\n'),
+    );
+    process.env.STORAGE_DIR = '/tmp/injected-storage';
+    process.env.PORT = '9999';
+    try {
+      applyEnvToProcess(applyEnvFile);
+      assert.strictEqual(
+        process.env.DB_NAME,
+        'dam_reload_test',
+        'the wizard-owned database key must be applied from the file',
+      );
+      assert.strictEqual(
+        process.env.JWT_SECRET,
+        'abc',
+        'the wizard-owned secret must be applied from the file',
+      );
+      assert.strictEqual(
+        process.env.STORAGE_DIR,
+        '/tmp/injected-storage',
+        'a template default must not overwrite the storage directory the process was started with',
+      );
+      assert.strictEqual(
+        process.env.PORT,
+        '9999',
+        'a template default must not overwrite the port the process was started with',
+      );
+    } finally {
+      fs.rmSync(applyEnvFile, { force: true });
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
     console.log('init wizard OK');
   } finally {
     await close(server);
