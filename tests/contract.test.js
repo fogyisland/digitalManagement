@@ -73,6 +73,11 @@ import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
 import { findComposedClauseProblems } from './lib/tenant-clause-fixtures.js';
 import { findEventVocabularyDrift } from './lib/event-parity.js';
 import { MAX_SOURCE_LINES, findOversizedFiles } from './lib/file-size.js';
+import { findInitTokenStorageProblems } from './lib/init-token-storage.js';
+import {
+  INIT_TOKEN_STORAGE_CASES,
+  findInitTokenStorageFixtureProblems,
+} from './lib/init-token-storage-fixtures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -80,6 +85,7 @@ const BACKEND_SRC = path.join(REPO_ROOT, 'src', 'server', 'server.js');
 const BACKEND_ROUTES = path.join(REPO_ROOT, 'src', 'server', 'routes');
 const SERVER_DIR = path.join(REPO_ROOT, 'src', 'server');
 const SRC_DIR = path.join(REPO_ROOT, 'src', 'client');
+const INIT_DIR = path.join(SRC_DIR, 'pages', 'init');
 
 /* ==========================================================================
    Part A — static route lint
@@ -206,6 +212,32 @@ function runStaticLint() {
     `webhook event vocabulary drift:\n${drift.map((v) => `  - ${v}`).join('\n')}`,
   );
   console.log('event vocabulary parity OK — backend and frontend agree');
+
+  // The init token is the credential that creates the platform administrator.
+  // It is minted per boot and handed over once, on the console — so it must
+  // not be parked anywhere a later script or a later tab can read it. The
+  // fixtures pin the rule in both directions: a storage write is a violation,
+  // a comment that merely names `localStorage` is not.
+  const fixtureDrift = findInitTokenStorageFixtureProblems();
+  assert.deepEqual(
+    fixtureDrift,
+    [],
+    `the init-token storage rule mis-read a fixture:\n` +
+      fixtureDrift.map((v) => `  - ${v}`).join('\n'),
+  );
+  const storedTokens = findInitTokenStorageProblems({
+    initDir: INIT_DIR,
+    repoRoot: REPO_ROOT,
+  });
+  assert.deepEqual(
+    storedTokens,
+    [],
+    `init-token storage lint failed:\n${storedTokens.map((v) => `  - ${v}`).join('\n')}`,
+  );
+  console.log(
+    `init-token storage OK — the wizard keeps X-Init-Token in memory ` +
+      `(${INIT_TOKEN_STORAGE_CASES.length} fixtures)`,
+  );
 
   console.log(
     `static route lint OK — ${sites.length} call sites checked against ` +

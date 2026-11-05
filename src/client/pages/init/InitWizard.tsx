@@ -11,6 +11,13 @@
  * so the operator copies it from the console — the wizard cannot discover it
  * on its own, by design.
  *
+ * The token lives in React state and in the api module's memory, and nowhere
+ * else. It is the credential that creates the platform administrator, minted
+ * per boot and handed over once; `localStorage` survives the tab, so a token
+ * written there would still be waiting after the operator closed the browser.
+ * The cost is that a reload asks for it again — which is the same event that
+ * loses the backend's boot-time value anyway when the process restarted.
+ *
  * The wizard also has to survive a reload. `GET /api/init/status` reports how
  * far the installation got, and the wizard opens on the first step the
  * backend has not finished (`stepFromStatus`). Without that, an operator who
@@ -36,14 +43,11 @@ const { Paragraph, Text, Title } = Typography;
 /** Which page is showing. */
 type Step = InitStep;
 
-/** Where the token is remembered between reloads of the wizard only. */
-const TOKEN_STORAGE_KEY = 'dam_init_token';
-
 export default function InitWizard(): JSX.Element {
   const [checking, setChecking] = useState(true);
   const [alreadyInitialized, setAlreadyInitialized] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) || '');
+  const [token, setToken] = useState('');
   const [tokenAccepted, setTokenAccepted] = useState(false);
   const [step, setStep] = useState<Step>(0);
   const [resumed, setResumed] = useState(false);
@@ -80,7 +84,6 @@ export default function InitWizard(): JSX.Element {
     const trimmed = token.trim();
     if (!trimmed) return;
     setInitToken(trimmed);
-    localStorage.setItem(TOKEN_STORAGE_KEY, trimmed);
     setTokenAccepted(true);
   };
 
