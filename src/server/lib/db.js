@@ -136,6 +136,12 @@ function normalizeParams(params) {
  * @returns {object} the database handle passed around the codebase
  */
 function createDb(pool) {
+  // The pool the handle points at right now. The wizard's hot reload can
+  // point it somewhere else mid-flight; every statement below reads this
+  // variable at call time, so statements issued after a rebind run on the
+  // new pool and in-flight statements keep the one they started on.
+  let activePool = pool;
+
   return {
     /**
      * Prepare a statement.
@@ -155,7 +161,7 @@ function createDb(pool) {
          * @returns {Promise<{changes: number, lastInsertRowid: number}>}
          */
         async run(...params) {
-          const [result] = await pool.execute(sql, normalizeParams(params));
+          const [result] = await activePool.execute(sql, normalizeParams(params));
           return { changes: result.affectedRows, lastInsertRowid: result.insertId };
         },
 
@@ -166,7 +172,7 @@ function createDb(pool) {
          * @returns {Promise<object | undefined>}
          */
         async get(...params) {
-          const [rows] = await pool.execute(sql, normalizeParams(params));
+          const [rows] = await activePool.execute(sql, normalizeParams(params));
           return rows.length > 0 ? rows[0] : undefined;
         },
 
@@ -177,7 +183,7 @@ function createDb(pool) {
          * @returns {Promise<object[]>}
          */
         async all(...params) {
-          const [rows] = await pool.execute(sql, normalizeParams(params));
+          const [rows] = await activePool.execute(sql, normalizeParams(params));
           return rows;
         },
       };
@@ -198,7 +204,7 @@ function createDb(pool) {
      * @returns {Promise<object[]>}
      */
     async query(sql, params = []) {
-      const [rows] = await pool.query(sql, normalizeParams(params));
+      const [rows] = await activePool.query(sql, normalizeParams(params));
       return rows;
     },
 
@@ -209,7 +215,7 @@ function createDb(pool) {
      * @returns {Promise<void>}
      */
     async exec(sql) {
-      await pool.query(sql);
+      await activePool.query(sql);
     },
 
     /**
@@ -223,7 +229,7 @@ function createDb(pool) {
      * @returns {Promise<T>}
      */
     async transaction(fn) {
-      const connection = await pool.getConnection();
+      const connection = await activePool.getConnection();
       const scoped = {
         prepare(sql) {
           return {
@@ -258,8 +264,26 @@ function createDb(pool) {
       }
     },
 
-    /** The underlying pool, for the few places that need it. */
-    pool,
+    /**
+     * Point every later statement at a different pool.
+     *
+     * The init wizard's hot reload uses this to move the running
+     * application onto the database the operator just typed in. In-flight
+     * statements keep the pool they started on; the old pool is not closed
+     * here — closing it is the caller's responsibility, once it knows the
+     * new pool works.
+     *
+     * @param {import('mysql2/promise').Pool} nextPool
+     * @returns {void}
+     */
+    rebind(nextPool) {
+      activePool = nextPool;
+    },
+
+    /** The pool in use right now. */
+    get pool() {
+      return activePool;
+    },
   };
 }
 

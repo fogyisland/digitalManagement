@@ -494,6 +494,43 @@ async function main() {
       'the boot must not seed an administrator into a configured instance',
     );
 
+    // --- 10) the handle can be pointed at another pool --------------------
+    // The hot reload rebinds the running application to the database the
+    // operator just typed in. In-flight statements keep the pool they
+    // started on; the caller owns closing the old one.
+    const { createDb, createPool } = require('../../src/server/lib/db');
+    const originalPool = createPool({
+      dbHost: process.env.DB_HOST || '127.0.0.1',
+      dbPort: parseInt(process.env.DB_PORT || '3307', 10),
+      dbUser: process.env.DB_USER || 'dam',
+      dbPassword: process.env.DB_PASSWORD || '',
+      dbName,
+    });
+    const otherPool = createPool({
+      dbHost: process.env.DB_HOST || '127.0.0.1',
+      dbPort: parseInt(process.env.DB_PORT || '3307', 10),
+      dbUser: process.env.DB_USER || 'dam',
+      dbPassword: process.env.DB_PASSWORD || '',
+      dbName,
+    });
+    assert.notStrictEqual(otherPool, originalPool, 'the two pools must be distinct objects');
+    const rebound = createDb(originalPool);
+    assert.strictEqual(rebound.pool, originalPool, 'a fresh handle starts on the pool it was given');
+
+    // A statement created before the rebind must still answer, through the
+    // pool that is active at call time.
+    const statement = rebound.prepare('SELECT 1 AS n');
+    rebound.rebind(otherPool);
+    assert.strictEqual(rebound.pool, otherPool, 'after the rebind the handle points at the new pool');
+    const row = await statement.get();
+    assert.strictEqual(row.n, 1, 'a statement after the rebind must still answer');
+    const transactionRow = await rebound.transaction(async (tx) => tx.prepare('SELECT 2 AS n').get());
+    assert.strictEqual(transactionRow.n, 2, 'a transaction after the rebind must run on the new pool');
+
+    // The old pool is not swallowed by the handle: the caller can still end it.
+    await originalPool.end();
+    await otherPool.end();
+
     console.log('init wizard OK');
   } finally {
     await close(server);
