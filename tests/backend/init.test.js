@@ -585,6 +585,107 @@ async function main() {
       }
     }
 
+    // --- 12) the application picks up a new .env without restarting -------
+    const { reloadConfiguration } = require('../../src/server/lib/reload');
+    const reloadDir = path.join(TESTS_DIR, 'test-reload-storage');
+    const reloadEnvFile = path.join(TESTS_DIR, 'test-reload.env');
+    fs.rmSync(reloadDir, { recursive: true, force: true });
+    const reloadEnv = {
+      DB_HOST: process.env.DB_HOST || '127.0.0.1',
+      DB_PORT: process.env.DB_PORT || '3307',
+      DB_USER: process.env.DB_USER || 'dam',
+      DB_PASSWORD: process.env.DB_PASSWORD || '',
+      DB_NAME: dbName,
+    };
+    const writeReloadEnv = (overrides = {}) => {
+      const values = { ...reloadEnv, JWT_SECRET: 'reload-secret', ...overrides };
+      fs.writeFileSync(
+        reloadEnvFile,
+        Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n') + '\n',
+      );
+    };
+    writeReloadEnv();
+    const reloadEnvSnapshot = {};
+    for (const key of ['DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'JWT_SECRET', 'STORAGE_DIR', 'SEED_SAMPLE_ASSETS']) {
+      reloadEnvSnapshot[key] = process.env[key];
+    }
+    const poolConfig = {
+      dbHost: reloadEnv.DB_HOST,
+      dbPort: parseInt(reloadEnv.DB_PORT, 10),
+      dbUser: reloadEnv.DB_USER,
+      dbPassword: reloadEnv.DB_PASSWORD,
+      dbName,
+    };
+    let reloadDb = null;
+    let drainDb = null;
+    try {
+      process.env.STORAGE_DIR = reloadDir;
+      process.env.SEED_SAMPLE_ASSETS = '0';
+
+      reloadDb = createDb(createPool(poolConfig));
+      const poolBeforeReload = reloadDb.pool;
+      const reload = await reloadConfiguration({ db: reloadDb, envFile: reloadEnvFile });
+      assert.deepStrictEqual(reload, { ok: true }, 'the reload must report itself as done');
+      assert.notStrictEqual(
+        reloadDb.pool,
+        poolBeforeReload,
+        'the reload must move the handle onto a fresh pool',
+      );
+
+      const reloadTenants = await reloadDb.prepare('SELECT id FROM tenants').all();
+      assert.ok(reloadTenants.length >= 1, 'the reload must leave a tenant behind');
+      const reloadCategories = await reloadDb.prepare('SELECT id FROM categories').all();
+      assert.strictEqual(
+        reloadCategories.length,
+        4,
+        'the reload must finish the boot by seeding the starter categories',
+      );
+      const reloadTags = await reloadDb.prepare('SELECT id FROM tags').all();
+      assert.strictEqual(
+        reloadTags.length,
+        8,
+        'the reload must finish the boot by seeding the starter tags',
+      );
+
+      // A failure has to reject, not report success: a silent success would
+      // close the wizard on an instance that is not configured.
+      writeReloadEnv({ DB_USER: 'dam_no_such_user_xyz' });
+      await assert.rejects(
+        reloadConfiguration({ db: reloadDb, envFile: reloadEnvFile }),
+        'a reload against an unreachable database must reject',
+      );
+      writeReloadEnv();
+
+      // The previous pool is drained, not abandoned: end() waits for the
+      // statements already in flight on it (spec §4.6).
+      drainDb = createDb(createPool(poolConfig));
+      const slowQuery = drainDb.query('SELECT SLEEP(1) AS s');
+      const startedAt = Date.now();
+      await reloadConfiguration({ db: drainDb, envFile: reloadEnvFile });
+      const elapsedMs = Date.now() - startedAt;
+      const slow = await slowQuery;
+      // SLEEP() answers 0 when it ran to completion and 1 when something
+      // interrupted it — the statement must not have been cut short.
+      assert.strictEqual(
+        slow[0].s,
+        0,
+        'the statement in flight on the old pool must finish, not be interrupted',
+      );
+      assert.ok(
+        elapsedMs >= 900,
+        `the reload must wait for the previous pool to drain, it took ${elapsedMs}ms`,
+      );
+    } finally {
+      if (reloadDb && reloadDb.pool) await reloadDb.pool.end();
+      if (drainDb && drainDb.pool) await drainDb.pool.end();
+      fs.rmSync(reloadEnvFile, { force: true });
+      fs.rmSync(reloadDir, { recursive: true, force: true });
+      for (const [key, value] of Object.entries(reloadEnvSnapshot)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
     console.log('init wizard OK');
   } finally {
     await close(server);
