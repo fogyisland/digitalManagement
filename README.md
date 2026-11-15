@@ -168,6 +168,8 @@ npm run dev:server   # 后端热重启 :8000
 | GET | `/api/v1/stats/dashboard` | 仪表盘统计 |
 | GET | `/api/v1/jobs/by-comfyui/:job_id` | 按 ComfyUI 任务号查资产 |
 
+> **超级管理员（`role=superadmin`）写入时必须指明租户。** 超级管理员的凭证本身不属于任何租户，创建资源（用户 / 分类 / 标签 / API Key / Webhook / 资产）时需要带一个 `X-Tenant: <租户名>` 头，指明这次写入落到哪个租户；不带头返回 `400 TENANT_REQUIRED`，租户不存在返回 `400 NO_SUCH_TENANT`。普通租户的凭证会忽略这个头——它不能用来越权。
+
 ### 公开投递 API（API Key 鉴权）
 
 > Header：`X-API-Key: dam_xxxxxxxx`。Scope 分为 `read` / `upload` / `delete`。
@@ -277,6 +279,7 @@ DigitalManagement/
 ```env
 PORT=8000                        # 唯一端口：API + 界面
 HOST=0.0.0.0
+CORS_ORIGINS=                    # 允许跨域访问的前端来源，逗号分隔；默认空（同源，无需跨域）
 DB_HOST=127.0.0.1               # MySQL 地址
 DB_PORT=3306
 DB_USER=root
@@ -287,22 +290,30 @@ STORAGE_DIR=./storage            # 上传文件目录
 JWT_SECRET=                       # 走向导部署时留空（向导自动生成）；手动部署填 32+ 字符随机串
 ACCESS_TOKEN_TTL=1h
 REFRESH_TOKEN_TTL=30d
-UPLOAD_MAX_FILE_SIZE_MB=2048
+UPLOAD_MAX_FILE_SIZE_MB=2048     # 单个文件的上限（MB）
+UPLOAD_MAX_REQUEST_SIZE_MB=2048  # 单次请求的上传总量上限（MB）；默认与单文件上限相同
 SEED_SAMPLE_ASSETS=0             # 设为 1 才生成 12 张示例资产
 APP_BASE_URL=                    # 留空则按请求推导
+STORAGE_URL_TTL_SECONDS=3600     # 签名文件链接的有效期（前端 <img src> 用）
+INIT_TOKEN=                      # 向导令牌；留空则每次启动生成并打印到控制台
+WEBHOOK_ALLOW_PRIVATE_TARGETS=0   # 设为 1 才允许 Webhook 投递到内网地址（默认拒绝）
 ```
 
+> **Webhook 目标默认不许指向内网。** Webhook 的目标 URL 是服务器自己发起的对外请求，默认拒绝 `10.x`、`172.16-31.x`、`192.168.x`、`127.0.0.1`、`169.254.x`（云元数据）等地址；检查在每次投递时执行，并把连接固定到已校验的 IP，防止 DNS 重绑定。接收方确实在你自己网络里时，把 `WEBHOOK_ALLOW_PRIVATE_TARGETS` 设为 `1`。
+
 数据库连不上时，服务会在启动阶段直接报错退出（不会带着一个半成品 schema 跑起来）。表、列与索引在启动时自动补齐 —— **幂等迁移**，重复启动不会重复建。
+
+> **JWT_SECRET 必须是自己的。** 仓库自带的占位串是公开的，用它签发的令牌任何人都能伪造。启动时若检测到仍在用占位串，控制台会明确警告。
 
 ## 🧪 测试
 
 ```bash
-npm test              # 契约护栏 + 后端 5 个 suite
-npm run test:contract # 静态路由核对 + 运行时集成（22 项）
+npm test              # 契约护栏 + 后端 8 个 suite
+npm run test:contract # 静态路由核对 + 运行时集成（33 项）
 npm run test:backend  # 后端 suite
 ```
 
-契约护栏会把后端 44 条路由与前端 61 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程。
+契约护栏会把后端 43 条路由与前端 61 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程。
 护栏需要 **Node.js ≥ 22.15**。
 
 ## 🔒 安全建议
@@ -314,6 +325,7 @@ npm run test:backend  # 后端 suite
 5. **定期备份**：MySQL 数据库 + `storage/`
 6. **限制存储目录**：通过文件系统权限限制 `storage/` 仅服务进程可写
 7. **URL 导入已内置 SSRF 防护**：内网与回环地址会被拒绝
+8. **上传会占内存**：文件在读取时整块缓存在进程内存里，单次请求的上传总量默认与单文件上限相同；机器内存吃紧就调小 `UPLOAD_MAX_FILE_SIZE_MB` / `UPLOAD_MAX_REQUEST_SIZE_MB`，超大文件走分片上传接口（分片全程落盘，不吃内存）
 
 ## 🗺️ Roadmap
 

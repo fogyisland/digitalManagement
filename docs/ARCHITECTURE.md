@@ -81,7 +81,7 @@ revoked_tokens / token_registry（令牌吊销与轮换）
 
 - **版本化**：`/api/v1/*`（内部管理） + `/api/public/v1/*`（外部投递）
 - **鉴权双轨**：管理 API 用 JWT，外部投递用 API Key
-- **响应统一**：列表用分页信封 `{ items, total, page, page_size, total_pages }`；错误用 `{ detail }`
+- **响应统一**：列表用分页信封 `{ items, total, page, page_size, total_pages }`；错误用 `{ detail }`，需要分支判断的错误再带一个 `code`（如 `TENANT_REQUIRED`）
 - **分页标准**：`page` / `page_size`
 - **错误规范**：HTTP 状态码 + `detail` 文案
 
@@ -89,9 +89,17 @@ revoked_tokens / token_registry（令牌吊销与轮换）
 
 `POST /auth/refresh` 会烧毁 presented 的 refresh token（写入 `revoked_tokens`），同时签发新的令牌对。旧 token 再次使用会得到 `401 Refresh token revoked`。注销时 access token 的 `jti` 与会话 `sid` 一并吊销。
 
+改密码（`POST /auth/change-password`）与管理员重置密码（`POST /users/:id/reset-password`）都会吊销该账号用旧密码开出的全部会话——发起改密的那个会话除外，否则改密请求会把自己踢下线。
+
 ### 删除的三态
 
 `DELETE /assets/:id` 默认是**软删除**（`status='deleted'` + `deleted_at`），资产进入回收站；`?permanent=true` 才是物理删除；`POST /assets/:id/restore` 复原。若资产不在回收站，restore 返回 `400 Asset is not in the trash`。
+
+### 上传的两道上限
+
+上传的文件在读取时整块缓存在进程内存里，所以有两道上限：**单文件**（`UPLOAD_MAX_FILE_SIZE_MB`）与**单请求总量**（`UPLOAD_MAX_REQUEST_SIZE_MB`，默认与单文件上限相同）。只设单文件上限是不够的——一个请求可以带 20 个文件，那会把单文件上限的二十倍拉进内存。
+
+分片上传（`/upload/init` → `/upload/chunk` → `/upload/complete`）全程落盘：分片写进 `STORAGE_DIR/tmp/<session_id>/`，合并也在磁盘上完成，因此它不受内存上限约束，是大文件的正确通道。单块不得超过会话声明的块大小；会话一小时过期，过期的会话与其暂存目录会被定期回收。
 
 ## 目录结构
 
