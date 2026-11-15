@@ -18,7 +18,7 @@ const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toApiKey } = require('../lib/dto');
-const { isAllTenants } = require('../lib/tenant');
+const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 const { toMysqlDateTime } = require('../lib/util');
 
@@ -97,16 +97,18 @@ function createApiKeysRouter({ db }) {
         return res.status(400).json({ detail: 'expires_at must be a valid date' });
       }
 
-      // A key is born inside the caller's tenant — the tenant is never a
+      // A key is born inside one concrete tenant — the tenant is never a
       // request field, since a credential that could name its own tenant
-      // would be able to name somebody else's.
+      // would be able to name somebody else's. Everybody else gets it from
+      // their credential; a platform administrator names it in `X-Tenant`.
+      const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
       await db
         .prepare(
           'INSERT INTO api_keys (id, tenant_id, name, key_prefix, key_hash, scopes, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           id,
-          req.tenantScope.tenantId,
+          tenantId,
           String(name),
           prefix,
           hash,

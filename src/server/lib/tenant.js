@@ -100,6 +100,69 @@ function tenantClause(scope, column = 'tenant_id') {
 }
 
 /**
+ * The tenant a write lands in.
+ *
+ * A platform administrator's scope covers every tenant, so it names none —
+ * and a row that names the wildcard belongs to nobody. No tenant admin can
+ * read it, and an account created against it cannot authenticate: there is
+ * no tenant row for the wildcard to resolve to, so `loadTenant` answers
+ * nothing and every request the new account makes is refused with "Tenant
+ * not found".
+ *
+ * So a write has to name a concrete tenant. Everybody else gets it from
+ * their credential; a platform administrator names it in the `X-Tenant`
+ * header. The header is ignored for a caller who already has a tenant — it
+ * is not a way out of one.
+ *
+ * @param {{tenantId: string, isSuperadmin: boolean}} scope
+ * @param {import('express').Request} req
+ * @returns {string} the tenant the row belongs to
+ * @throws {Error & {status: number}} 400 when no concrete tenant is named
+ */
+function writeTenantId(scope, req) {
+  if (!scope) {
+    throw Object.assign(new Error('A write cannot run without a tenant scope'), {
+      status: 403,
+      code: 'NO_TENANT_SCOPE',
+    });
+  }
+  if (!isAllTenants(scope)) return scope.tenantId;
+  const named = String((req.headers && req.headers['x-tenant']) || '').trim();
+  if (!named) {
+    throw Object.assign(
+      new Error('A platform administrator must name the tenant to write into (X-Tenant)'),
+      { status: 400, code: 'TENANT_REQUIRED' },
+    );
+  }
+  return named;
+}
+
+/**
+ * The tenant a write lands in, checked against the tenants that exist.
+ *
+ * A name that does not resolve to a tenant row would produce the same
+ * orphan a wildcard produces, so it is refused here rather than at the
+ * first read of the row.
+ *
+ * @param {object} db
+ * @param {{tenantId: string, isSuperadmin: boolean}} scope
+ * @param {import('express').Request} req
+ * @returns {Promise<string>} the tenant id
+ * @throws {Error & {status: number}} 400 when the tenant does not exist
+ */
+async function resolveWriteTenant(db, scope, req) {
+  const tenantId = writeTenantId(scope, req);
+  const tenant = await loadTenant(db, tenantId);
+  if (!tenant) {
+    throw Object.assign(new Error(`There is no tenant '${tenantId}'`), {
+      status: 400,
+      code: 'NO_SUCH_TENANT',
+    });
+  }
+  return tenant.id;
+}
+
+/**
  * The scope a request runs in.
  *
  * `isSuperadmin` is the flag the business layer reads: a superadmin's reads
@@ -126,5 +189,7 @@ module.exports = {
   tenantClause,
   loadTenant,
   resolveTenantFromUser,
+  resolveWriteTenant,
   tenantScope,
+  writeTenantId,
 };

@@ -20,9 +20,16 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const dotenv = require('dotenv');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const SERVER = path.join(ROOT, 'src', 'server', 'server.js');
+
+// The database configuration lives in the repository's `.env`. The probe
+// reads the process environment, so the file has to be loaded here — the
+// same the server itself does on boot.
+dotenv.config({ path: path.join(ROOT, '.env') });
+
 const DB_HOST = process.env.DB_HOST || '127.0.0.1';
 const DB_PORT = parseInt(process.env.DB_PORT || '3307', 10);
 const DB_USER = process.env.DB_USER || 'dam';
@@ -54,6 +61,36 @@ async function dropSchema(schema) {
   });
   try {
     await connection.query(`DROP DATABASE IF EXISTS \`${schema}\``);
+  } finally {
+    await connection.end();
+  }
+}
+
+/**
+ * The tenant a row belongs to.
+ *
+ * The API answers with DTOs, and not every DTO carries the tenant — so the
+ * row is read where it lives.
+ *
+ * @param {string} table
+ * @param {string} id
+ * @returns {Promise<string|null>}
+ */
+async function tenantOfRow(table, id) {
+  const mysql = require('mysql2/promise');
+  const connection = await mysql.createConnection({
+    host: DB_HOST,
+    port: DB_PORT,
+    user: DB_USER,
+    password: DB_PASSWORD,
+    database: SCHEMA,
+  });
+  try {
+    const [rows] = await connection.query(
+      `SELECT tenant_id FROM \`${table}\` WHERE id = ?`,
+      [id],
+    );
+    return rows.length ? rows[0].tenant_id : null;
   } finally {
     await connection.end();
   }
@@ -282,6 +319,147 @@ async function main() {
       `\n${broken.length} route(s) answer the superadmin with an empty set: ` +
         broken.map((entry) => entry.route).join(', '),
     );
+
+    // --- the write path ----------------------------------------------------
+    // A platform administrator's scope covers every tenant, so it names none.
+    // A row that names the wildcard belongs to nobody: no tenant admin can
+    // read it, and an account created against it cannot authenticate — there
+    // is no tenant row for the wildcard to resolve to, so every request it
+    // makes is refused. A write therefore has to name a concrete tenant, and
+    // the superadmin names it in `X-Tenant`.
+    const json = { 'content-type': 'application/json' };
+
+    const unnamed = await call('/api/v1/categories', {
+      method: 'POST',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: 'no tenant named' }),
+    });
+    assert.equal(
+      unnamed.status,
+      400,
+      `a write that names no tenant must be refused: ${JSON.stringify(unnamed.body)}`,
+    );
+    assert.equal(
+      unnamed.body && unnamed.body.code,
+      'TENANT_REQUIRED',
+      `the refusal must name itself: ${JSON.stringify(unnamed.body)}`,
+    );
+
+    const bogus = await call('/api/v1/categories', {
+      method: 'POST',
+      headers: { ...json, ...auth, 'x-tenant': 'no-such-tenant' },
+      body: JSON.stringify({ name: 'a tenant that does not exist' }),
+    });
+    assert.equal(
+      bogus.status,
+      400,
+      `a write into a tenant that does not exist must be refused: ${JSON.stringify(bogus.body)}`,
+    );
+    assert.equal(
+      bogus.body && bogus.body.code,
+      'NO_SUCH_TENANT',
+      `the refusal must name itself: ${JSON.stringify(bogus.body)}`,
+    );
+
+    const named = await call('/api/v1/categories', {
+      method: 'POST',
+      headers: { ...json, ...auth, 'x-tenant': 'tenant-a' },
+      body: JSON.stringify({ name: 'written by the platform administrator' }),
+    });
+    assert.equal(
+      named.status,
+      201,
+      `a write into a named tenant must succeed: ${JSON.stringify(named.body)}`,
+    );
+    // The category DTO does not carry the tenant, so the row is checked where
+    // it lives: in the database.
+    assert.equal(
+      await tenantOfRow('categories', named.body.id),
+      'tenant-a',
+      'the row must belong to the tenant it was named for',
+    );
+
+    // The header is not a way out of a tenant. A caller who already speaks
+    // for one tenant writes into that tenant, whatever the header says.
+    const ownerLogin = await call('/api/v1/auth/login', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ username: 'owner-tenant-a', password: 'Probe@123456' }),
+    });
+    assert.equal(
+      ownerLogin.status,
+      200,
+      `a tenant owner must be able to log in: ${JSON.stringify(ownerLogin.body)}`,
+    );
+    const ownerWrite = await call('/api/v1/categories', {
+      method: 'POST',
+      headers: {
+        ...json,
+        authorization: `Bearer ${ownerLogin.body.access_token}`,
+        'x-tenant': 'tenant-b',
+      },
+      body: JSON.stringify({ name: 'a tenant owner naming another tenant' }),
+    });
+    assert.equal(
+      ownerWrite.status,
+      201,
+      `a tenant owner must be able to write: ${JSON.stringify(ownerWrite.body)}`,
+    );
+    assert.equal(
+      await tenantOfRow('categories', ownerWrite.body.id),
+      'tenant-a',
+      "the header must not move a write out of the caller's own tenant",
+    );
+
+    // The account it created has to work: an account whose tenant does not
+    // exist can log in and is then refused every single request.
+    const created = await call('/api/v1/users', {
+      method: 'POST',
+      headers: { ...json, ...auth, 'x-tenant': 'tenant-b' },
+      body: JSON.stringify({ username: 'made-by-root', password: 'Probe@123456', role: 'viewer' }),
+    });
+    assert.equal(
+      created.status,
+      201,
+      `a user write into a named tenant must succeed: ${JSON.stringify(created.body)}`,
+    );
+    assert.equal(
+      created.body.tenant_id,
+      'tenant-b',
+      'the user must belong to the tenant it was named for',
+    );
+    assert.equal(
+      await tenantOfRow('users', created.body.id),
+      'tenant-b',
+      'the user row must belong to the tenant it was named for',
+    );
+
+    const createdLogin = await call('/api/v1/auth/login', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ username: 'made-by-root', password: 'Probe@123456' }),
+    });
+    assert.equal(
+      createdLogin.status,
+      200,
+      `the created account must be able to log in: ${JSON.stringify(createdLogin.body)}`,
+    );
+    const createdMe = await call('/api/v1/auth/me', {
+      headers: { authorization: `Bearer ${createdLogin.body.access_token}` },
+    });
+    assert.equal(
+      createdMe.status,
+      200,
+      `the created account must be able to act: ${JSON.stringify(createdMe.body)}`,
+    );
+
+    console.log('\n--- the superadmin write path ---');
+    console.log('  a write that names no tenant is refused       OK');
+    console.log('  a write into a tenant that does not exist     OK');
+    console.log('  a write into a named tenant lands there       OK');
+    console.log('  the account it created can authenticate       OK');
+    console.log('  the header does not move a tenant write       OK');
+    console.log('superadmin probe OK');
   } finally {
     if (child) {
       const dying = child;

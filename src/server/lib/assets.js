@@ -148,12 +148,35 @@ async function emitAssetEvent(db, event, assetRow) {
 }
 
 /**
+ * The sha256 of a file on disk.
+ *
+ * A file that is too big to hold in memory is hashed by reading it, not by
+ * loading it — the same reason the chunked upload merges its parts on disk.
+ *
+ * @param {string} filePath
+ * @returns {Promise<string>} lowercase hex digest
+ */
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+/**
  * Store an uploaded buffer as a new asset.
+ *
+ * The file arrives either as a buffer (the multipart doors) or as a path on
+ * disk (the chunked door, whose whole point is a file that does not fit in
+ * memory). The path form never loads the file into memory.
  *
  * @param {Object} params
  * @param {object} params.db
  * @param {string} params.storageDir
- * @param {{buffer: Buffer, originalname: string, mimetype: string, size: number}} params.file
+ * @param {{buffer?: Buffer, path?: string, originalname: string, mimetype: string, size: number}} params.file
  * @param {string|null} params.ownerId
  * @param {string} params.source
  * @param {Object} [params.extra]
@@ -162,7 +185,10 @@ async function emitAssetEvent(db, event, assetRow) {
 async function processUpload({ db, storageDir, file, ownerId, source, extra, tenantId }) {
   const effectiveTenantId = tenantId || DEFAULT_TENANT_ID;
   const scope = { tenantId: effectiveTenantId, isSuperadmin: false };
-  const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+  const sourcePath = file.path || null;
+  const hash = sourcePath
+    ? await hashFile(sourcePath)
+    : crypto.createHash('sha256').update(file.buffer).digest('hex');
   const existing = await db
     .prepare('SELECT id, status FROM assets WHERE tenant_id = ? AND file_hash = ?')
     .get(effectiveTenantId, hash);
@@ -184,7 +210,13 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
   const ext = path.extname(file.originalname) || '';
   const storageName = `${id}${ext}`;
   const storagePath = path.join('originals', storageName);
-  fs.writeFileSync(path.join(storageDir, storagePath), file.buffer);
+  const destination = path.join(storageDir, storagePath);
+  if (sourcePath) {
+    // The file is already on disk — it is moved into place, not read.
+    fs.copyFileSync(sourcePath, destination);
+  } else {
+    fs.writeFileSync(destination, file.buffer);
+  }
 
   let width = null;
   let height = null;
@@ -193,12 +225,15 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
   try {
     const sharp = require('sharp');
     if (file.mimetype.startsWith('image/')) {
-      const meta = await sharp(file.buffer).metadata();
+      // Sharp reads a path or a buffer; the path form keeps the pixels out
+      // of this process's memory.
+      const pixels = sourcePath || file.buffer;
+      const meta = await sharp(pixels).metadata();
       width = meta.width ?? null;
       height = meta.height ?? null;
       const thumbName = `${id}.webp`;
       thumbnailPath = path.join('thumbnails', thumbName);
-      await sharp(file.buffer)
+      await sharp(pixels)
         .resize(400, 400, { fit: 'cover' })
         .webp({ quality: 80 })
         .toFile(path.join(storageDir, thumbnailPath));

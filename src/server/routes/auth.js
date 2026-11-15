@@ -15,7 +15,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { getConfig } = require('../config');
-const { issueTokenPair, revokeToken, isRevoked, bearerToken, authRequired, expiresAtOf } = require('../lib/auth');
+const { issueTokenPair, revokeToken, revokeUserSessions, isRevoked, bearerToken, authRequired, expiresAtOf } = require('../lib/auth');
 const { toUser } = require('../lib/dto');
 const { asyncHandler } = require('../lib/http');
 
@@ -97,16 +97,16 @@ function createAuthRouter({ db }) {
     if (!user.is_active) return res.status(403).json({ detail: 'User is disabled' });
 
     // Rotate: the presented refresh token is burned and a new pair is issued.
-    await revokeToken(db, payload.jti, expiresAtOf(getConfig().refreshTokenTtl));
+    await revokeToken(db, payload.jti, expiresAtOf(getConfig().refreshTokenTtl), payload.tid);
     const tokens = await issueTokenPair(db, user);
     return res.json(tokens);
   }));
 
   router.post('/auth/logout', authRequired(db), asyncHandler(async (req, res) => {
     const { accessTokenTtl, refreshTokenTtl } = getConfig();
-    await revokeToken(db, req.token.jti, expiresAtOf(accessTokenTtl));
+    await revokeToken(db, req.token.jti, expiresAtOf(accessTokenTtl), req.token.tid);
     // `sid` points at the refresh token that belongs to this session.
-    await revokeToken(db, req.token.sid, expiresAtOf(refreshTokenTtl));
+    await revokeToken(db, req.token.sid, expiresAtOf(refreshTokenTtl), req.token.tid);
     return res.status(204).end();
   }));
 
@@ -138,6 +138,10 @@ function createAuthRouter({ db }) {
     await db
       .prepare('UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?')
       .run(bcrypt.hashSync(String(new_password), 10), row.id, row.tenant_id);
+    // Every *other* session ends here. The one making the request stays
+    // alive — the caller is not logged out by its own password change — but
+    // a token opened with the old password is dead from now on.
+    await revokeUserSessions(db, row.id, row.tenant_id, [req.token.jti, req.token.sid]);
     return res.status(204).end();
   }));
 

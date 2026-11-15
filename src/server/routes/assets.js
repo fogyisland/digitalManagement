@@ -34,6 +34,7 @@ const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
 const { authRequired } = require('../lib/auth');
+const { resolveWriteTenant } = require('../lib/tenant');
 const { toAsset, storageUrl } = require('../lib/dto');
 const {
   listAssets,
@@ -95,6 +96,8 @@ function createAssetsRouter({ db, uploader }) {
       }
       const extras = uploadExtras(req.body || {});
       const storageDir = getConfig().storageDir;
+      // A write lands in one concrete tenant — see `resolveWriteTenant`.
+      const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
       const results = [];
       for (let index = 0; index < req.files.length; index += 1) {
         const file = req.files[index];
@@ -111,7 +114,7 @@ function createAssetsRouter({ db, uploader }) {
           ownerId: req.user.id,
           source: 'admin',
           extra: perFile,
-          tenantId: req.tenantScope.tenantId,
+          tenantId,
         });
         results.push(result.asset);
       }
@@ -144,7 +147,7 @@ function createAssetsRouter({ db, uploader }) {
         ...uploadExtras(body),
         source_tool: body.source_tool || 'import-url',
       },
-      tenantId: req.tenantScope.tenantId,
+      tenantId: await resolveWriteTenant(db, req.tenantScope, req),
     });
     return res.status(201).json(toAsset(result.asset));
   }));
@@ -153,12 +156,14 @@ function createAssetsRouter({ db, uploader }) {
     const jobId = String(req.params.job_id || '').trim();
     if (!jobId) return res.status(400).json({ detail: 'job_id required' });
     const body = req.body || {};
+    // A write lands in one concrete tenant — see `resolveWriteTenant`.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
 
     const existing = await db
       .prepare(
         "SELECT id FROM assets WHERE tenant_id = ? AND job_id = ? AND status != 'deleted' ORDER BY created_at DESC",
       )
-      .get(req.tenantScope.tenantId, jobId);
+      .get(tenantId, jobId);
     if (existing) {
       return res.json(toAsset(await findAssetById(db, req.tenantScope, existing.id)));
     }
@@ -185,13 +190,13 @@ function createAssetsRouter({ db, uploader }) {
         ownerId: req.user.id,
         source: 'comfyui',
         extra: { ...uploadExtras(body), job_id: jobId, source_tool: body.source_tool || 'comfyui' },
-        tenantId: req.tenantScope.tenantId,
+        tenantId,
       });
       return res.status(201).json(toAsset(result.asset));
     }
 
     const asset = await createPlaceholderAsset(db, {
-      tenantId: req.tenantScope.tenantId,
+      tenantId,
       jobId,
       ownerId: req.user.id,
       title: body.title || null,

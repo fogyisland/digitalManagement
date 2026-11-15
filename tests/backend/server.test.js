@@ -12,8 +12,10 @@
  *   4. isolation  — one tenant's data never answers another tenant
  *   5. upload     — a multipart upload echoes the metadata fields back
  *   6. file size  — an oversized upload is rejected with 413
- *   7. webhooks   — CRUD plus the asset event fan-out
- *   8. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
+ *   7. budgets    — a request over the upload budget, an oversized chunk and
+ *                   an expired session are all refused
+ *   8. webhooks   — CRUD plus the asset event fan-out
+ *   9. lifecycle  — login/refresh/logout, user CRUD, soft delete, restore,
  *                   permanent delete and the chunked upload flow
  *
  * The phases are chained explicitly: a phase only starts once the previous
@@ -31,6 +33,11 @@ const crypto = require('crypto');
 const assert = require('assert');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+
+// The webhook receivers of this suite sit on the loopback interface, which
+// the delivery guard refuses — it exists to stop the server being talked
+// into reaching an address only it can see. The switch is off by default.
+process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS = '1';
 
 const {
   DEFAULT_TENANT_ID,
@@ -285,6 +292,34 @@ function close(server) {
 }
 
 /**
+ * Run a block with the private-target guard back at its shipped state.
+ *
+ * This suite's own webhook receivers sit on the loopback interface, so the
+ * guard is switched off for the whole file (see the top of this file). The
+ * assertions that say a private address is *refused* need the guard back on,
+ * because that is the default a deployment ships in — the switch is opt-in.
+ *
+ * The switch is read from `process.env` at the moment of the request, so
+ * flipping it around the call is enough.
+ *
+ * @param {() => Promise<any>} block
+ * @returns {Promise<any>}
+ */
+async function withPrivateTargetsRefused(block) {
+  const previous = process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS;
+  delete process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS;
+  try {
+    return await block();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS;
+    } else {
+      process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS = previous;
+    }
+  }
+}
+
+/**
  * Close the database pool the server module opened.
  *
  * `src/server/server.js` creates one pool per module instance, and the suite
@@ -380,6 +415,41 @@ async function uploadFile(port, token, options) {
         buffer: opts.buffer || PNG_1X1,
       },
     ],
+  );
+  return request({
+    hostname: '127.0.0.1',
+    port,
+    path: '/api/v1/assets/upload',
+    method: 'POST',
+    headers: {
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': body.length,
+      Authorization: `Bearer ${token}`,
+    },
+    body,
+    binary: true,
+  });
+}
+
+/**
+ * Upload several files to `/api/v1/assets/upload` in one request.
+ *
+ * @param {number} port
+ * @param {string} token
+ * @param {Array<{filename: string, buffer: Buffer}>} files
+ * @returns {Promise<{status: number, raw: string}>}
+ */
+async function uploadFiles(port, token, files) {
+  const boundary = '----uploads' + Date.now() + Math.random().toString(16).slice(2);
+  const body = buildMultipart(
+    boundary,
+    [],
+    files.map((file) => ({
+      name: 'files',
+      filename: file.filename,
+      contentType: 'application/octet-stream',
+      buffer: file.buffer,
+    })),
   );
   return request({
     hostname: '127.0.0.1',
@@ -1157,6 +1227,34 @@ async function phaseTenantIsolation() {
       `webhook create expected 201, got ${bobWebhookRes.status}: ${bobWebhookRes.raw}`,
     );
     const bobWebhook = JSON.parse(bobWebhookRes.raw);
+    // A webhook URL is the server's own outbound request, so it may not point
+    // at an address only this server can reach — the cloud metadata service,
+    // a host on the local network.
+    const privateWebhook = await withPrivateTargetsRefused(() =>
+      call(bobToken, 'POST', '/api/v1/webhooks', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'into the private range',
+          url: 'http://169.254.169.254/latest/meta-data/',
+        }),
+      }),
+    );
+    assert.strictEqual(
+      privateWebhook.status,
+      400,
+      `a webhook into the private range must be refused, got ${privateWebhook.status}: ${privateWebhook.raw}`,
+    );
+    const loopbackWebhook = await withPrivateTargetsRefused(() =>
+      call(bobToken, 'POST', '/api/v1/webhooks', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'into the loopback range', url: 'http://127.0.0.1:9/hook' }),
+      }),
+    );
+    assert.strictEqual(
+      loopbackWebhook.status,
+      400,
+      `a webhook into the loopback range must be refused, got ${loopbackWebhook.status}: ${loopbackWebhook.raw}`,
+    );
     const aliceWebhooks = JSON.parse((await call(aliceToken, 'GET', '/api/v1/webhooks')).raw);
     assert.deepStrictEqual(
       aliceWebhooks,
@@ -1470,6 +1568,149 @@ async function phaseFileSizeLimit() {
     await close(server);
     await closeDb(app);
     delete process.env.UPLOAD_MAX_FILE_SIZE_MB;
+    await removeFixture(dbName, storagePath);
+  }
+}
+
+// --- Phase 3b: the upload budgets -------------------------------------------
+
+/**
+ * The uploads are buffered in memory, so what has to be bounded is not only
+ * the size of a file but the size of a *request*: `files` takes twenty of
+ * them, and the per-file limit alone would let one call pull twenty times
+ * that into the process.
+ */
+async function phaseUploadBudgets() {
+  const { app, dbName, storagePath } = await bootServer('uploadbudget', {
+    UPLOAD_MAX_FILE_SIZE_MB: '4',
+    UPLOAD_MAX_REQUEST_SIZE_MB: '1',
+  });
+  const server = await listen(app);
+  const port = server.address().port;
+  const db = app.locals.db;
+  try {
+    const token = await mintAdminToken(dbName);
+
+    // One file under the request budget: fine.
+    const small = Buffer.alloc(600 * 1024, 0x43);
+    const single = await uploadFile(port, token, {
+      filename: 'one.bin',
+      buffer: small,
+      contentType: 'application/octet-stream',
+    });
+    assert.strictEqual(
+      single.status,
+      201,
+      `a single file under the request budget must be accepted, got ${single.status}: ${single.raw}`,
+    );
+
+    // Two files that are each fine are too much together.
+    const both = await uploadFiles(port, token, [
+      { filename: 'a.bin', buffer: small },
+      { filename: 'b.bin', buffer: small },
+    ]);
+    assert.strictEqual(
+      both.status,
+      413,
+      `a request over the budget must be refused, got ${both.status}: ${both.raw}`,
+    );
+    const parsed = JSON.parse(both.raw);
+    assert.strictEqual(
+      parsed.code,
+      'REQUEST_TOO_LARGE',
+      `expected code=REQUEST_TOO_LARGE, got ${parsed.code}`,
+    );
+
+    // --- the chunked door --------------------------------------------------
+    // A chunk is a fraction of a file. A chunk bigger than the size the
+    // session announced is not a chunk — and without the check a session
+    // could ask for a megabyte and be sent gigabytes, one per index.
+    const chunkSize = 256 * 1024;
+    const initRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/upload/init',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        filename: 'chunked.bin',
+        file_size: chunkSize * 2,
+        mime_type: 'application/octet-stream',
+        chunk_size: chunkSize,
+      }),
+    });
+    assert.strictEqual(initRes.status, 201, `upload/init expected 201, got ${initRes.status}: ${initRes.raw}`);
+    const session = JSON.parse(initRes.raw);
+
+    const boundary = '----chunk' + Date.now();
+    const oversizedChunk = buildMultipart(boundary, [], [
+      {
+        name: 'chunk',
+        filename: '0.part',
+        contentType: 'application/octet-stream',
+        buffer: Buffer.alloc(chunkSize * 2, 0x44),
+      },
+    ]);
+    const chunkRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: `/api/v1/upload/chunk/${session.session_id}?chunk_index=0`,
+      method: 'PUT',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': oversizedChunk.length,
+        Authorization: `Bearer ${token}`,
+      },
+      body: oversizedChunk,
+      binary: true,
+    });
+    assert.strictEqual(
+      chunkRes.status,
+      400,
+      `a chunk bigger than the session's chunk size must be refused, got ${chunkRes.status}: ${chunkRes.raw}`,
+    );
+
+    // --- an expired session ------------------------------------------------
+    // The scratch directory of a session is reclaimed when it runs out of
+    // time, so a session that is still accepted would be writing into a
+    // directory that is gone.
+    const expiredId = 'expired-session';
+    const adminRow = await db
+      .prepare("SELECT id, tenant_id FROM users WHERE username = 'admin'")
+      .get();
+    await db
+      .prepare(
+        `INSERT INTO upload_sessions (id, tenant_id, owner_id, filename, file_size, mime_type, file_hash, chunk_size,
+           total_chunks, received_chunks, status, expires_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'old.bin', 1024, 'application/octet-stream', NULL, ?, 1, '[]', 'pending',
+           DATE_SUB(NOW(), INTERVAL 1 HOUR), NOW(), NOW())`,
+      )
+      .run([expiredId, adminRow.tenant_id, adminRow.id, chunkSize]);
+    const expiredRes = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: `/api/v1/upload/chunk/${expiredId}?chunk_index=0`,
+      method: 'PUT',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': oversizedChunk.length,
+        Authorization: `Bearer ${token}`,
+      },
+      body: oversizedChunk,
+      binary: true,
+    });
+    assert.strictEqual(
+      expiredRes.status,
+      410,
+      `an expired session must be refused, got ${expiredRes.status}: ${expiredRes.raw}`,
+    );
+
+    console.log('upload budgets OK');
+  } finally {
+    await close(server);
+    await closeDb(app);
+    delete process.env.UPLOAD_MAX_FILE_SIZE_MB;
+    delete process.env.UPLOAD_MAX_REQUEST_SIZE_MB;
     await removeFixture(dbName, storagePath);
   }
 }
@@ -1875,11 +2116,28 @@ async function phaseLifecycle() {
     const resetRes = await request({
       hostname: '127.0.0.1',
       port,
+      path: `/api/v1/users/${createdUser.id}/reset-password`,
+      method: 'POST',
+      // The new password travels in the body: a query string ends up in the
+      // server's request log, and a password in a log is not a secret.
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ new_password: 'Reset@123456' }),
+    });
+    assert.strictEqual(resetRes.status, 204, `reset-password expected 204, got ${resetRes.status}: ${resetRes.raw}`);
+
+    // A password in the query string is refused outright.
+    const resetInQuery = await request({
+      hostname: '127.0.0.1',
+      port,
       path: `/api/v1/users/${createdUser.id}/reset-password?new_password=Reset@123456`,
       method: 'POST',
       headers: authHeaders(),
     });
-    assert.strictEqual(resetRes.status, 204, `reset-password expected 204, got ${resetRes.status}: ${resetRes.raw}`);
+    assert.strictEqual(
+      resetInQuery.status,
+      400,
+      `a password in the query string must be refused, got ${resetInQuery.status}: ${resetInQuery.raw}`,
+    );
 
     const deleteUserRes = await request({
       hostname: '127.0.0.1',
@@ -2293,6 +2551,7 @@ async function main() {
   await phaseTenantIsolation();
   await phaseUpload();
   await phaseFileSizeLimit();
+  await phaseUploadBudgets();
   await phaseWebhooks();
   await phaseLifecycle();
   await phaseStorageScope();

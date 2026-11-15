@@ -13,9 +13,16 @@ const path = require('path');
 const os = require('os');
 const assert = require('assert');
 const mysql = require('mysql2/promise');
+const dotenv = require('dotenv');
 
 const { createDb, createPool } = require('../../src/server/lib/db');
 const { getConfig } = require('../../src/server/config');
+const { toMysqlDateTime } = require('../../src/server/lib/util');
+
+// The configuration lives in the repository's `.env`; `getConfig` reads the
+// process environment, so the file has to be loaded here — the same the
+// server itself does on boot.
+dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const ASSETS_TABLE = `CREATE TABLE assets (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -103,7 +110,9 @@ async function main() {
     assert.strictEqual(typeof manifest.writeManifestIndex, 'function');
     console.log('manifest lib OK');
 
-    const now = new Date().toISOString();
+    // MySQL's DATETIME only understands `YYYY-MM-DD HH:MM:SS`; the ISO form
+// with the trailing `Z` and the milliseconds is rejected by 5.7.
+const now = toMysqlDateTime(new Date().toISOString());
     await db
       .prepare(
         `INSERT INTO assets (id, title, asset_type, file_size, original_name, mime_type,

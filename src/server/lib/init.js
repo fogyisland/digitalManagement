@@ -144,12 +144,37 @@ function mergeEnv(file, patch) {
 }
 
 /**
+ * The signing key this instance runs with, wherever it comes from.
+ *
+ * A deployment that configures through container environment variables never
+ * writes the file, so the process environment counts; an installation that
+ * ran the wizard keeps the key in the file. Both are the same fact — *this
+ * instance has a signing key* — and it is the one the boot and the wizard
+ * both have to agree on.
+ *
+ * They used to answer it differently: the boot accepted the process
+ * environment, the wizard only looked at the file. A container deployment
+ * therefore booted as a working instance while the wizard reported it as
+ * uninitialized — the front end sent every user to the setup wizard, and the
+ * wizard's own endpoints stayed open on a live instance, where the database
+ * step can repoint the whole thing. One helper, one answer.
+ *
+ * @param {string} envFile
+ * @returns {string} the key, or an empty string when there is none
+ */
+function effectiveSecret(envFile) {
+  const fromProcess = String(process.env.JWT_SECRET || '').trim();
+  if (fromProcess.length > 0) return fromProcess;
+  const env = readEnvFile(envFile);
+  return typeof env.JWT_SECRET === 'string' ? env.JWT_SECRET.trim() : '';
+}
+
+/**
  * Is this installation set up?
  *
- * The spec's two conditions, both required: the environment file carries a
- * non-empty `JWT_SECRET`, **and** the database already has a tenant. Either
- * one alone is a half-finished wizard, and the wizard has to be resumable
- * from that state.
+ * The spec's two conditions, both required: the instance carries a non-empty
+ * signing key, **and** the database already has a tenant. Either one alone is
+ * a half-finished wizard, and the wizard has to be resumable from that state.
  *
  * The database is allowed to be unreachable here: an installation whose
  * database is not set up yet is by definition not initialized, and this is
@@ -159,8 +184,7 @@ function mergeEnv(file, patch) {
  * @returns {Promise<boolean>}
  */
 async function isInitialized({ envFile, db }) {
-  const env = readEnvFile(envFile);
-  if (!env.JWT_SECRET || env.JWT_SECRET.trim().length === 0) return false;
+  if (effectiveSecret(envFile).length === 0) return false;
   if (!db) return false;
   try {
     const row = await db.prepare('SELECT COUNT(*) AS c FROM tenants').get();
@@ -184,13 +208,7 @@ async function isInitialized({ envFile, db }) {
  * @returns {boolean}
  */
 function hasConfiguration(envFile) {
-  // A deployment that configures through container environment variables
-  // never writes the file, so the process environment counts too. The wizard
-  // is for the case where neither exists.
-  const fromProcess = String(process.env.JWT_SECRET || '').trim();
-  if (fromProcess.length > 0) return true;
-  const env = readEnvFile(envFile);
-  return typeof env.JWT_SECRET === 'string' && env.JWT_SECRET.trim().length > 0;
+  return effectiveSecret(envFile).length > 0;
 }
 
 /**
@@ -205,7 +223,11 @@ function hasConfiguration(envFile) {
 async function initStatus({ envFile, db }) {
   const env = readEnvFile(envFile);
   const hasDatabase = Boolean(env.DB_NAME && env.DB_NAME.trim());
-  const hasSecret = Boolean(env.JWT_SECRET && env.JWT_SECRET.trim());
+  // The same answer the boot gives — see `effectiveSecret`. A deployment
+  // that configures through the environment has a signing key whether or not
+  // a file was ever written, and an instance with one is not a fresh
+  // installation the wizard should be offering to set up again.
+  const hasSecret = effectiveSecret(envFile).length > 0;
 
   let hasTenant = false;
   let hasAdmin = false;
@@ -302,6 +324,7 @@ function applyEnvToProcess(envFile) {
 module.exports = {
   readEnvFile,
   renderEnv,
+  effectiveSecret,
   hasConfiguration,
   writeEnvFile,
   mergeEnv,

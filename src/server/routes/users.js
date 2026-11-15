@@ -8,7 +8,7 @@
  *   POST   /users                {username, email, password, display_name?, role} -> User
  *   PUT    /users/:id            {email?, display_name?, role?, status?}  -> User
  *   DELETE /users/:id                                                 -> 204
- *   POST   /users/:id/reset-password  ?new_password=                   -> 204
+ *   POST   /users/:id/reset-password  {new_password}                  -> 204
  *
  * The database stores `is_active` and `role`; the API exposes the derived
  * `status` and `is_superuser` fields so the UI has one vocabulary.
@@ -17,10 +17,10 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { nanoid } = require('nanoid');
-const { adminRequired } = require('../lib/auth');
+const { adminRequired, revokeUserSessions } = require('../lib/auth');
 const { toUser, toPage } = require('../lib/dto');
 const { parsePositiveInt } = require('../lib/util');
-const { isAllTenants } = require('../lib/tenant');
+const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 const ROLES = ['admin', 'editor', 'viewer'];
@@ -100,7 +100,10 @@ function createUsersRouter({ db }) {
     }
     const safeRole = ROLES.includes(role) ? role : 'viewer';
     const id = nanoid();
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant. For everybody else that is the
+    // tenant their credential speaks for; a platform administrator names it
+    // in `X-Tenant`, because their scope covers every tenant and names none.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
     try {
       await db
         .prepare(
@@ -217,8 +220,11 @@ function createUsersRouter({ db }) {
       .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);
     if (!target) return res.status(404).json({ detail: 'Not found' });
-    const newPassword =
-      (req.query && req.query.new_password) || (req.body && req.body.new_password);
+    // The new password comes from the body and from nowhere else: a query
+    // string ends up in the server's request log, in the proxy's log and in
+    // the browser's history, and a password that lands in any of those is a
+    // password that is no longer secret.
+    const newPassword = req.body && req.body.new_password;
     if (!newPassword) {
       return res.status(400).json({ detail: 'new_password required' });
     }
@@ -230,6 +236,12 @@ function createUsersRouter({ db }) {
     await db
       .prepare('UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?')
       .run(bcrypt.hashSync(String(newPassword), 10), target.id, tenantId);
+    // The sessions opened with the old password end here: a token that
+    // outlives the password it was issued against cannot be taken back by
+    // changing that password. The tenant is the target's own — the
+    // administrator who resets it may be a platform administrator whose
+    // scope names every tenant and therefore none of them.
+    await revokeUserSessions(db, target.id, target.tenant_id);
     return res.status(204).end();
   }));
 

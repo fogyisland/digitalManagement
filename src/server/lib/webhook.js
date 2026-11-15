@@ -33,6 +33,7 @@
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const { resolvePublicAddresses, bareHost, privateTargetsAllowed } = require('./net');
 const { URL } = require('url');
 const { nanoid } = require('nanoid');
 
@@ -141,10 +142,29 @@ function computeBackoffMs(attemptIndex) {
 }
 
 /**
+ * A resolver that answers only with an address that was already checked.
+ *
+ * The connection is pinned to the address the guard approved, so a name
+ * that answers with a public address the first time and a private one the
+ * second cannot get in: the socket never asks the resolver again.
+ *
+ * @param {Array<{address: string, family: number}>} addresses
+ * @returns {(hostname: string, options: any, callback: Function) => void}
+ */
+function pinnedLookup(addresses) {
+  return (hostname, options, callback) => {
+    if (options && options.all) return callback(null, addresses);
+    const entry = addresses[0];
+    return callback(null, entry.address, entry.family);
+  };
+}
+
+/**
  * POST `body` (string) to `url` with the given headers.
  * Resolves to {status, body} on completion. Never rejects for HTTP error
  * statuses — only for transport-layer failures (DNS, TLS, timeout, socket
- * hang up). The receiver will inspect `status` to decide retry semantics.
+ * hang up) and for a target the guard refuses. The receiver will inspect
+ * `status` to decide retry semantics.
  *
  * @param {string} url absolute http(s) URL
  * @param {string} body raw body bytes (utf-8 string)
@@ -152,12 +172,12 @@ function computeBackoffMs(attemptIndex) {
  * @param {number} timeoutMs per-attempt socket timeout
  * @returns {Promise<{status:number, body:string}>}
  */
-function httpPost(url, body, headers, timeoutMs) {
+async function httpPost(url, body, headers, timeoutMs) {
   let parsed;
   try {
     parsed = new URL(url);
   } catch (e) {
-    return Promise.reject(new Error(`invalid webhook url "${url}": ${e.message}`));
+    throw Object.assign(new Error(`invalid webhook url "${url}": ${e.message}`), { status: 400 });
   }
   const isHttps = parsed.protocol === 'https:';
   const lib = isHttps ? https : http;
@@ -165,10 +185,20 @@ function httpPost(url, body, headers, timeoutMs) {
     ? parseInt(parsed.port, 10)
     : (isHttps ? 443 : 80);
 
+  // The endpoint URL is the server's own outbound request, so it gets the
+  // same treatment as the "import by URL" feature: the host is resolved and
+  // checked before the connection is made, and the connection is pinned to
+  // the address that was checked.
+  let lookup;
+  if (!privateTargetsAllowed()) {
+    const addresses = await resolvePublicAddresses(parsed.hostname);
+    lookup = pinnedLookup(addresses);
+  }
+
   return new Promise((resolve, reject) => {
     const req = lib.request({
       method: 'POST',
-      hostname: parsed.hostname,
+      hostname: bareHost(parsed.hostname),
       port,
       path: (parsed.pathname || '/') + (parsed.search || ''),
       headers: Object.assign(
@@ -176,6 +206,7 @@ function httpPost(url, body, headers, timeoutMs) {
         headers || {},
       ),
       timeout: timeoutMs,
+      ...(lookup ? { lookup } : {}),
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -355,6 +386,17 @@ async function dispatch(db, endpoint, event, payload) {
       }
     } catch (e) {
       lastError = (e && e.message) ? e.message : String(e);
+      // A refusal — a private address, a malformed URL — is not a transport
+      // failure. The same request is refused again, so it is not retried.
+      if (e && e.status) {
+        console.error('[webhook] delivery refused', {
+          endpointId: endpoint.id,
+          event,
+          attempt: attempts,
+          err: lastError,
+        });
+        break;
+      }
       console.error('[webhook] transport error', {
         endpointId: endpoint.id,
         event,

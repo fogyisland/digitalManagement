@@ -30,6 +30,14 @@ const DEFAULT_ACCESS_TOKEN_TTL = '1h';
 const DEFAULT_REFRESH_TOKEN_TTL = '30d';
 
 /**
+ * The signing key the project ships with.
+ *
+ * It is public — it is in the repository — so an instance that still uses it
+ * signs tokens anybody can forge. The boot says so loudly.
+ */
+const DEV_PLACEHOLDER_SECRET = 'dam-dev-secret-change-me-in-production';
+
+/**
  * Resolve a configured path against the repository root.
  *
  * A relative path in `.env` must not depend on the working directory: the
@@ -83,16 +91,27 @@ function ttlToSeconds(ttl) {
  *   accessTokenTtlSeconds: number,
  *   refreshTokenTtlSeconds: number,
  *   appBaseUrl: string,
- *   seedSampleAssets: boolean
+ *   seedSampleAssets: boolean,
+ *   usesDefaultSecret: boolean,
+ *   corsOrigins: string[]
  * }}
  */
 function getConfig() {
   const accessTokenTtl = process.env.ACCESS_TOKEN_TTL || DEFAULT_ACCESS_TOKEN_TTL;
   const refreshTokenTtl = process.env.REFRESH_TOKEN_TTL || DEFAULT_REFRESH_TOKEN_TTL;
+  const jwtSecret = process.env.JWT_SECRET || DEV_PLACEHOLDER_SECRET;
+  // The origins that may call this instance from a browser. The application
+  // serves its own frontend from its own port, so the default is "nobody
+  // else" — a cross-origin deployment has to say so explicitly.
+  const corsOrigins = String(process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
   return {
     port: parseInt(process.env.PORT || '8000', 10),
     host: process.env.HOST || '0.0.0.0',
-    jwtSecret: process.env.JWT_SECRET || 'dam-dev-secret-change-me-in-production',
+    jwtSecret,
+    usesDefaultSecret: jwtSecret === DEV_PLACEHOLDER_SECRET,
     dbHost: process.env.DB_HOST || '127.0.0.1',
     dbPort: parseInt(process.env.DB_PORT || '3306', 10),
     dbUser: process.env.DB_USER || 'root',
@@ -103,6 +122,14 @@ function getConfig() {
     rootDir: ROOT_DIR,
     maxFileSize:
       parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '2048', 10) * 1024 * 1024,
+    // The budget for one request. The files are buffered in memory, so this
+    // is what keeps a single request from taking the process down: the
+    // per-file limit alone would allow twenty times that in one call.
+    // It defaults to the per-file limit — one file's worth per request —
+    // and an operator who has the memory can raise it.
+    maxRequestSize:
+      parseInt(process.env.UPLOAD_MAX_REQUEST_SIZE_MB || '0', 10) * 1024 * 1024 ||
+      parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '2048', 10) * 1024 * 1024,
     // The sample library is a first-boot convenience, not part of the
     // product data: a new installation starts with an empty library and the
     // twelve sample images are opt-in.
@@ -112,7 +139,8 @@ function getConfig() {
     accessTokenTtlSeconds: ttlToSeconds(accessTokenTtl),
     refreshTokenTtlSeconds: ttlToSeconds(refreshTokenTtl),
     appBaseUrl: process.env.APP_BASE_URL || '',
+    corsOrigins,
   };
 }
 
-module.exports = { getConfig, ttlToSeconds };
+module.exports = { getConfig, ttlToSeconds, DEV_PLACEHOLDER_SECRET };

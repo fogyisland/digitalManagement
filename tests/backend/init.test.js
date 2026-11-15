@@ -20,8 +20,16 @@ const http = require('http');
 const assert = require('assert');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
+const dotenv = require('dotenv');
 
 const { closeWizardDb } = require('../../src/server/routes/init');
+
+// The database the wizard is pointed at lives in the repository's `.env`;
+// the configuration is read from the process environment, so the file has to
+// be loaded here — the same the server itself does on boot. The suite
+// deletes the signing key afterwards, because an unconfigured installation
+// is exactly one without one.
+dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const TESTS_DIR = __dirname;
 const PORT = 0;
@@ -273,13 +281,14 @@ async function main() {
     );
 
     // --- 3) the database step writes the connection values ----------------
+    const dbPassword = process.env.DB_PASSWORD || '';
     const database = await request(port, 'POST', '/api/init/database', {
       headers: initHeaders,
       body: {
         host: process.env.DB_HOST || '127.0.0.1',
         port: parseInt(process.env.DB_PORT || '3306', 10),
         user: process.env.DB_USER || 'root',
-        password: process.env.DB_PASSWORD || '',
+        password: dbPassword,
         database: dbName,
       },
     });
@@ -293,9 +302,15 @@ async function main() {
     assert.ok(written.includes(`DB_NAME=${dbName}`), 'the file must record the database name');
     assert.ok(/DB_USER=/.test(written), 'the file must record the database user');
     assert.ok(
-      !/DB_PASSWORD=./.test(written),
-      'the empty password must be written as an empty value, not as text',
+      written.includes(`DB_PASSWORD=${dbPassword}`),
+      'the file must record the database password it was given',
     );
+    if (dbPassword === '') {
+      assert.ok(
+        !/DB_PASSWORD=./.test(written),
+        'the empty password must be written as an empty value, not as text',
+      );
+    }
     assert.ok(
       fs.readFileSync(envFile, 'utf8').includes('# --- Database'),
       'the template comments must survive the write',
@@ -550,15 +565,15 @@ async function main() {
     const { createDb, createPool } = require('../../src/server/lib/db');
     const originalPool = createPool({
       dbHost: process.env.DB_HOST || '127.0.0.1',
-      dbPort: parseInt(process.env.DB_PORT || '3307', 10),
-      dbUser: process.env.DB_USER || 'dam',
+      dbPort: parseInt(process.env.DB_PORT || '3306', 10),
+      dbUser: process.env.DB_USER || 'root',
       dbPassword: process.env.DB_PASSWORD || '',
       dbName,
     });
     const otherPool = createPool({
       dbHost: process.env.DB_HOST || '127.0.0.1',
-      dbPort: parseInt(process.env.DB_PORT || '3307', 10),
-      dbUser: process.env.DB_USER || 'dam',
+      dbPort: parseInt(process.env.DB_PORT || '3306', 10),
+      dbUser: process.env.DB_USER || 'root',
       dbPassword: process.env.DB_PASSWORD || '',
       dbName,
     });
@@ -827,6 +842,34 @@ async function main() {
     } finally {
       if (templateSecret !== undefined) process.env.JWT_SECRET = templateSecret;
       fs.rmSync(templateDir, { recursive: true, force: true });
+    }
+
+    // --- 16) a deployment that configures through the environment is set up ---
+    // The container in `docker-compose.yml` passes `JWT_SECRET` through the
+    // environment and has no `.env` file at all — `.dockerignore` keeps the
+    // file out of the image. The boot recognised that (`hasConfiguration`
+    // reads the environment), but the wizard did not: it only ever looked at
+    // the file. So a running container reported itself as uninitialized — the
+    // front end sent every user to the setup wizard, and the wizard's own
+    // endpoints stayed open on a live instance, where the database step can
+    // repoint the whole thing.
+    const { initStatus: statusOf } = require('../../src/server/lib/init');
+    const containerSecret = process.env.JWT_SECRET;
+    process.env.JWT_SECRET = 'a-container-deployment-secret';
+    try {
+      const containerStatus = await statusOf({
+        envFile: path.join(TESTS_DIR, 'no-such-env-file'),
+        db: app.locals.db,
+      });
+      assert.strictEqual(
+        containerStatus.initialized,
+        true,
+        'an instance whose signing key comes from the environment is configured, ' +
+          'not a fresh installation the wizard should be offering to set up again',
+      );
+    } finally {
+      if (containerSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = containerSecret;
     }
 
     console.log('init wizard OK');

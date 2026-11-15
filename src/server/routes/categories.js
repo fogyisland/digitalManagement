@@ -15,7 +15,7 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toCategory } = require('../lib/dto');
 const { slugify, parsePositiveInt } = require('../lib/util');
-const { isAllTenants } = require('../lib/tenant');
+const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -62,7 +62,8 @@ function createCategoriesRouter({ db }) {
     const { name, parent_id, description, sort_order } = req.body || {};
     if (!name) return res.status(400).json({ detail: 'name required' });
     const id = nanoid();
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
     try {
       await db
         .prepare(

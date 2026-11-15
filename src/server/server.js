@@ -38,7 +38,8 @@ const { initSchema } = require('./lib/schema');
 const { seedDatabase } = require('./lib/seed');
 const { hasConfiguration, resolveInitToken } = require('./lib/init');
 const { reloadConfiguration } = require('./lib/reload');
-const { createUploader, uploadErrorHandler } = require('./lib/upload');
+const { createUploader, uploadErrorHandler, reapExpiredUploadSessions } = require('./lib/upload');
+const { asyncHandler } = require('./lib/http');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
 const createAuthRouter = require('./routes/auth');
@@ -58,6 +59,9 @@ const createStorageRouter = require('./routes/storage');
 const createManifestRouter = require('./routes/manifest');
 
 const config = getConfig();
+
+/** How often the expired upload sessions are reclaimed. */
+const UPLOAD_SESSION_SWEEP_MS = 10 * 60 * 1000;
 
 // --- Storage layout ---------------------------------------------------------
 fs.mkdirSync(config.storageDir, { recursive: true });
@@ -109,11 +113,33 @@ const ready = (async () => {
   } catch (error) {
     console.warn('[manifest] startup replay failed', error.message);
   }
+
+  // An upload session that is never completed keeps its chunks on disk. The
+  // sessions that ran out of time are reclaimed at boot and then every few
+  // minutes, so an abandoned upload does not fill the disk.
+  const sweepUploads = async () => {
+    try {
+      await reapExpiredUploadSessions(db, config.storageDir);
+    } catch (error) {
+      console.warn('[upload] session sweep failed', error.message);
+    }
+  };
+  await sweepUploads();
+  const sweepTimer = setInterval(sweepUploads, UPLOAD_SESSION_SWEEP_MS);
+  // The timer must not hold the process open on its own.
+  if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
 })();
 
 // --- App --------------------------------------------------------------------
 const app = express();
-app.use(cors());
+// The application serves its own frontend from its own port, so a browser
+// never needs a cross-origin call to it. The allow-list is therefore empty
+// by default: a deployment that *is* called from another origin has to say
+// so (`CORS_ORIGINS`), because an open policy hands every origin on the
+// internet the same access to the API.
+if (config.corsOrigins.length > 0) {
+  app.use(cors({ origin: config.corsOrigins, credentials: false }));
+}
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -125,7 +151,17 @@ app.use((req, _res, next) => {
 
 // --- Health probes ----------------------------------------------------------
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'dam' }));
-app.get('/api/health/ready', (_req, res) => res.json({ status: 'ready', db: 'ok' }));
+// The readiness probe answers what it says: it touches the database. A probe
+// that answers "ready" without asking anything is a probe that keeps a
+// broken instance in the load balancer.
+app.get('/api/health/ready', asyncHandler(async (_req, res) => {
+  try {
+    await db.prepare('SELECT 1 AS x').get();
+    return res.json({ status: 'ready', db: 'ok' });
+  } catch (error) {
+    return res.status(503).json({ status: 'not-ready', db: 'error', detail: error.message });
+  }
+}));
 
 // --- Admin API --------------------------------------------------------------
 const uploader = createUploader();
@@ -159,7 +195,7 @@ app.use(
   createTagsRouter({ db }),
   createCategoriesRouter({ db }),
   createAssetsRouter({ db, uploader }),
-  createUploadRouter({ db, uploader }),
+  createUploadRouter({ db }),
   createApiKeysRouter({ db }),
   createWebhooksRouter({ db }),
   createStatsRouter({ db }),
@@ -209,8 +245,21 @@ if (fs.existsSync(FRONTEND_DIST)) {
 // --- Error handling ---------------------------------------------------------
 app.use(uploadErrorHandler);
 app.use((err, _req, res, _next) => {
-  console.error('[error]', err);
-  res.status(err.status || 500).json({ detail: err.message || 'Internal error' });
+  const status = err.status || 500;
+  // A 4xx is the client's mistake and is part of normal operation — a stack
+  // trace for it is noise that hides the 5xx that matters.
+  if (status >= 500) {
+    console.error('[error]', err);
+  } else {
+    console.warn(`[error] ${status} ${err.code || ''} ${err.message || ''}`.trim());
+  }
+  // An error that names itself — `TENANT_REQUIRED`, `NO_SUCH_TENANT` — keeps
+  // its name in the response. A caller that has to branch on the reason (the
+  // platform administrator's write path does) cannot read it out of a
+  // sentence.
+  const body = { detail: err.message || 'Internal error' };
+  if (err.code) body.code = err.code;
+  res.status(status).json(body);
 });
 
 // --- Startup: the manifest index is written as part of `ready` --------------
@@ -235,6 +284,16 @@ if (require.main === module) {
       console.log('  Public: /api/public/v1/* (API Key)');
       console.log('  Files:  /storage/*  (signed URLs)');
       console.log('  Admin:  admin / Admin@123456\n');
+      if (config.usesDefaultSecret) {
+        // The signing key the project ships with is public. An instance that
+        // still uses it signs tokens anybody can forge, so it is worth a
+        // line on the console that says so.
+        console.warn('');
+        console.warn('  [security] JWT_SECRET is still the placeholder the project ships with.');
+        console.warn('  [security] Every token this instance signs can be forged. Set a');
+        console.warn('  [security] real one in .env (or the environment) before exposing it.');
+        console.warn('');
+      }
     });
   })();
 }

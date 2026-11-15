@@ -17,6 +17,7 @@ const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
 const { resolveTenantFromUser, tenantScope, loadTenant, SUPERADMIN_ROLE } = require('./tenant');
+const { DEFAULT_TENANT_ID } = require('./tenant-schema');
 
 /**
  * Issue a fresh access/refresh token pair for a user.
@@ -120,18 +121,60 @@ function ttlToMs(ttl) {
  * @param {object} db
  * @param {string|undefined|null} jti
  * @param {string} expiresAt
+ * @param {string} [tenantId] the tenant the token was issued for
  * @returns {Promise<void>}
  */
-async function revokeToken(db, jti, expiresAt) {
+async function revokeToken(db, jti, expiresAt, tenantId) {
   if (!jti) return;
   try {
+    // `revoked_tokens.tenant_id` is `NOT NULL`, and a row that names no
+    // tenant is refused by the database — which would leave the token alive.
+    // The column's own default is the migration's tenant, so a caller that
+    // does not know the tenant falls back to it.
     await db
       .prepare(
-        "REPLACE INTO revoked_tokens (jti, expires_at, created_at) VALUES (?, ?, NOW())",
+        "REPLACE INTO revoked_tokens (jti, tenant_id, expires_at, created_at) VALUES (?, ?, ?, NOW())",
       )
-      .run(jti, expiresAt);
+      .run(jti, tenantId || DEFAULT_TENANT_ID, expiresAt);
   } catch (e) {
     console.warn('[auth] revoke failed:', e.message);
+  }
+}
+
+/**
+ * Revoke every session a user holds.
+ *
+ * A password change or a reset has to end the sessions that were opened with
+ * the old one. A token that outlives the password it was issued against is a
+ * credential the owner cannot take back by changing their password — which
+ * is exactly what a password change is supposed to mean.
+ *
+ * @param {object} db
+ * @param {string} userId
+ * @param {string} [tenantId] the tenant the sessions belong to
+ * @param {string[]} [keepJtis] token ids to leave alive — the session that
+ *   is doing the changing, so it is not logged out by its own request
+ * @returns {Promise<number>} how many tokens were revoked
+ */
+async function revokeUserSessions(db, userId, tenantId, keepJtis) {
+  if (!userId) return 0;
+  const keep = new Set((keepJtis || []).filter(Boolean));
+  try {
+    const rows = await db
+      .prepare('SELECT jti, expires_at FROM token_registry WHERE user_id = ?')
+      .all(userId);
+    let revoked = 0;
+    for (const row of rows) {
+      if (keep.has(row.jti)) continue;
+      await revokeToken(db, row.jti, row.expires_at, tenantId);
+      revoked += 1;
+    }
+    return revoked;
+  } catch (e) {
+    // The password is already changed; failing to end the old sessions is
+    // worth a warning, but it must not fail the request that changed it.
+    console.warn('[auth] session revocation failed:', e.message);
+    return 0;
   }
 }
 
@@ -309,10 +352,12 @@ function apiKeyRequired(db, requiredScope) {
 module.exports = {
   issueTokenPair,
   revokeToken,
+  revokeUserSessions,
   isRevoked,
   bearerToken,
   authRequired,
   adminRequired,
   apiKeyRequired,
   expiresAtOf,
+  parseDateTime,
 };

@@ -173,6 +173,11 @@ export async function startBackend({ backendEntry }) {
       // The sample library is a first-boot convenience — a contract run
       // wants a deterministic, empty library.
       SEED_SAMPLE_ASSETS: '0',
+      // The webhook endpoints of the contract run point at the loopback
+      // interface, which the delivery guard refuses — it exists to stop the
+      // server being talked into reaching an address only it can see. The
+      // switch is off by default; the guard itself has its own tests.
+      WEBHOOK_ALLOW_PRIVATE_TARGETS: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

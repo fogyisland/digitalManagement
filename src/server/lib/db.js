@@ -83,7 +83,9 @@ function createPool(config) {
     password: config.dbPassword,
     database: config.dbName,
     waitForConnections: true,
-    connectionLimit: DEFAULT_POOL_SIZE,
+    // The pool size is the operator's choice (`DB_POOL_SIZE`); the constant
+    // is only the fallback for a configuration that does not name one.
+    connectionLimit: config.dbPoolSize || DEFAULT_POOL_SIZE,
     queueLimit: 0,
     charset: 'utf8mb4_unicode_ci',
     dateStrings: true,

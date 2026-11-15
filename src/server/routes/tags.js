@@ -20,7 +20,7 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toTag } = require('../lib/dto');
 const { slugify } = require('../lib/util');
-const { isAllTenants } = require('../lib/tenant');
+const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -45,7 +45,8 @@ function createTagsRouter({ db }) {
     const { name, color, description } = req.body || {};
     if (!name) return res.status(400).json({ detail: 'name required' });
     const id = nanoid();
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
     try {
       await db
         .prepare('INSERT INTO tags (id, tenant_id, name, slug, color) VALUES (?, ?, ?, ?, ?)')

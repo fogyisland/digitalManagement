@@ -20,9 +20,20 @@ const assert = require('assert');
 const http = require('http');
 const mysql = require('mysql2/promise');
 const path = require('path');
+const dotenv = require('dotenv');
 
 const { createDb, createPool } = require('../../src/server/lib/db');
 const { getConfig } = require('../../src/server/config');
+
+// The configuration lives in the repository's `.env`; `getConfig` reads the
+// process environment, so the file has to be loaded here — the same the
+// server itself does on boot.
+dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
+
+// The receiver of this smoke test sits on the loopback interface, which the
+// delivery guard refuses — it exists to stop the server being talked into
+// reaching an address only it can see. The switch is off by default.
+process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS = '1';
 
 const dbName = `dam_test_webhook_smoke_${process.pid}`;
 

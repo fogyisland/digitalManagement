@@ -57,6 +57,96 @@ function isPrivateIPv6(address) {
 }
 
 /**
+ * Whether the private-address guard applies.
+ *
+ * The guard exists to stop the server being talked into reaching an address
+ * only it can see — the cloud metadata service, a database, a host on the
+ * local network. The test suite points its webhook receivers at the loopback
+ * interface, which the guard refuses, so it needs a way out.
+ *
+ * The switch is opt-in and off by default: a deployment that never sets it
+ * can never be talked into reaching a private address.
+ *
+ * @returns {boolean}
+ */
+function privateTargetsAllowed() {
+  return process.env.WEBHOOK_ALLOW_PRIVATE_TARGETS === '1';
+}
+
+/**
+ * A hostname, without the brackets an IPv6 literal carries.
+ *
+ * `new URL('http://[::1]/').hostname` is `'[::1]'`, which no resolver
+ * understands.
+ *
+ * @param {string} hostname
+ * @returns {string}
+ */
+function bareHost(hostname) {
+  const raw = String(hostname || '');
+  return raw.startsWith('[') && raw.endsWith(']') ? raw.slice(1, -1) : raw;
+}
+
+/**
+ * Is this host an address the server must not reach?
+ *
+ * An address literal is judged directly. A *name* is not resolved here —
+ * resolving it at registration time would reject a host that simply has not
+ * been deployed yet, and the check that matters is the one made where the
+ * request is actually sent.
+ *
+ * @param {string} hostname
+ * @returns {boolean}
+ */
+function isPrivateHost(hostname) {
+  const host = bareHost(hostname);
+  if (net.isIPv4(host)) return isPrivateIPv4(host);
+  if (net.isIPv6(host)) return isPrivateIPv6(host);
+  return false;
+}
+
+/**
+ * The public addresses a hostname resolves to.
+ *
+ * A host that resolves to a private, loopback or link-local address is
+ * refused: that is the whole point of the check — the server must not be
+ * talked into reaching something only it can see.
+ *
+ * @param {string} hostname
+ * @returns {Promise<Array<{address: string, family: number}>>}
+ * @throws {Error & {status: number}}
+ */
+async function resolvePublicAddresses(hostname) {
+  const host = bareHost(hostname);
+  // An address literal does not need a resolver — and some of them (the
+  // IPv6 ones) a resolver cannot even be asked about.
+  if (net.isIP(host)) {
+    if (isPrivateHost(host)) {
+      throw Object.assign(new Error('Refusing to fetch a private or loopback address'), { status: 400 });
+    }
+    return [{ address: host, family: net.isIPv4(host) ? 4 : 6 }];
+  }
+  let addresses;
+  try {
+    addresses = await dns.lookup(host, { all: true });
+  } catch (e) {
+    throw Object.assign(new Error(`Host could not be resolved: ${host}`), { status: 400 });
+  }
+  if (!addresses.length) {
+    throw Object.assign(new Error(`Host could not be resolved: ${host}`), { status: 400 });
+  }
+  for (const entry of addresses) {
+    const isPrivate = net.isIPv4(entry.address)
+      ? isPrivateIPv4(entry.address)
+      : isPrivateIPv6(entry.address);
+    if (isPrivate) {
+      throw Object.assign(new Error('Refusing to fetch a private or loopback address'), { status: 400 });
+    }
+  }
+  return addresses;
+}
+
+/**
  * Validate a URL and resolve it to public IP addresses.
  *
  * @param {string} rawUrl
@@ -73,23 +163,7 @@ async function assertPublicUrl(rawUrl) {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw Object.assign(new Error('url must be http(s)'), { status: 400 });
   }
-  let addresses;
-  try {
-    addresses = await dns.lookup(parsed.hostname, { all: true });
-  } catch (e) {
-    throw Object.assign(new Error(`Host could not be resolved: ${parsed.hostname}`), { status: 400 });
-  }
-  if (!addresses.length) {
-    throw Object.assign(new Error(`Host could not be resolved: ${parsed.hostname}`), { status: 400 });
-  }
-  for (const entry of addresses) {
-    const isPrivate = net.isIPv4(entry.address)
-      ? isPrivateIPv4(entry.address)
-      : isPrivateIPv6(entry.address);
-    if (isPrivate) {
-      throw Object.assign(new Error('Refusing to fetch a private or loopback address'), { status: 400 });
-    }
-  }
+  await resolvePublicAddresses(parsed.hostname);
   return parsed;
 }
 
@@ -143,4 +217,13 @@ async function fetchRemoteFile(rawUrl, maxBytes) {
   throw Object.assign(new Error('Too many redirects'), { status: 502 });
 }
 
-module.exports = { isPrivateIPv4, isPrivateIPv6, assertPublicUrl, fetchRemoteFile };
+module.exports = {
+  isPrivateIPv4,
+  isPrivateIPv6,
+  isPrivateHost,
+  bareHost,
+  privateTargetsAllowed,
+  resolvePublicAddresses,
+  assertPublicUrl,
+  fetchRemoteFile,
+};

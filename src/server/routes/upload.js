@@ -22,12 +22,15 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
-const { authRequired } = require('../lib/auth');
+const { authRequired, parseDateTime } = require('../lib/auth');
+const { resolveWriteTenant, SUPERADMIN_ROLE } = require('../lib/tenant');
 const { toAsset } = require('../lib/dto');
 const { processUpload } = require('../lib/assets');
 const { parsePositiveInt, parseNonNegativeInt } = require('../lib/util');
+const { createChunkUploader } = require('../lib/upload');
 const { asyncHandler } = require('../lib/http');
 
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MiB
@@ -72,6 +75,26 @@ async function loadSession(db, tenantId, sessionId) {
 }
 
 /**
+ * Has this session run out of time?
+ *
+ * A session is a promise to finish an upload within an hour. After that the
+ * scratch directory it owns is reclaimed — so a session that is still
+ * accepted would be writing into a directory that no longer exists.
+ *
+ * The database stores UTC (`SET time_zone = '+00:00'`), so the DATETIME is
+ * read back as UTC — reading it as local time would make every session look
+ * expired by the machine's UTC offset.
+ *
+ * @param {any} session
+ * @returns {boolean}
+ */
+function sessionExpired(session) {
+  const when = parseDateTime(session && session.expires_at);
+  if (!when) return false;
+  return when.getTime() < Date.now();
+}
+
+/**
  * Persist the received chunk indexes of a session.
  *
  * @param {object} db
@@ -89,11 +112,13 @@ async function saveReceived(db, tenantId, sessionId, received) {
 }
 
 /**
- * @param {{db: object, uploader: import('multer').Multer}} deps
+ * @param {{db: object}} deps
  * @returns {import('express').Router}
  */
-function createUploadRouter({ db, uploader }) {
+function createUploadRouter({ db }) {
   const router = express.Router();
+  // The chunked protocol has its own door, with its own memory ceiling.
+  const chunkUploader = createChunkUploader(MAX_CHUNK_SIZE);
 
   router.post('/upload/init', authRequired(db), asyncHandler(async (req, res) => {
     const body = req.body || {};
@@ -134,7 +159,7 @@ function createUploadRouter({ db, uploader }) {
       )
       .run(
         sessionId,
-        req.tenantScope.tenantId,
+        await resolveWriteTenant(db, req.tenantScope, req),
         req.user.id,
         filename,
         fileSize,
@@ -164,20 +189,39 @@ function createUploadRouter({ db, uploader }) {
   router.put(
     '/upload/chunk/:session_id',
     authRequired(db),
-    uploader.single('chunk'),
+    // A chunk is bounded by the largest chunk size the server hands out at
+    // all — not by the whole-file limit. The file limit is for a file; a
+    // chunk is a fraction of one, and a chunk of two gigabytes is a request
+    // that would cost the process the memory before the protocol could
+    // refuse it.
+    chunkUploader.single('chunk'),
     asyncHandler(async (req, res) => {
       const sessionId = String(req.params.session_id || '');
-      const loaded = await loadSession(db, req.tenantScope.tenantId, sessionId);
+      // A write lands in one concrete tenant — see `resolveWriteTenant`.
+      const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+      const loaded = await loadSession(db, tenantId, sessionId);
       if (!loaded) return res.status(404).json({ detail: 'Upload session not found' });
       const { session, received } = loaded;
       if (session.status !== 'pending') {
         return res.status(409).json({ detail: `Upload session is ${session.status}` });
       }
-      if (session.owner_id !== req.user.id && req.user.role !== 'admin') {
+      if (sessionExpired(session)) {
+        return res.status(410).json({ detail: 'Upload session has expired' });
+      }
+      if (session.owner_id !== req.user.id && req.user.role !== 'admin' && req.user.role !== SUPERADMIN_ROLE) {
         return res.status(403).json({ detail: 'This upload session belongs to another user' });
       }
       if (!req.file || !req.file.buffer || !req.file.buffer.length) {
         return res.status(400).json({ detail: 'chunk required' });
+      }
+      // The session said how big a chunk is, and the client was told the
+      // same number in the init answer. A chunk bigger than that is not a
+      // chunk — and without this check a session could ask for a megabyte
+      // and be sent gigabytes, one per index, until the disk was full.
+      if (req.file.size > session.chunk_size) {
+        return res.status(400).json({
+          detail: `chunk is ${req.file.size} bytes; this session accepts ${session.chunk_size} bytes per chunk`,
+        });
       }
 
       // The first chunk is index 0, so this must accept 0 — `parsePositiveInt`
@@ -196,7 +240,7 @@ function createUploadRouter({ db, uploader }) {
       if (!received.includes(chunkIndex)) {
         received.push(chunkIndex);
         received.sort((a, b) => a - b);
-        await saveReceived(db, req.tenantScope.tenantId, sessionId, received);
+        await saveReceived(db, tenantId, sessionId, received);
       }
 
       return res.json({
@@ -212,14 +256,17 @@ function createUploadRouter({ db, uploader }) {
     const sessionId = String(body.session_id || '').trim();
     if (!sessionId) return res.status(400).json({ detail: 'session_id required' });
 
-    const loaded = await loadSession(db, req.tenantScope.tenantId, sessionId);
+    const loaded = await loadSession(db, await resolveWriteTenant(db, req.tenantScope, req), sessionId);
     if (!loaded) return res.status(404).json({ detail: 'Upload session not found' });
     const { session, received } = loaded;
-    if (session.owner_id !== req.user.id && req.user.role !== 'admin') {
+    if (session.owner_id !== req.user.id && req.user.role !== 'admin' && req.user.role !== SUPERADMIN_ROLE) {
       return res.status(403).json({ detail: 'This upload session belongs to another user' });
     }
     if (session.status === 'completed') {
       return res.status(409).json({ detail: 'Upload session is already completed' });
+    }
+    if (sessionExpired(session)) {
+      return res.status(410).json({ detail: 'Upload session has expired' });
     }
     if (received.length !== session.total_chunks) {
       return res.status(400).json({
@@ -227,29 +274,38 @@ function createUploadRouter({ db, uploader }) {
       });
     }
 
+    // The parts are merged **on disk**. Reading them into memory and
+    // concatenating is what this endpoint exists to avoid: a file that does
+    // not fit in memory is the reason a caller chunks it in the first place,
+    // and the merge must not undo that.
     const dir = sessionDir(getConfig().storageDir, sessionId);
-    const parts = [];
+    const mergedPath = path.join(dir, 'merged');
+    let mergedSize = 0;
     try {
+      const out = fs.createWriteStream(mergedPath);
       for (let index = 0; index < session.total_chunks; index += 1) {
         const partPath = path.join(dir, `${index}.part`);
         if (!fs.existsSync(partPath)) {
           throw Object.assign(new Error(`Chunk ${index} is missing`), { status: 400 });
         }
-        parts.push(fs.readFileSync(partPath));
+        mergedSize += fs.statSync(partPath).size;
+        await pipeline(fs.createReadStream(partPath), out, { end: false });
       }
+      await new Promise((resolve, reject) => {
+        out.end((error) => (error ? reject(error) : resolve()));
+      });
     } catch (e) {
       return res.status(e.status || 500).json({ detail: e.message });
     }
-    const buffer = Buffer.concat(parts);
 
     const result = await processUpload({
       db,
       storageDir: getConfig().storageDir,
       file: {
-        buffer,
+        path: mergedPath,
         originalname: session.filename,
         mimetype: session.mime_type || 'application/octet-stream',
-        size: buffer.length,
+        size: mergedSize,
       },
       ownerId: session.owner_id,
       source: 'chunked-upload',
@@ -268,7 +324,7 @@ function createUploadRouter({ db, uploader }) {
       .prepare(
         "UPDATE upload_sessions SET status = 'completed', updated_at = NOW() WHERE tenant_id = ? AND id = ?",
       )
-      .run(req.tenantScope.tenantId, sessionId);
+      .run(session.tenant_id, sessionId);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch (e) {

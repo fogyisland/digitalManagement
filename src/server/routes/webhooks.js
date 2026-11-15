@@ -39,8 +39,35 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toWebhook } = require('../lib/dto');
 const { WEBHOOK_EVENTS } = require('../lib/webhook');
-const { isAllTenants } = require('../lib/tenant');
+const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
+const { isPrivateHost, privateTargetsAllowed } = require('../lib/net');
 const { asyncHandler } = require('../lib/http');
+
+/**
+ * Why an endpoint URL is not acceptable, or `null` when it is.
+ *
+ * The endpoint URL is the server's own outbound request, so it may not point
+ * at an address only this server can reach. An address *literal* is judged
+ * here; a name is judged where the request is actually made, because a name
+ * that does not resolve yet is a name that has not been deployed yet — and
+ * refusing it at registration time would refuse a perfectly good endpoint.
+ *
+ * @param {unknown} url
+ * @returns {string|null} the reason, or null when the URL is acceptable
+ */
+function endpointUrlProblem(url) {
+  if (typeof url !== 'string' || !/^https?:\/\//.test(url)) return 'url must be http(s)';
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    return 'url is not a valid URL';
+  }
+  if (!privateTargetsAllowed() && isPrivateHost(parsed.hostname)) {
+    return 'the endpoint URL must not point at a private or loopback address';
+  }
+  return null;
+}
 
 /**
  * Accept both an array and a CSV string; always return a clean,
@@ -104,8 +131,9 @@ function createWebhooksRouter({ db }) {
     if (!name || !url) {
       return res.status(400).json({ code: 'BAD_INPUT', message: 'name/url required', request_id: nanoid() });
     }
-    if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
-      return res.status(400).json({ code: 'BAD_INPUT', message: 'url must be http(s)', request_id: nanoid() });
+    const urlProblem = endpointUrlProblem(url);
+    if (urlProblem) {
+      return res.status(400).json({ code: 'BAD_INPUT', message: urlProblem, request_id: nanoid() });
     }
     const normalized = normalizeEvents(events);
     if (normalized.unknown.length) {
@@ -118,14 +146,16 @@ function createWebhooksRouter({ db }) {
     const id = nanoid();
     const secret = crypto.randomBytes(24).toString('hex');
     // The endpoint belongs to the caller's tenant — its deliveries and its
-    // log rows are that tenant's alone.
+    // log rows are that tenant's alone. A write lands in one concrete
+    // tenant, so a platform administrator names it in `X-Tenant`.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
     await db
       .prepare(
         'INSERT INTO webhook_endpoints (id, tenant_id, name, url, secret, events) VALUES (?, ?, ?, ?, ?, ?)',
       )
       .run(
         id,
-        req.tenantScope.tenantId,
+        tenantId,
         String(name).trim(),
         url,
         secret,
@@ -163,10 +193,11 @@ function createWebhooksRouter({ db }) {
 
     let nextUrl = endpoint.url;
     if (url !== undefined && url !== null) {
-      if (typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+      const urlProblem = endpointUrlProblem(url);
+      if (urlProblem) {
         return res
           .status(400)
-          .json({ code: 'BAD_INPUT', message: 'url must be http(s)', request_id: nanoid() });
+          .json({ code: 'BAD_INPUT', message: urlProblem, request_id: nanoid() });
       }
       nextUrl = url;
     }

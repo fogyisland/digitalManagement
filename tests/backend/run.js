@@ -24,6 +24,9 @@ const SUITES = [
   'webhook.smoke.js',
   'init.test.js',
   'server.test.js',
+  // The platform administrator's write path: a write has to name a concrete
+  // tenant, and the `X-Tenant` header is not a way out of one.
+  'superadmin.probe.js',
 ];
 
 /**
