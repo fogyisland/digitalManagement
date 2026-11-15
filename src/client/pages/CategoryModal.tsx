@@ -6,48 +6,93 @@
  * `open`, supplies `editing` (or null for create) and the most recent
  * `parentForCreate` so the parent_id Select pre-fills from the row
  * that was clicked.
+ *
+ * ## Why there is no slug input
+ *
+ * The backend never reads a client-supplied slug. `POST /categories`
+ * destructures only `{name, parent_id, description, sort_order}` and
+ * stores `slugify(name)` (`src/server/routes/categories.js:62` and
+ * `:76`); `PUT /categories/:id` does the same — it recomputes the slug
+ * from the name whenever a name is sent (`:96` and `:104`). The old
+ * editable slug field therefore accepted a value, validated it against
+ * a latin-only rule the server does not even use, and then dropped it
+ * on the floor. It is gone; what is left is a read-only preview of the
+ * slug the server *will* derive, so the user still sees the URL they
+ * are about to get.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { App, Form, Input, InputNumber, Modal, Select as AntSelect } from 'antd';
-import { apiClient } from '@/api/client';
+import { useEffect, useMemo } from 'react';
+import { App, Form, Input, InputNumber, Select as AntSelect } from 'antd';
+import { categoriesApi } from '@/api/categories';
+import { FormModal } from '@/components/ui';
 import type { Category } from '@/types';
 import { tokens } from '@/theme/tokens';
+import { describeError } from '@/utils/errors';
 
 export interface CategoryFormValues {
   name: string;
-  slug?: string;
   parent_id?: string | null;
   description?: string | null;
   sort_order?: number;
 }
 
-const SLUG_RULE = {
-  pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
-  message: 'slug 只能包含小写字母、数字与连字符',
-};
+/**
+ * Mirror of the server's `slugify` (`src/server/lib/util.js:15-21`).
+ *
+ * The server keeps CJK characters — the product is Chinese-first and the
+ * slug is an opaque identifier, never a filesystem path — so a latin-only
+ * rule on this side would not match what the server actually produces.
+ */
+export function previewSlug(name: string): string {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9一-龥]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
 
-function extractErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const response = (err as { response?: { data?: { detail?: string; message?: string } } }).response;
-    const data = response?.data;
-    if (data?.detail) return String(data.detail);
-    if (data?.message) return String(data.message);
+/**
+ * Collect the id of `rootId` plus every descendant of it.
+ *
+ * The parent `<Select>` must not offer a node's own subtree: picking a
+ * descendant as the parent creates a cycle, and the tree is projected
+ * from the roots downwards, so every node on the cycle becomes
+ * unreachable and silently disappears from the tree.
+ */
+function collectSubtreeIds(categories: Category[], rootId: string): Set<string> {
+  const childrenByParent = new Map<string, Category[]>();
+  for (const c of categories) {
+    if (!c.parent_id) continue;
+    const list = childrenByParent.get(c.parent_id);
+    if (list) list.push(c);
+    else childrenByParent.set(c.parent_id, [c]);
   }
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
+
+  const subtree = new Set<string>([rootId]);
+  const stack: string[] = [rootId];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    for (const child of childrenByParent.get(current) ?? []) {
+      if (subtree.has(child.id)) continue;
+      subtree.add(child.id);
+      stack.push(child.id);
+    }
+  }
+  return subtree;
 }
 
 /** Build the parent_id `<Select>` payload: walks the flat list,
- *  skipping the node being edited (cannot be its own ancestor), and
- *  indents descendants with em-dashes for readability. */
+ *  skipping the node being edited together with its whole subtree
+ *  (neither may become its own ancestor), and indents descendants with
+ *  em-dashes for readability. */
 export function buildParentOptions(
   categories: Category[],
   editing: Category | null,
 ): { value: string; label: string }[] {
+  const forbidden = editing ? collectSubtreeIds(categories, editing.id) : new Set<string>();
   const byParent = new Map<string | null, Category[]>();
   for (const c of categories) {
-    if (editing && c.id === editing.id) continue;
+    if (forbidden.has(c.id)) continue;
     const key = c.parent_id ?? null;
     const list = byParent.get(key);
     if (list) list.push(c);
@@ -80,22 +125,24 @@ export default function CategoryModal(props: CategoryModalProps): JSX.Element {
   const { open, editing, categories, parentForCreate, onCancel, onSaved } = props;
   const { message } = App.useApp();
   const [form] = Form.useForm<CategoryFormValues>();
-  const [submitting, setSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
     if (!open) return;
     if (editing) {
       form.setFieldsValue({
         name: editing.name,
-        slug: editing.slug,
         parent_id: editing.parent_id ?? null,
         description: editing.description ?? '',
         sort_order: editing.sort_order,
       });
     } else {
       form.resetFields();
-      form.setFieldValue('sort_order', 0);
-      form.setFieldValue('parent_id', parentForCreate);
+      form.setFieldsValue({
+        name: '',
+        parent_id: parentForCreate,
+        description: '',
+        sort_order: 0,
+      });
     }
   }, [open, editing, parentForCreate, form]);
 
@@ -104,56 +151,39 @@ export default function CategoryModal(props: CategoryModalProps): JSX.Element {
     [categories, editing],
   );
 
-  const onOk = async (): Promise<void> => {
-    let values: CategoryFormValues;
-    try {
-      values = await form.validateFields();
-    } catch (e: unknown) {
-      void e;
-      return;
-    }
-    setSubmitting(true);
+  /** Live preview of the slug the server will derive from the name. */
+  const nameValue = Form.useWatch('name', form);
+  const slugPreview = useMemo(() => previewSlug(nameValue ?? ''), [nameValue]);
+
+  const onSubmit = async (values: CategoryFormValues): Promise<void> => {
     const payload = {
       name: values.name.trim(),
-      slug: values.slug && values.slug.trim() ? values.slug.trim() : values.name.trim(),
       parent_id: values.parent_id ?? null,
       description: values.description?.trim() || null,
       sort_order: typeof values.sort_order === 'number' ? values.sort_order : 0,
     };
     try {
       if (editing) {
-        await apiClient.request<Category>({
-          url: `/categories/${editing.id}`,
-          method: 'PUT',
-          data: payload,
-        });
+        await categoriesApi.update(editing.id, payload);
         message.success('已更新分类');
       } else {
-        await apiClient.request<Category>({
-          url: '/categories',
-          method: 'POST',
-          data: payload,
-        });
+        await categoriesApi.create(payload);
         message.success('已新建分类');
       }
       onSaved();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '保存分类失败'));
-    } finally {
-      setSubmitting(false);
+      message.error(describeError(e, '保存分类失败'));
     }
   };
 
   return (
-    <Modal
-      title={editing ? '编辑分类' : '新建分类'}
+    <FormModal
       open={open}
+      title={editing ? '编辑分类' : '新建分类'}
+      form={form}
       onCancel={onCancel}
-      onOk={() => void onOk()}
+      onSubmit={onSubmit}
       okText={editing ? '保存' : '创建'}
-      cancelText="取消"
-      confirmLoading={submitting}
-      destroyOnClose
       width={520}
     >
       <Form form={form} layout="vertical" preserve={false}>
@@ -164,8 +194,15 @@ export default function CategoryModal(props: CategoryModalProps): JSX.Element {
         >
           <Input placeholder="例如：人物" autoFocus />
         </Form.Item>
-        <Form.Item name="slug" label="slug" rules={[SLUG_RULE]} extra="留空则按名称自动生成">
-          <Input placeholder="例如：portrait" />
+        <Form.Item
+          label="slug"
+          extra="slug 由名称自动生成，保存后不可修改。"
+        >
+          <Input
+            readOnly
+            value={slugPreview || '—'}
+            style={{ fontFamily: tokens.font.mono }}
+          />
         </Form.Item>
         <Form.Item name="parent_id" label="父分类">
           <AntSelect
@@ -183,6 +220,6 @@ export default function CategoryModal(props: CategoryModalProps): JSX.Element {
           <InputNumber style={{ width: 160 }} />
         </Form.Item>
       </Form>
-    </Modal>
+    </FormModal>
   );
 }

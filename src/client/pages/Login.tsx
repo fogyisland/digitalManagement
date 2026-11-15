@@ -12,6 +12,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { authApi } from '@/api/auth';
 import { useAuthStore } from '@/stores/authStore';
 import { tokens } from '@/theme/tokens';
+import { describeError } from '@/utils/errors';
 
 const { Text, Title } = Typography;
 
@@ -37,8 +38,11 @@ export default function Login(): JSX.Element {
       const state = (location.state as { from?: string } | null);
       const from = state?.from || '/';
       navigate(from, { replace: true });
-    } catch {
-      // error toast handled in interceptor
+    } catch (e) {
+      // The shared response interceptor only rotates tokens and redirects on a
+      // 401 — it never raises a toast — so the failure has to be reported here
+      // or the operator sees nothing at all.
+      message.error(describeError(e, '登录失败'));
     } finally {
       setLoading(false);
     }
@@ -64,7 +68,7 @@ export default function Login(): JSX.Element {
           borderTop: `2px solid ${tokens.color.accent}`,
           borderRadius: tokens.radius.lg,
           padding: tokens.space[6],
-          boxShadow: '0 24px 48px rgba(0, 0, 0, 0.4)',
+          boxShadow: tokens.shadow.raised,
         }}
       >
         <div
@@ -85,7 +89,7 @@ export default function Login(): JSX.Element {
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontWeight: 700,
+              fontWeight: tokens.fontWeight.bold,
               color: tokens.color.bg,
               fontSize: 18,
             }}
@@ -114,29 +118,30 @@ export default function Login(): JSX.Element {
           form={form}
           layout="vertical"
           onFinish={(v) => void onFinish(v)}
-          initialValues={{ username: 'admin', password: 'Admin@123456' }}
+          initialValues={{ username: 'admin' }}
           size="large"
-          requiredMark={false}
         >
           <Form.Item
             name="username"
-            label={<span style={{ color: tokens.color.textMuted, fontSize: 12 }}>用户名</span>}
+            label={<span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>用户名</span>}
             rules={[{ required: true, message: '请输入用户名' }]}
           >
             <Input
               prefix={<UserOutlined style={{ color: tokens.color.textMuted }} />}
               placeholder="用户名"
+              aria-label="用户名"
               autoComplete="username"
             />
           </Form.Item>
           <Form.Item
             name="password"
-            label={<span style={{ color: tokens.color.textMuted, fontSize: 12 }}>密码</span>}
+            label={<span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>密码</span>}
             rules={[{ required: true, message: '请输入密码' }]}
           >
             <Input.Password
               prefix={<LockOutlined style={{ color: tokens.color.textMuted }} />}
               placeholder="密码"
+              aria-label="密码"
               autoComplete="current-password"
             />
           </Form.Item>
@@ -159,7 +164,7 @@ export default function Login(): JSX.Element {
             borderTop: `1px solid ${tokens.color.border}`,
             textAlign: 'center',
             color: tokens.color.textMuted,
-            fontSize: 12,
+            fontSize: tokens.fontSize.sm,
             fontFamily: tokens.font.mono,
           }}
         >

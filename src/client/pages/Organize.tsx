@@ -4,45 +4,113 @@
  * Two-column workspace:
  *   - Left:  category tree (CRUD via POST/PUT/DELETE /categories)
  *   - Right: tag card cloud (CRUD via POST/PUT/DELETE /tags)
+ *
+ * The category dialog is owned by this page. The tree asks for it through
+ * the `onCreate` / `onEdit` callbacks; the page holds the open state and
+ * renders the dialog itself. It used to be a self-incrementing counter
+ * shared between the two components — an implicit contract that both
+ * sides had to keep in sync.
  */
 
-import { useState } from 'react';
-import { Button, Space, Typography } from 'antd';
+import { useCallback, useMemo, useState } from 'react';
+import { Button, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useApi } from '@/api/hooks';
+import { PageHeader, Panel, resolveDataStatus } from '@/components/ui';
 import type { Category, Tag } from '@/types';
 import { tokens } from '@/theme/tokens';
+import CategoryModal from './CategoryModal';
 import OrganizeCategories from './OrganizeCategories';
 import OrganizeTags from './OrganizeTags';
 
-const { Text: AntText, Title } = Typography;
+const { Title } = Typography;
+
+/** 分类弹窗的打开意图——由树上的按钮或页头按钮发起。 */
+interface CategoryModalState {
+  /** 编辑中的分类；为 null 表示新建。 */
+  editing: Category | null;
+  /** 新建时的父分类；null 表示顶级分类。 */
+  parentForCreate: string | null;
+}
 
 export default function Organize(): JSX.Element {
   const categoriesState = useApi<Category[]>('/categories');
   const tagsState = useApi<Tag[]>('/tags');
 
-  // Bumping this counter drives OrganizeCategories' "create root"
-  // modal open. The categories modal lives inside OrganizeCategories
-  // because it owns the parent_id pre-fill from the clicked tree node;
-  // the header's "新增根分类" button signals intent via this tick.
-  const [createRootTick, setCreateRootTick] = useState<number>(0);
+  const categories = categoriesState.data;
+  const tags = tagsState.data;
 
-  const categories = categoriesState.data ?? [];
-  const tags = tagsState.data ?? [];
+  const categoryList = useMemo(() => categories ?? [], [categories]);
+
+  const [categoryModal, setCategoryModal] = useState<CategoryModalState | null>(null);
+
+  const openCreate = useCallback((parentId: string | null): void => {
+    setCategoryModal({ editing: null, parentForCreate: parentId });
+  }, []);
+
+  const openEdit = useCallback((category: Category): void => {
+    setCategoryModal({ editing: category, parentForCreate: null });
+  }, []);
+
+  const closeCategoryModal = useCallback((): void => {
+    setCategoryModal(null);
+  }, []);
+
+  // `useApi` hands back a fresh state object on every render, but its
+  // `reload` is memoised — destructure it so the callbacks below keep a
+  // stable identity and the tree memo in OrganizeCategories actually hits.
+  const { reload: fetchCategories } = categoriesState;
+  const { reload: fetchTags } = tagsState;
+
+  const reloadCategories = useCallback(async (): Promise<void> => {
+    await fetchCategories();
+  }, [fetchCategories]);
+
+  const reloadTags = useCallback(async (): Promise<void> => {
+    await fetchTags();
+  }, [fetchTags]);
+
+  const categoriesStatus = resolveDataStatus({
+    loading: categoriesState.loading,
+    error: categoriesState.error,
+    hasData: !!categories,
+    isEmpty: (categories?.length ?? 0) === 0,
+  });
+  const tagsStatus = resolveDataStatus({
+    loading: tagsState.loading,
+    error: tagsState.error,
+    hasData: !!tags,
+    isEmpty: (tags?.length ?? 0) === 0,
+  });
+
+  /**
+   * 加载中（或失败）时不给具体数字——副标题里的 "0 个" 会和下面的
+   * 骨架屏互相矛盾。
+   */
+  const countLabel = (status: 'loading' | 'error' | 'empty' | 'ready', count: number): string =>
+    status === 'loading' || status === 'error' ? '—' : String(count);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
-      <header>
-        <Title
-          level={2}
-          style={{ margin: 0, color: tokens.color.text, fontWeight: 600, letterSpacing: '-0.01em' }}
-        >
-          整理
-        </Title>
-        <AntText style={{ color: tokens.color.textMuted, fontSize: 13 }}>
-          管理分类与标签 · 分类 {categories.length} 个 · 标签 {tags.length} 个
-        </AntText>
-      </header>
+      <PageHeader
+        title="分类与标签"
+        subtitle={
+          <>
+            分类 {countLabel(categoriesStatus, categories?.length ?? 0)} 个 ·
+            标签 {countLabel(tagsStatus, tags?.length ?? 0)} 个
+          </>
+        }
+        extra={
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => openCreate(null)}
+            aria-label="新增根分类"
+          >
+            新增根分类
+          </Button>
+        }
+      />
 
       <div
         style={{
@@ -53,46 +121,45 @@ export default function Organize(): JSX.Element {
         }}
       >
         {/* === Categories column === */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Title level={4} style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}>
-              分类
-            </Title>
-            <Space size={4}>
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                onClick={() => setCreateRootTick((n) => n + 1)}
-                aria-label="新增根分类"
-              >
-                新增根分类
-              </Button>
-            </Space>
-          </div>
+        <Panel as="section" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
+          <Title level={4} style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}>
+            分类
+          </Title>
           <OrganizeCategories
             categories={categories}
             loading={categoriesState.loading}
             error={categoriesState.error}
-            onReload={() => categoriesState.reload()}
-            createRootTick={createRootTick}
+            onReload={reloadCategories}
+            onCreate={openCreate}
+            onEdit={openEdit}
           />
-        </section>
+        </Panel>
 
         {/* === Tags column === */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Title level={4} style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}>
-              标签
-            </Title>
-          </div>
+        <Panel as="section" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
+          <Title level={4} style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}>
+            标签
+          </Title>
           <OrganizeTags
             tags={tags}
             loading={tagsState.loading}
             error={tagsState.error}
-            onReload={() => tagsState.reload()}
+            onReload={reloadTags}
           />
-        </section>
+        </Panel>
       </div>
+
+      <CategoryModal
+        open={categoryModal !== null}
+        editing={categoryModal?.editing ?? null}
+        categories={categoryList}
+        parentForCreate={categoryModal?.parentForCreate ?? null}
+        onCancel={closeCategoryModal}
+        onSaved={() => {
+          closeCategoryModal();
+          void reloadCategories();
+        }}
+      />
     </div>
   );
 }

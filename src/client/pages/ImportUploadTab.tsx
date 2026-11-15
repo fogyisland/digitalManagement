@@ -44,10 +44,16 @@ import {
   uploadAssetOne,
   type UploadAssetMeta,
 } from '@/api/assets';
+import { Panel } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
-import { describeError, safeParseJson } from '@/utils/parseMetadata';
+import { describeError } from '@/utils/errors';
+import { formatBytes } from '@/utils/format';
+import { safeParseJson } from '@/utils/parseMetadata';
 
 const { Text, Title } = Typography;
+
+/** The id that links the submit button to the metadata form. */
+const META_FORM_ID = 'import-upload-meta-form';
 
 const SOURCE_TOOL_OPTIONS: { value: string; label: string }[] = [
   { value: 'manual', label: '手动上传' },
@@ -71,12 +77,6 @@ interface PickedFile {
   size: number;
   type: string;
   file: File;
-}
-
-function formatKb(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function pickFromDataTransfer(dt: DataTransfer | null): File[] {
@@ -109,10 +109,20 @@ export default function ImportUploadTab(): JSX.Element {
   const onPick = useCallback((files: File[]) => {
     if (files.length === 0) return;
     // Single-file mode: keep the first accepted one.
-    const first = files.find(accept);
+    const accepted = files.filter(accept);
+    const first = accepted[0];
     if (!first) {
       message.warning('仅支持 image/* 与 video/* 文件');
       return;
+    }
+    // Anything the user picked that we cannot take was dropped silently
+    // before — say so, otherwise they assume it was uploaded.
+    const ignored = files.length - accepted.length;
+    const droppedExtras = accepted.length - 1;
+    if (ignored > 0) {
+      message.warning(`已忽略 ${ignored} 个不支持的文件（仅支持 image/* 与 video/*）`);
+    } else if (droppedExtras > 0) {
+      message.warning(`当前仅支持单文件上传，已忽略另外 ${droppedExtras} 个文件`);
     }
     setPicked({
       name: first.name,
@@ -122,13 +132,17 @@ export default function ImportUploadTab(): JSX.Element {
     });
   }, [message]);
 
-  const onSubmit = async (): Promise<void> => {
+  /**
+   * `validateFields()` rejects when a rule fails; it used to sit outside
+   * the `try` block, which turned a validation failure into an unhandled
+   * promise rejection instead of the inline field error.
+   */
+  const onFinish = async (values: FormValues): Promise<void> => {
     if (!picked) {
       message.warning('请先选择或拖入一个文件');
       return;
     }
 
-    const values = await form.validateFields();
     const meta: UploadAssetMeta = {
       title: values.title,
       description: values.description,
@@ -184,17 +198,7 @@ export default function ImportUploadTab(): JSX.Element {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(280px, 1fr)', gap: tokens.space[5] }}>
       {/* Drop zone + file preview */}
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-          display: 'flex',
-          flexDirection: 'column',
-          gap: tokens.space[3],
-        }}
-      >
+      <Panel>
         <Title level={4} style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}>
           上传文件
         </Title>
@@ -229,8 +233,7 @@ export default function ImportUploadTab(): JSX.Element {
             padding: `${tokens.space[6]}px 0`,
             textAlign: 'center',
             cursor: 'pointer',
-            transition: 'background 120ms ease, border-color 120ms ease',
-            outline: 'none',
+            transition: `background ${tokens.motion.fast} ease, border-color ${tokens.motion.fast} ease`,
           }}
           aria-label="拖拽文件到此处，或点击选择"
         >
@@ -274,7 +277,7 @@ export default function ImportUploadTab(): JSX.Element {
                   {picked.name}
                 </Text>
                 <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>
-                  {formatKb(picked.size)} · {picked.type || '未知类型'}
+                  {formatBytes(picked.size)} · {picked.type || '未知类型'}
                 </Text>
               </Space>
             }
@@ -288,8 +291,12 @@ export default function ImportUploadTab(): JSX.Element {
         <Space>
           <Button
             type="primary"
+            htmlType="submit"
+            // The metadata form lives in the right-hand column; the HTML5
+            // `form` attribute links the button to it so pressing Enter in
+            // a metadata field submits the upload.
+            form={META_FORM_ID}
             icon={<CloudUploadOutlined />}
-            onClick={() => void onSubmit()}
             loading={submitting}
             disabled={!picked}
           >
@@ -299,22 +306,16 @@ export default function ImportUploadTab(): JSX.Element {
             清空
           </Button>
         </Space>
-      </section>
+      </Panel>
 
       {/* Metadata side panel */}
-      <aside
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-        }}
-      >
+      <Panel as="aside">
         <Form
+          id={META_FORM_ID}
           form={form}
           layout="vertical"
           initialValues={{ source_tool: 'manual' }}
-          requiredMark={false}
+          onFinish={(v) => void onFinish(v)}
         >
           <Form.Item name="title" label="标题">
             <Input placeholder="选填；留空将使用文件名" maxLength={255} allowClear />
@@ -384,7 +385,7 @@ export default function ImportUploadTab(): JSX.Element {
             />
           </Form.Item>
         </Form>
-      </aside>
+      </Panel>
     </div>
   );
 }

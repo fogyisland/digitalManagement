@@ -1,6 +1,7 @@
 import { Button, Input, Select, Space } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import type { AssetType, Category } from '@/types';
+import { Panel } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
 
 const ASSET_TYPE_FILTERS: { value: AssetType; label: string }[] = [
@@ -52,15 +53,7 @@ export default function LibraryFilters({
   categoriesLoading,
 }: LibraryFiltersProps): JSX.Element {
   return (
-    <section
-      style={{
-        background: tokens.color.panel,
-        border: `1px solid ${tokens.color.border}`,
-        borderRadius: tokens.radius.lg,
-        padding: tokens.space[4],
-        marginBottom: tokens.space[4],
-      }}
-    >
+    <Panel>
       <Space
         size={[tokens.space[3], tokens.space[3]]}
         wrap
@@ -68,6 +61,7 @@ export default function LibraryFilters({
       >
         <Input.Search
           allowClear
+          aria-label="按标题、文件名、描述搜索资产"
           placeholder="按标题、文件名、描述搜索"
           value={state.keywordInput}
           onChange={(e) => handlers.onKeywordInputChange(e.target.value)}
@@ -77,6 +71,7 @@ export default function LibraryFilters({
         />
         <Select
           placeholder="类型"
+          aria-label="按资产类型筛选"
           allowClear
           value={state.assetType}
           onChange={(v: AssetType | undefined) => handlers.onAssetTypeChange(v)}
@@ -85,6 +80,7 @@ export default function LibraryFilters({
         />
         <Select
           placeholder="分类"
+          aria-label="按分类筛选"
           allowClear
           showSearch
           value={state.categoryId}
@@ -96,6 +92,7 @@ export default function LibraryFilters({
         />
         <Select
           placeholder="来源"
+          aria-label="按来源工具筛选"
           allowClear
           value={state.sourceTool}
           onChange={(v: string | undefined) => handlers.onSourceToolChange(v)}
@@ -104,6 +101,6 @@ export default function LibraryFilters({
         />
         <Button onClick={handlers.onReset}>重置</Button>
       </Space>
-    </section>
+    </Panel>
   );
 }

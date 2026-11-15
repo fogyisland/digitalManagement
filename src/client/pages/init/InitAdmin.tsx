@@ -11,6 +11,7 @@ import { Alert, Button, Form, Input, Space, Typography } from 'antd';
 import { TeamOutlined } from '@ant-design/icons';
 import { describeInitError, initApi } from './initApi';
 import type { AdminInput } from './initApi';
+import { tokens } from '@/theme/tokens';
 
 const { Text, Title } = Typography;
 
@@ -44,8 +45,8 @@ export default function InitAdmin({ onBack, onDone }: InitAdminProps): JSX.Eleme
 
   return (
     <div>
-      <Title level={3} style={{ marginBottom: 4 }}>
-        <TeamOutlined style={{ marginRight: 8 }} />
+      <Title level={3} style={{ marginBottom: tokens.space[1] }}>
+        <TeamOutlined style={{ marginRight: tokens.space[2] }} />
         管理员与租户
       </Title>
       <Text type="secondary">
@@ -56,7 +57,7 @@ export default function InitAdmin({ onBack, onDone }: InitAdminProps): JSX.Eleme
         <Alert
           type="error"
           showIcon
-          style={{ marginTop: 16 }}
+          style={{ marginTop: tokens.space[4] }}
           message="创建失败"
           description={error}
         />
@@ -66,8 +67,7 @@ export default function InitAdmin({ onBack, onDone }: InitAdminProps): JSX.Eleme
         form={form}
         layout="vertical"
         onFinish={onFinish}
-        style={{ marginTop: 24 }}
-        requiredMark={false}
+        style={{ marginTop: tokens.space[5] }}
       >
         <Form.Item
           name="tenantName"
@@ -110,9 +110,9 @@ export default function InitAdmin({ onBack, onDone }: InitAdminProps): JSX.Eleme
           <Input.Password placeholder="至少 10 位，包含字母和数字" autoComplete="new-password" />
         </Form.Item>
 
-        <Form.Item style={{ marginTop: 8 }}>
+        <Form.Item style={{ marginTop: tokens.space[2] }}>
           <Space>
-            <Button onClick={onBack} size="large">
+            <Button onClick={onBack} size="large" disabled={loading}>
               上一步
             </Button>
             <Button type="primary" htmlType="submit" loading={loading} size="large">

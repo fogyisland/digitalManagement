@@ -32,8 +32,9 @@ import {
   lookupComfyUiJob,
   registerAssetByComfyJob,
 } from '@/api/assets';
+import { Panel } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
-import { describeError } from '@/utils/parseMetadata';
+import { describeError } from '@/utils/errors';
 import type { Asset } from '@/types';
 
 const { Text, Title } = Typography;
@@ -45,7 +46,9 @@ interface FormValues {
 type Phase =
   | { kind: 'idle' }
   | { kind: 'checking' }
-  | { kind: 'exists'; asset: Asset | null }
+  // The asset is always present in this phase: the lookup only sets it
+  // after a successful response that carries an id.
+  | { kind: 'exists'; asset: Asset }
   | { kind: 'registering' };
 
 export default function ImportComfyUiTab(): JSX.Element {
@@ -68,13 +71,13 @@ export default function ImportComfyUiTab(): JSX.Element {
     }
   };
 
-  const onLookup = async (): Promise<void> => {
-    const values = await form.validateFields();
+  /**
+   * `validateFields()` rejects when the field is empty. It used to sit
+   * outside the `try` block, so an empty input produced an unhandled
+   * promise rejection instead of the inline field error.
+   */
+  const onFinish = async (values: FormValues): Promise<void> => {
     const jobId = values.job_id.trim();
-    if (!jobId) {
-      message.warning('请输入 ComfyUI job_id');
-      return;
-    }
     setPhase({ kind: 'checking' });
     try {
       const existing = await lookupComfyUiJob(jobId);
@@ -99,21 +102,23 @@ export default function ImportComfyUiTab(): JSX.Element {
         没有就登记一条占位记录。
       </Text>
 
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-        }}
-      >
-        <Form form={form} layout="vertical" requiredMark={false}>
+      <Panel>
+        <Form<FormValues>
+          form={form}
+          layout="vertical"
+          onFinish={(v) => void onFinish(v)}
+        >
           <Form.Item
             name="job_id"
             label="ComfyUI job_id"
             rules={[
               { required: true, message: '请输入 ComfyUI job_id' },
-              { min: 1, message: 'job_id 不能为空' },
+              {
+                validator: (_, value: string | undefined) =>
+                  value && value.trim()
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('job_id 不能为空')),
+              },
             ]}
           >
             <Input
@@ -124,59 +129,61 @@ export default function ImportComfyUiTab(): JSX.Element {
             />
           </Form.Item>
 
-          <Form.Item label=" " colon={false}>
-            <Space>
-              <Button
-                type="primary"
-                icon={<RightCircleOutlined />}
-                onClick={() => void onLookup()}
-                loading={busy}
-              >
-                反查并登记
-              </Button>
-              <Button
-                onClick={() => {
-                  form.resetFields();
-                  setPhase({ kind: 'idle' });
-                }}
-                disabled={busy}
-              >
-                清空
-              </Button>
-            </Space>
-          </Form.Item>
+          {/* Not wrapped in a `Form.Item` with a blank label — a screen
+              reader announced an empty label for this button group. */}
+          <Space>
+            <Button
+              type="primary"
+              htmlType="submit"
+              icon={<RightCircleOutlined />}
+              loading={busy}
+            >
+              反查并登记
+            </Button>
+            <Button
+              onClick={() => {
+                form.resetFields();
+                setPhase({ kind: 'idle' });
+              }}
+              disabled={busy}
+            >
+              清空
+            </Button>
+          </Space>
         </Form>
 
-        {phase.kind === 'exists' && phase.asset && (
-          <Alert
-            type="info"
-            showIcon
-            style={{
-              background: 'rgba(245, 165, 36, 0.08)',
-              border: `1px solid ${tokens.color.accent}`,
-            }}
-            message={
-              <Space size="small" wrap>
-                <Text style={{ color: tokens.color.text }}>
-                  该 job_id 已存在资产：
-                </Text>
-                <Text
-                  strong
-                  style={{ color: tokens.color.text, fontFamily: tokens.font.mono }}
-                >
-                  {phase.asset.title || phase.asset.original_name}
-                </Text>
-                <Link
-                  to={`/library/${phase.asset.id}`}
-                  style={{ color: tokens.color.accent }}
-                >
-                  前往 →
-                </Link>
-              </Space>
-            }
-          />
+        {phase.kind === 'exists' && (
+          <div style={{ marginTop: tokens.space[4] }}>
+            <Alert
+              type="info"
+              showIcon
+              style={{
+                background: tokens.color.accentSoft,
+                border: `1px solid ${tokens.color.accent}`,
+              }}
+              message={
+                <Space size="small" wrap>
+                  <Text style={{ color: tokens.color.text }}>
+                    该 job_id 已存在资产：
+                  </Text>
+                  <Text
+                    strong
+                    style={{ color: tokens.color.text, fontFamily: tokens.font.mono }}
+                  >
+                    {phase.asset.title || phase.asset.original_name}
+                  </Text>
+                  <Link
+                    to={`/library/${phase.asset.id}`}
+                    style={{ color: tokens.color.accent }}
+                  >
+                    前往 →
+                  </Link>
+                </Space>
+              }
+            />
+          </div>
         )}
-      </section>
+      </Panel>
     </div>
   );
 }

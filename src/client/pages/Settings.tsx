@@ -1,23 +1,24 @@
 /**
- * Settings — Task 18.
+ * Settings.
  *
- * Three-card workspace:
+ * Three-panel workspace:
  *   - 修改密码   password change form
- *   - 个人信息   user info (no all-caps, mono for ids)
+ *   - 个人信息   user info (mono for ids)
  *   - 系统信息   API endpoints + storage path (mono <code> blocks)
  *
- * Layout uses tokens only; the legacy `dam-card`/`page-header` classes
- * are gone and AntD's `Descriptions` is themed via `labelStyle` to match
- * the muted eyebrow tone.
+ * Layout uses the shared `PageHeader` / `Panel` components; the legacy
+ * `dam-card` / `page-header` classes are gone and AntD's `Descriptions` is
+ * themed via `labelStyle` to match the muted eyebrow tone.
  */
-import { useState } from 'react';
-import { App, Button, Card, Form, Input, Space, Typography } from 'antd';
+import { useState, type ReactNode } from 'react';
+import { App, Button, Form, Input, Space, Typography } from 'antd';
 import { KeyOutlined, LockOutlined, ApiOutlined } from '@ant-design/icons';
 import { authApi } from '@/api/auth';
 import { useAuthStore } from '@/stores/authStore';
+import { PageHeader, Panel, Pill } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 interface PasswordFormValues {
   old_password: string;
@@ -25,16 +26,9 @@ interface PasswordFormValues {
   confirm: string;
 }
 
-const DESCRIPTIONS_LABEL_STYLE: React.CSSProperties = {
-  color: tokens.color.textMuted,
-  fontSize: 12,
-  textTransform: 'none',
-  letterSpacing: 0,
-};
-
 const MONO_CODE_STYLE: React.CSSProperties = {
   fontFamily: tokens.font.mono,
-  fontSize: 12,
+  fontSize: tokens.fontSize.sm,
   color: tokens.color.text,
   background: tokens.color.bgAlt,
   border: `1px solid ${tokens.color.border}`,
@@ -42,28 +36,46 @@ const MONO_CODE_STYLE: React.CSSProperties = {
   borderRadius: tokens.radius.sm,
 };
 
-function roleBadge(role: string | undefined): React.ReactNode {
-  if (!role) return '—';
-  const tone =
-    role === 'admin'
-      ? { bg: 'rgba(248, 81, 73, 0.14)', fg: tokens.color.danger }
-      : role === 'editor'
-        ? { bg: 'rgba(245, 165, 36, 0.14)', fg: tokens.color.accent }
-        : { bg: tokens.color.bgAlt, fg: tokens.color.textMuted };
+const LABEL_STYLE: React.CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.fontSize.sm,
+};
+
+/**
+ * A labelled read-only value. The page shows a dozen of these; writing the
+ * label/value pair out by hand each time is where the spacing drifts.
+ */
+function Field({
+  label,
+  children,
+  mono = false,
+}: {
+  label: string;
+  children: ReactNode;
+  mono?: boolean;
+}): JSX.Element {
   return (
-    <span
-      style={{
-        padding: '2px 10px',
-        borderRadius: tokens.radius.sm,
-        fontSize: 12,
-        fontFamily: tokens.font.mono,
-        background: tone.bg,
-        color: tone.fg,
-      }}
-    >
-      {role}
-    </span>
+    <div style={{ paddingBottom: tokens.space[3] }}>
+      <Text style={LABEL_STYLE}>{label}</Text>
+      <div
+        style={{
+          marginTop: tokens.space[1],
+          color: tokens.color.text,
+          fontSize: tokens.fontSize.base,
+          fontFamily: mono ? tokens.font.mono : tokens.font.base,
+          wordBreak: 'break-word',
+        }}
+      >
+        {children}
+      </div>
+    </div>
   );
+}
+
+function roleTone(role: string | undefined): 'danger' | 'accent' | 'neutral' {
+  if (role === 'admin') return 'danger';
+  if (role === 'editor') return 'accent';
+  return 'neutral';
 }
 
 export default function Settings(): JSX.Element {
@@ -73,10 +85,16 @@ export default function Settings(): JSX.Element {
   const [loading, setLoading] = useState(false);
 
   const onChangePassword = async (): Promise<void> => {
-    const v = await pwForm.validateFields();
+    let values: PasswordFormValues;
+    try {
+      values = await pwForm.validateFields();
+    } catch {
+      // AntD has already marked the offending fields.
+      return;
+    }
     setLoading(true);
     try {
-      await authApi.changePassword(v.old_password, v.new_password);
+      await authApi.changePassword(values.old_password, values.new_password);
       message.success('密码已更新');
       pwForm.resetFields();
     } catch {
@@ -90,67 +108,47 @@ export default function Settings(): JSX.Element {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
-      <header>
-        <Title
-          level={2}
-          style={{
-            margin: 0,
-            color: tokens.color.text,
-            fontWeight: 600,
-            letterSpacing: '-0.01em',
-          }}
-        >
-          设置
-        </Title>
-        <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
-          个人账号、密码与系统信息
-        </Text>
-      </header>
+      <PageHeader
+        title="设置"
+        subtitle="个人账号、密码与系统信息"
+      />
 
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))',
           gap: tokens.space[4],
+          alignItems: 'start',
         }}
       >
         {/* 修改密码 */}
-        <Card
+        <Panel
+          as="section"
           title={
             <Space size="small" align="center">
               <LockOutlined style={{ color: tokens.color.accent }} />
               <span style={{ color: tokens.color.text }}>修改密码</span>
             </Space>
           }
-          bordered={false}
-          style={{
-            background: tokens.color.panel,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.lg,
-          }}
-          headStyle={{
-            color: tokens.color.text,
-            borderBottom: `1px solid ${tokens.color.border}`,
-          }}
         >
           <Form<PasswordFormValues> form={pwForm} layout="vertical">
             <Form.Item
               name="old_password"
-              label={<span style={{ color: tokens.color.textMuted, fontSize: 12 }}>当前密码</span>}
+              label={<span style={LABEL_STYLE}>当前密码</span>}
               rules={[{ required: true }]}
             >
               <Input.Password autoComplete="current-password" />
             </Form.Item>
             <Form.Item
               name="new_password"
-              label={<span style={{ color: tokens.color.textMuted, fontSize: 12 }}>新密码</span>}
+              label={<span style={LABEL_STYLE}>新密码</span>}
               rules={[{ required: true, min: 6 }]}
             >
               <Input.Password autoComplete="new-password" />
             </Form.Item>
             <Form.Item
               name="confirm"
-              label={<span style={{ color: tokens.color.textMuted, fontSize: 12 }}>确认新密码</span>}
+              label={<span style={LABEL_STYLE}>确认新密码</span>}
               dependencies={['new_password']}
               rules={[
                 { required: true },
@@ -175,147 +173,62 @@ export default function Settings(): JSX.Element {
               更新密码
             </Button>
           </Form>
-        </Card>
+        </Panel>
 
         {/* 个人信息 */}
-        <Card
+        <Panel
+          as="section"
           title={
             <Space size="small" align="center">
               <KeyOutlined style={{ color: tokens.color.accent }} />
               <span style={{ color: tokens.color.text }}>个人信息</span>
             </Space>
           }
-          bordered={false}
-          style={{
-            background: tokens.color.panel,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.lg,
-          }}
-          headStyle={{
-            color: tokens.color.text,
-            borderBottom: `1px solid ${tokens.color.border}`,
-          }}
         >
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>用户名</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontFamily: tokens.font.mono,
-              fontSize: 13,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-            }}
-          >
+          <Field label="用户名" mono>
             {user?.username ?? '—'}
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>邮箱</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontSize: 13,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-              wordBreak: 'break-word',
-            }}
-          >
-            {user?.email ?? '—'}
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>显示名</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontSize: 13,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-            }}
-          >
-            {user?.display_name || '—'}
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>角色</Text>
-          <div style={{ padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0` }}>
-            {roleBadge(user?.role)}
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>最近登录</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontFamily: tokens.font.mono,
-              fontSize: 12,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-            }}
-          >
+          </Field>
+          <Field label="邮箱">{user?.email ?? '—'}</Field>
+          <Field label="显示名">{user?.display_name || '—'}</Field>
+          <Field label="角色">
+            <Pill
+              value={user?.role ?? '—'}
+              tone={roleTone(user?.role)}
+              mono
+            />
+          </Field>
+          <Field label="最近登录" mono>
             {user?.last_login_at || '—'}
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>注册时间</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontFamily: tokens.font.mono,
-              fontSize: 12,
-              padding: `${tokens.space[1]}px 0 0`,
-            }}
-          >
+          </Field>
+          <Field label="注册时间" mono>
             {user?.created_at || '—'}
-          </div>
-        </Card>
+          </Field>
+        </Panel>
 
         {/* 系统信息 */}
-        <Card
+        <Panel
+          as="section"
           title={
             <Space size="small" align="center">
               <ApiOutlined style={{ color: tokens.color.accent }} />
               <span style={{ color: tokens.color.text }}>系统信息</span>
             </Space>
           }
-          bordered={false}
-          style={{
-            background: tokens.color.panel,
-            border: `1px solid ${tokens.color.border}`,
-            borderRadius: tokens.radius.lg,
-          }}
-          headStyle={{
-            color: tokens.color.text,
-            borderBottom: `1px solid ${tokens.color.border}`,
-          }}
         >
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>系统名称</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontSize: 13,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-            }}
-          >
-            数字资产管理系统
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>版本</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontFamily: tokens.font.mono,
-              fontSize: 12,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-            }}
-          >
+          <Field label="系统名称">数字资产管理系统</Field>
+          <Field label="版本" mono>
             v1.0.0
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>API 基础地址</Text>
-          <div style={{ padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0` }}>
+          </Field>
+          <Field label="API 基础地址">
             <span style={MONO_CODE_STYLE}>{baseUrl}/api</span>
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>管理 API</Text>
-          <div style={{ padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0` }}>
+          </Field>
+          <Field label="管理 API">
             <span style={MONO_CODE_STYLE}>/api/v1/*</span>
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>公开投递</Text>
-          <div style={{ padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0` }}>
+          </Field>
+          <Field label="公开投递">
             <span style={MONO_CODE_STYLE}>/api/public/v1/*</span>
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>文档</Text>
-          <div
-            style={{
-              color: tokens.color.text,
-              fontSize: 13,
-              padding: `${tokens.space[1]}px 0 ${tokens.space[3]}px 0`,
-            }}
-          >
+          </Field>
+          <Field label="文档">
             <a href="/docs" target="_blank" rel="noreferrer" style={{ color: tokens.color.accent }}>
               Swagger UI
             </a>
@@ -323,15 +236,14 @@ export default function Settings(): JSX.Element {
             <a href="/redoc" target="_blank" rel="noreferrer" style={{ color: tokens.color.accent }}>
               ReDoc
             </a>
-          </div>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>存储</Text>
-          <div style={{ padding: `${tokens.space[1]}px 0 0` }}>
+          </Field>
+          <Field label="存储">
             <span style={MONO_CODE_STYLE}>./storage</span>
             <span style={{ color: tokens.color.textMuted, marginLeft: tokens.space[2] }}>
               本地文件系统
             </span>
-          </div>
-        </Card>
+          </Field>
+        </Panel>
       </div>
     </div>
   );

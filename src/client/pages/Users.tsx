@@ -1,30 +1,24 @@
 /**
- * Users — Task 18.
- *
- * Admin-only user management table. The route is already wrapped in
- * `AdminOnly` (router.tsx); if a non-admin reaches the component, we
- * still render a redirect hint as a defensive layer.
+ * Users — admin-only user management table. The route is already wrapped in
+ * `AdminOnly` (router.tsx); if a non-admin reaches the component, we still
+ * render a redirect hint as a defensive layer.
  *
  * Visual language:
- *   - tokens.color.* only — no `dam-card-padded` legacy class
+ *   - shared `PageHeader` / `Panel` / `Pill` components
  *   - tokens.font.mono for ids, usernames, dates
- *   - no all-caps eyebrows; muted <Text> serves as labels
- *   - role/status pills use the same tone table as Settings (danger /
- *     accent / muted) for cross-page consistency
+ *   - role/status pills share one look with Settings
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   App,
   Button,
   Empty,
   Form,
   Input,
-  Modal,
   Popconfirm,
   Select,
   Space,
   Table,
-  Tag,
   Typography,
 } from 'antd';
 import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined } from '@ant-design/icons';
@@ -32,10 +26,13 @@ import { useNavigate } from 'react-router-dom';
 import { usersApi } from '@/api/users';
 import { useAuthStore } from '@/stores/authStore';
 import type { PageResponse, User, UserRole, UserStatus } from '@/types';
+import { PageHeader, Panel, Pill, StateBlock } from '@/components/ui';
+import { FormModal } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
 import { formatDate } from '@/utils/format';
+import { toError } from '@/utils/errors';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 interface CreateUserValues {
   username: string;
@@ -71,37 +68,15 @@ const STATUS_OPTIONS: { value: UserStatus; label: string }[] = [
   { value: 'disabled', label: '禁用' },
 ];
 
-function roleColor(role: UserRole): string {
+function roleTone(role: UserRole): 'danger' | 'accent' | 'neutral' {
   switch (role) {
     case 'admin':
-      return tokens.color.danger;
+      return 'danger';
     case 'editor':
-      return tokens.color.accent;
+      return 'accent';
     default:
-      return tokens.color.textMuted;
+      return 'neutral';
   }
-}
-
-function statusColor(status: UserStatus): string {
-  return status === 'active' ? tokens.color.success : tokens.color.danger;
-}
-
-function MonoPill({ value, tone }: { value: string; tone: string }): React.ReactNode {
-  return (
-    <span
-      style={{
-        padding: '2px 10px',
-        borderRadius: tokens.radius.sm,
-        fontSize: 12,
-        fontFamily: tokens.font.mono,
-        background: 'rgba(13, 17, 23, 0.72)',
-        color: tone,
-        border: `1px solid ${tone}`,
-      }}
-    >
-      {value}
-    </span>
-  );
 }
 
 export default function Users(): JSX.Element {
@@ -111,6 +86,7 @@ export default function Users(): JSX.Element {
 
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | undefined>();
   const [keyword, setKeyword] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -124,39 +100,47 @@ export default function Users(): JSX.Element {
   const [editForm] = Form.useForm<EditUserValues>();
   const [resetForm] = Form.useForm<ResetPasswordValues>();
 
-  const load = async (): Promise<void> => {
-    setLoading(true);
-    try {
-      const r: PageResponse<User> = await usersApi.list({
-        keyword: keyword || undefined,
-        page,
-        page_size: 20,
-      });
-      setUsers(r.items);
-      setTotal(r.total);
-    } catch (e: unknown) {
-      // The axios interceptor already redirects on 401; here we only keep
-      // the table usable by clearing the stale rows and logging the cause.
-      console.warn('[users] load failed:', e);
-      setUsers([]);
-      setTotal(0);
-    } finally {
-      setLoading(false);
-    }
-  };
+  /**
+   * The keyword is passed in rather than read from state.
+   *
+   * The search handler used to call `setKeyword(v)` and then `load()`
+   * straight away — but React state updates are asynchronous, so `load`
+   * still saw the *previous* keyword. The first search on a page always
+   * returned the results for the term before it.
+   */
+  const load = useCallback(
+    async (kw: string): Promise<void> => {
+      setLoading(true);
+      try {
+        const r: PageResponse<User> = await usersApi.list({
+          keyword: kw || undefined,
+          page,
+          page_size: 20,
+        });
+        setUsers(r.items);
+        setTotal(r.total);
+        setError(undefined);
+      } catch (e: unknown) {
+        setError(toError(e, '加载用户列表失败'));
+        setUsers([]);
+        setTotal(0);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [page],
+  );
 
   useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+    void load(keyword);
+  }, [load, keyword]);
 
-  const onCreate = async (): Promise<void> => {
-    const v = await createForm.validateFields();
-    await usersApi.create(v);
+  const onCreate = async (values: CreateUserValues): Promise<void> => {
+    await usersApi.create(values);
     message.success('已创建');
     setCreateOpen(false);
     createForm.resetFields();
-    void load();
+    await load(keyword);
   };
 
   const onEdit = (u: User): void => {
@@ -170,25 +154,23 @@ export default function Users(): JSX.Element {
     setEditOpen(true);
   };
 
-  const onSave = async (): Promise<void> => {
+  const onSave = async (values: EditUserValues): Promise<void> => {
     if (!editing) return;
-    const v = await editForm.validateFields();
-    await usersApi.update(editing.id, v);
+    await usersApi.update(editing.id, values);
     message.success('已更新');
     setEditOpen(false);
-    void load();
+    await load(keyword);
   };
 
   const onDelete = async (id: string): Promise<void> => {
     await usersApi.remove(id);
     message.success('已删除');
-    void load();
+    await load(keyword);
   };
 
-  const onReset = async (): Promise<void> => {
+  const onReset = async (values: ResetPasswordValues): Promise<void> => {
     if (!resetOpen) return;
-    const v = await resetForm.validateFields();
-    await usersApi.resetPassword(resetOpen.id, v.new_password);
+    await usersApi.resetPassword(resetOpen.id, values.new_password);
     message.success('密码已重置');
     setResetOpen(null);
     resetForm.resetFields();
@@ -199,199 +181,184 @@ export default function Users(): JSX.Element {
   // rather than 403 silently.
   if (currentUser && currentUser.role !== 'admin') {
     return (
-      <div
-        style={{
-          padding: tokens.space[5],
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-        }}
-      >
+      <Panel>
         <Text style={{ color: tokens.color.text }}>当前账号没有访问用户管理的权限。</Text>
         <div style={{ marginTop: tokens.space[3] }}>
           <Button onClick={() => navigate('/')}>返回首页</Button>
         </div>
-      </div>
+      </Panel>
     );
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: tokens.space[4],
-        }}
-      >
-        <div>
-          <Title
-            level={2}
-            style={{
-              margin: 0,
-              color: tokens.color.text,
-              fontWeight: 600,
-              letterSpacing: '-0.01em',
-            }}
-          >
-            用户管理
-          </Title>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
-            共 {total.toLocaleString()} 个用户
-          </Text>
-        </div>
-        <Space size="small" wrap>
-          <Input.Search
-            placeholder="搜索用户名 / 邮箱"
-            allowClear
-            onSearch={(v) => {
-              setKeyword(v);
-              setPage(1);
-              void load();
-            }}
-            style={{ width: 240 }}
-          />
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => setCreateOpen(true)}
-          >
-            新建用户
-          </Button>
-        </Space>
-      </header>
+      <PageHeader
+        title="用户管理"
+        subtitle={`共 ${total.toLocaleString()} 个用户`}
+        extra={
+          <Space size="small" wrap>
+            <Input.Search
+              placeholder="搜索用户名 / 邮箱"
+              aria-label="搜索用户名或邮箱"
+              allowClear
+              onSearch={(v) => {
+                setKeyword(v.trim());
+                setPage(1);
+              }}
+              style={{ width: 240 }}
+            />
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setCreateOpen(true)}
+            >
+              新建用户
+            </Button>
+          </Space>
+        }
+      />
 
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-        }}
-      >
-        <Table<User>
-          rowKey="id"
-          dataSource={users}
-          loading={loading}
-          pagination={{
-            current: page,
-            total,
-            pageSize: 20,
-            onChange: setPage,
-            showSizeChanger: false,
-          }}
-          locale={{ emptyText: <Empty description="暂无用户" /> }}
-          columns={[
-            {
-              title: 'ID',
-              dataIndex: 'id',
-              width: 70,
-              render: (id: string) => (
-                <span
-                  style={{
-                    fontFamily: tokens.font.mono,
-                    fontSize: 12,
-                    color: tokens.color.textMuted,
-                  }}
-                  title={id}
-                >
-                  {id}
-                </span>
-              ),
-            },
-            {
-              title: '用户名',
-              dataIndex: 'username',
-              render: (v: string) => (
-                <span style={{ fontFamily: tokens.font.mono, color: tokens.color.text }}>{v}</span>
-              ),
-            },
-            { title: '显示名', dataIndex: 'display_name' },
-            { title: '邮箱', dataIndex: 'email' },
-            {
-              title: '角色',
-              dataIndex: 'role',
-              width: 110,
-              render: (r: UserRole) => <MonoPill value={r} tone={roleColor(r)} />,
-            },
-            {
-              title: '状态',
-              dataIndex: 'status',
-              width: 100,
-              render: (s: UserStatus) => <MonoPill value={s} tone={statusColor(s)} />,
-            },
-            {
-              title: '最近登录',
-              dataIndex: 'last_login_at',
-              width: 160,
-              render: (v: string | null) =>
-                v ? (
-                  <span style={{ fontFamily: tokens.font.mono, fontSize: 12, color: tokens.color.text }}>
+      <Panel flush>
+        {error && !loading ? (
+          <StateBlock
+            status="error"
+            title="用户列表加载失败"
+            error={error}
+            errorFallback="无法加载用户列表"
+            onRetry={() => void load(keyword)}
+          />
+        ) : (
+          <Table<User>
+            rowKey="id"
+            dataSource={users}
+            loading={loading}
+            scroll={{ x: 960 }}
+            pagination={{
+              current: page,
+              total,
+              pageSize: 20,
+              onChange: setPage,
+              showSizeChanger: false,
+            }}
+            locale={{ emptyText: <Empty description="暂无用户" /> }}
+            columns={[
+              {
+                title: 'ID',
+                dataIndex: 'id',
+                width: 70,
+                render: (id: string) => (
+                  <span
+                    style={{
+                      fontFamily: tokens.font.mono,
+                      fontSize: tokens.fontSize.sm,
+                      color: tokens.color.textMuted,
+                    }}
+                    title={id}
+                  >
+                    {id}
+                  </span>
+                ),
+              },
+              {
+                title: '用户名',
+                dataIndex: 'username',
+                render: (v: string) => (
+                  <span style={{ fontFamily: tokens.font.mono, color: tokens.color.text }}>{v}</span>
+                ),
+              },
+              { title: '显示名', dataIndex: 'display_name', ellipsis: true },
+              { title: '邮箱', dataIndex: 'email', ellipsis: true },
+              {
+                title: '角色',
+                dataIndex: 'role',
+                width: 110,
+                render: (r: UserRole) => <Pill value={r} tone={roleTone(r)} mono />,
+              },
+              {
+                title: '状态',
+                dataIndex: 'status',
+                width: 100,
+                render: (s: UserStatus) => (
+                  <Pill
+                    value={s}
+                    tone={s === 'active' ? 'success' : 'danger'}
+                    mono
+                  />
+                ),
+              },
+              {
+                title: '最近登录',
+                dataIndex: 'last_login_at',
+                width: 160,
+                render: (v: string | null) =>
+                  v ? (
+                    <span style={{ fontFamily: tokens.font.mono, fontSize: tokens.fontSize.sm, color: tokens.color.text }}>
+                      {formatDate(v)}
+                    </span>
+                  ) : (
+                    '—'
+                  ),
+              },
+              {
+                title: '创建时间',
+                dataIndex: 'created_at',
+                width: 160,
+                render: (v: string) => (
+                  <span style={{ fontFamily: tokens.font.mono, fontSize: tokens.fontSize.sm, color: tokens.color.text }}>
                     {formatDate(v)}
                   </span>
-                ) : (
-                  '—'
                 ),
-            },
-            {
-              title: '创建时间',
-              dataIndex: 'created_at',
-              width: 160,
-              render: (v: string) => (
-                <span style={{ fontFamily: tokens.font.mono, fontSize: 12, color: tokens.color.text }}>
-                  {formatDate(v)}
-                </span>
-              ),
-            },
-            {
-              title: '操作',
-              width: 160,
-              render: (_: unknown, u: User) => (
-                <Space size={4}>
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<EditOutlined />}
-                    onClick={() => onEdit(u)}
-                  />
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<KeyOutlined />}
-                    onClick={() => setResetOpen(u)}
-                    aria-label={`重置 ${u.username} 的密码`}
-                  />
-                  <Popconfirm
-                    title="确认删除？"
-                    okText="删除"
-                    cancelText="取消"
-                    onConfirm={() => void onDelete(u.id)}
-                  >
+              },
+              {
+                title: '操作',
+                width: 160,
+                render: (_: unknown, u: User) => (
+                  <Space size={4}>
                     <Button
                       size="small"
                       type="text"
-                      danger
-                      icon={<DeleteOutlined />}
-                      disabled={u.is_superuser}
+                      icon={<EditOutlined />}
+                      aria-label={`编辑 ${u.username}`}
+                      onClick={() => onEdit(u)}
                     />
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
-        />
-      </section>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<KeyOutlined />}
+                      onClick={() => setResetOpen(u)}
+                      aria-label={`重置 ${u.username} 的密码`}
+                    />
+                    <Popconfirm
+                      title="确认删除？"
+                      okText="删除"
+                      cancelText="取消"
+                      onConfirm={() => void onDelete(u.id)}
+                    >
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        disabled={u.is_superuser}
+                        aria-label={`删除 ${u.username}`}
+                      />
+                    </Popconfirm>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        )}
+      </Panel>
 
-      <Modal
-        title="新建用户"
+      <FormModal<CreateUserValues>
         open={createOpen}
+        title="新建用户"
+        form={createForm}
         onCancel={() => setCreateOpen(false)}
-        onOk={() => void onCreate()}
-        width={480}
+        onSubmit={onCreate}
         okText="创建"
-        cancelText="取消"
+        width={480}
       >
         <Form<CreateUserValues> form={createForm} layout="vertical" initialValues={{ role: 'viewer' }}>
           <Form.Item name="username" label="用户名" rules={[{ required: true, min: 3, max: 64 }]}>
@@ -410,16 +377,16 @@ export default function Users(): JSX.Element {
             <Input.Password />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormModal>
 
-      <Modal
-        title="编辑用户"
+      <FormModal<EditUserValues>
         open={editOpen}
+        title="编辑用户"
+        form={editForm}
         onCancel={() => setEditOpen(false)}
-        onOk={() => void onSave()}
-        width={480}
+        onSubmit={onSave}
         okText="保存"
-        cancelText="取消"
+        width={480}
       >
         <Form<EditUserValues> form={editForm} layout="vertical">
           <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}>
@@ -435,23 +402,23 @@ export default function Users(): JSX.Element {
             <Select options={STATUS_OPTIONS} />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormModal>
 
-      <Modal
-        title={resetOpen ? `重置密码 · ${resetOpen.username}` : '重置密码'}
+      <FormModal<ResetPasswordValues>
         open={!!resetOpen}
+        title={resetOpen ? `重置密码 · ${resetOpen.username}` : '重置密码'}
+        form={resetForm}
         onCancel={() => setResetOpen(null)}
-        onOk={() => void onReset()}
-        width={420}
+        onSubmit={onReset}
         okText="重置"
-        cancelText="取消"
+        width={420}
       >
         <Form<ResetPasswordValues> form={resetForm} layout="vertical">
           <Form.Item name="new_password" label="新密码" rules={[{ required: true, min: 6 }]}>
             <Input.Password />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormModal>
     </div>
   );
 }

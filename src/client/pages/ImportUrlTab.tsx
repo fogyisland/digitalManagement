@@ -21,8 +21,9 @@ import {
 import { LinkOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { importUrlByUrl } from '@/api/assets';
+import { Panel } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
-import { describeError } from '@/utils/parseMetadata';
+import { describeError } from '@/utils/errors';
 
 const { Text, Title } = Typography;
 
@@ -44,12 +45,12 @@ export default function ImportUrlTab(): JSX.Element {
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const onSubmit = async (): Promise<void> => {
-    const values = await form.validateFields();
-    if (!values.url) {
-      message.warning('请输入目标 URL');
-      return;
-    }
+  /**
+   * `validateFields()` rejects when a rule fails. It used to sit outside
+   * the `try` block, so a malformed URL produced an unhandled promise
+   * rejection instead of the inline field error AntD had already drawn.
+   */
+  const onFinish = async (values: FormValues): Promise<void> => {
     setSubmitting(true);
     try {
       const asset = await importUrlByUrl({
@@ -75,19 +76,12 @@ export default function ImportUrlTab(): JSX.Element {
         给定一个外部 URL，提交后服务端会拉取并写入资产记录；同一 hash 已存在时会复用原记录。
       </Text>
 
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-        }}
-      >
-        <Form
+      <Panel>
+        <Form<FormValues>
           form={form}
           layout="vertical"
           initialValues={{ source_tool: 'manual' }}
-          requiredMark={false}
+          onFinish={(v) => void onFinish(v)}
         >
           <Form.Item
             name="url"
@@ -114,25 +108,21 @@ export default function ImportUrlTab(): JSX.Element {
             </Form.Item>
           </Space>
 
-          <Form.Item label=" " colon={false}>
-            <Space>
-              <Button
-                type="primary"
-                onClick={() => void onSubmit()}
-                loading={submitting}
-              >
-                抓取并导入
-              </Button>
-              <Button
-                onClick={() => form.resetFields()}
-                disabled={submitting}
-              >
-                清空
-              </Button>
-            </Space>
-          </Form.Item>
+          {/* Not wrapped in a `Form.Item` with a blank label — a screen
+              reader announced an empty label for this button group. */}
+          <Space>
+            <Button type="primary" htmlType="submit" loading={submitting}>
+              抓取并导入
+            </Button>
+            <Button
+              onClick={() => form.resetFields()}
+              disabled={submitting}
+            >
+              清空
+            </Button>
+          </Space>
         </Form>
-      </section>
+      </Panel>
     </div>
   );
 }

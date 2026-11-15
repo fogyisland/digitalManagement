@@ -5,10 +5,11 @@ import {
   FileImageOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
-import type { Asset, AssetStatus } from '@/types';
+import type { Asset } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatBytes } from '@/utils/format';
 import { assetPreviewUrl } from '@/utils/assetUrls';
+import { assetTypeLabel, statusBadgeColor, statusLabel } from './labels';
 
 const { Text } = Typography;
 
@@ -21,36 +22,22 @@ export interface LibraryCardProps {
   onDelete: (asset: Asset) => void;
 }
 
-function statusBadgeColor(status: AssetStatus): string {
-  switch (status) {
-    case 'ready':
-      return tokens.color.success;
-    case 'processing':
-      return tokens.color.jobBadge;
-    case 'failed':
-      return tokens.color.danger;
-    case 'deleted':
-      return tokens.color.textMuted;
-    default:
-      return tokens.color.textMuted;
-  }
-}
-
-function statusLabel(status: AssetStatus): string {
-  switch (status) {
-    case 'ready':
-      return '就绪';
-    case 'processing':
-      return '处理中';
-    case 'failed':
-      return '失败';
-    case 'deleted':
-      return '已删除';
-    default:
-      return status;
-  }
-}
-
+/**
+ * A single asset in the library grid.
+ *
+ * ## Interaction model
+ *
+ * The card used to be a `div` with `role="button"` that contained a
+ * `Checkbox` and two action buttons. Nesting real controls inside a
+ * `role="button"` element is invalid — assistive technology reads the
+ * whole card as one button and the inner controls become unreachable.
+ *
+ * It now uses the "stretched overlay" pattern: the card is a plain `div`,
+ * an absolutely positioned transparent `button` covers it and carries the
+ * card's accessible name, and the checkbox and action bar sit above that
+ * overlay in the stacking order. Every control is a real control, each one
+ * is separately focusable, and the whole card still opens on click.
+ */
 export default function LibraryCard({
   asset,
   isSelected,
@@ -61,44 +48,28 @@ export default function LibraryCard({
 }: LibraryCardProps): JSX.Element {
   const isVideo = asset.asset_type === 'video';
   const url = assetPreviewUrl(asset);
+  const title = asset.title || asset.original_name || '(无标题)';
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(asset.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen(asset.id);
-        }
-      }}
+      className="dam-asset-card"
+      data-selected={isSelected}
       style={{
         position: 'relative',
         background: tokens.color.panel,
-        border: `1px solid ${
-          isSelected ? tokens.color.accent : tokens.color.border
-        }`,
         borderRadius: tokens.radius.lg,
         overflow: 'hidden',
         cursor: 'pointer',
-        transition: 'border-color 120ms ease, transform 120ms ease',
-        boxShadow: isSelected
-          ? `inset 0 0 0 1px ${tokens.color.accent}`
-          : 'none',
-        outline: 'none',
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = isSelected
-          ? tokens.color.accent
-          : tokens.color.borderStrong;
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = isSelected
-          ? tokens.color.accent
-          : tokens.color.border;
       }}
     >
+      {/* The card's single primary action. */}
+      <button
+        type="button"
+        className="dam-asset-card-overlay"
+        aria-label={`打开 ${title}`}
+        onClick={() => onOpen(asset.id)}
+      />
+
       {/* left accent stripe for selected — the page's one memorable beat */}
       {isSelected && (
         <span
@@ -111,20 +82,19 @@ export default function LibraryCard({
             height: '100%',
             background: tokens.color.accent,
             pointerEvents: 'none',
+            zIndex: 3,
           }}
         />
       )}
+
+      {/* Selection checkbox — sits above the overlay so it stays clickable. */}
       <div
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle(asset.id);
-        }}
         style={{
           position: 'absolute',
           top: tokens.space[2],
           left: tokens.space[2],
           zIndex: 2,
-          background: 'rgba(13, 17, 23, 0.72)',
+          background: tokens.color.overlayChip,
           borderRadius: tokens.radius.sm,
           padding: 4,
           backdropFilter: 'blur(2px)',
@@ -132,8 +102,13 @@ export default function LibraryCard({
       >
         <Checkbox
           checked={isSelected}
-          onChange={() => onToggle(asset.id)}
+          aria-label={`选择 ${title}`}
+          // Stopping the click here is what keeps the card from opening
+          // when the user only meant to tick the box. The toggle happens
+          // in `onChange` — doing it in an extra wrapper `onClick` as well
+          // would call it twice and cancel itself out.
           onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggle(asset.id)}
         />
       </div>
 
@@ -146,10 +121,9 @@ export default function LibraryCard({
         }}
       >
         {url ? (
-          // eslint-disable-next-line jsx-a11y/alt-text -- preview fallback below covers missing alt
           <img
             src={url}
-            alt={asset.title}
+            alt={title}
             loading="lazy"
             style={{
               width: '100%',
@@ -160,6 +134,7 @@ export default function LibraryCard({
           />
         ) : (
           <div
+            aria-hidden
             style={{
               width: '100%',
               height: '100%',
@@ -175,15 +150,17 @@ export default function LibraryCard({
         )}
         {isVideo && (
           <span
+            aria-hidden
             style={{
               position: 'absolute',
               top: tokens.space[2],
               right: tokens.space[2],
               padding: '2px 8px',
-              fontSize: 11,
+              fontSize: tokens.fontSize.xs,
               color: tokens.color.text,
-              background: 'rgba(13, 17, 23, 0.78)',
+              background: tokens.color.overlay,
               borderRadius: tokens.radius.sm,
+              pointerEvents: 'none',
             }}
           >
             视频
@@ -191,40 +168,42 @@ export default function LibraryCard({
         )}
         {asset.status !== 'ready' && (
           <span
+            aria-hidden
             style={{
               position: 'absolute',
               bottom: tokens.space[2],
               right: tokens.space[2],
               padding: '2px 8px',
-              fontSize: 11,
+              fontSize: tokens.fontSize.xs,
               color: statusBadgeColor(asset.status),
-              background: 'rgba(13, 17, 23, 0.78)',
+              background: tokens.color.overlay,
               borderRadius: tokens.radius.sm,
+              pointerEvents: 'none',
             }}
           >
             {statusLabel(asset.status)}
           </span>
         )}
         <div
-          className="library-card-actions"
+          className="dam-card-actions"
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
             bottom: 0,
             padding: tokens.space[2],
-            background: 'linear-gradient(to top, rgba(13, 17, 23, 0.92), rgba(13, 17, 23, 0))',
+            background: `linear-gradient(to top, ${tokens.color.overlaySoft}, transparent)`,
             display: 'flex',
             justifyContent: 'flex-end',
             gap: tokens.space[2],
-            opacity: 0,
-            transition: 'opacity 140ms ease',
+            zIndex: 2,
           }}
         >
           <Tooltip title="下载原始文件">
             <Button
               size="small"
               icon={<DownloadOutlined />}
+              aria-label={`下载 ${title} 的原始文件`}
               onClick={(e) => {
                 e.stopPropagation();
                 onDownload(asset);
@@ -236,6 +215,7 @@ export default function LibraryCard({
               size="small"
               danger
               icon={<DeleteOutlined />}
+              aria-label={`删除 ${title}`}
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(asset);
@@ -248,7 +228,7 @@ export default function LibraryCard({
       <div
         style={{
           padding: `${tokens.space[3]}px ${tokens.space[3]}px ${tokens.space[3]}px ${tokens.space[3] + (isSelected ? 4 : 0)}px`,
-          transition: 'padding-left 120ms ease',
+          transition: `padding-left ${tokens.motion.fast} ease`,
         }}
       >
         <Text
@@ -257,12 +237,12 @@ export default function LibraryCard({
           style={{
             display: 'block',
             color: tokens.color.text,
-            fontSize: 14,
+            fontSize: tokens.fontSize.md,
             lineHeight: 1.4,
           }}
-          title={asset.title}
+          title={title}
         >
-          {asset.title}
+          {title}
         </Text>
         <div
           style={{
@@ -270,11 +250,11 @@ export default function LibraryCard({
             display: 'flex',
             gap: tokens.space[3],
             color: tokens.color.textMuted,
-            fontSize: 12,
+            fontSize: tokens.fontSize.sm,
             fontFamily: tokens.font.mono,
           }}
         >
-          <span>{asset.asset_type}</span>
+          <span>{assetTypeLabel(asset.asset_type)}</span>
           <span>{formatBytes(asset.file_size)}</span>
           {asset.width && asset.height && (
             <span>

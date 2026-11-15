@@ -29,24 +29,11 @@ export function safeParseJson(input: string): JsonParseResult {
 }
 
 /**
- * Surface an axios-style error message that we can hand to AntD's
- * `message.error`. Backend handlers return `{ detail, message, code }`
- * inconsistently across versions, so we walk the shape defensively.
+ * Error-message extraction now lives in `utils/errors.ts` — it is not a
+ * metadata concern, and keeping it here meant every page that needed a
+ * failure message grew a private copy instead of importing a helper.
+ *
+ * Re-exported so existing call sites keep working; new code should import
+ * from `@/utils/errors` directly.
  */
-export function describeError(e: unknown, fallback: string): string {
-  if (!e || typeof e !== 'object') return fallback;
-  const obj = e as Record<string, unknown>;
-  const resp = obj.response as Record<string, unknown> | undefined;
-  const data = resp?.data as Record<string, unknown> | undefined;
-  if (data) {
-    const inner =
-      (data.response as Record<string, unknown> | undefined)?.message ||
-      (data.detail as unknown) ||
-      (data.message as unknown);
-    if (typeof inner === 'string' && inner.trim()) return inner;
-  }
-  if (typeof obj.message === 'string' && obj.message.trim()) {
-    return obj.message;
-  }
-  return fallback;
-}
+export { describeError } from './errors';

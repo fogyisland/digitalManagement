@@ -18,6 +18,13 @@
  * The cost is that a reload asks for it again — which is the same event that
  * loses the backend's boot-time value anyway when the process restarted.
  *
+ * The token is checked before the wizard opens. `GET /api/init/status` is the
+ * one route the backend leaves open (it answers before the token gate), so it
+ * cannot tell a good token from a bad one; the existing token-gated
+ * `GET /api/init/env-preview` can — it answers 403 `Invalid init token` for a
+ * wrong token — so it doubles as the probe. A wrong token is caught here
+ * instead of on the first submit.
+ *
  * The wizard also has to survive a reload. `GET /api/init/status` reports how
  * far the installation got, and the wizard opens on the first step the
  * backend has not finished (`stepFromStatus`). Without that, an operator who
@@ -28,8 +35,9 @@
  * render.
  */
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Input, Space, Spin, Steps, Typography } from 'antd';
+import { Alert, Button, Input, Space, Spin, Steps } from 'antd';
 import { KeyOutlined } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import InitDatabase from './InitDatabase';
 import InitAdmin from './InitAdmin';
 import InitSeed from './InitSeed';
@@ -37,11 +45,26 @@ import { describeInitError, initApi, setInitToken } from './initApi';
 import { stepFromStatus } from './initSteps';
 import type { InitStep } from './initSteps';
 import type { AdminInput, DatabaseInput } from './initApi';
-
-const { Paragraph, Text, Title } = Typography;
+import { PageHeader, Panel } from '@/components/ui';
+import { tokens } from '@/theme/tokens';
 
 /** Which page is showing. */
 type Step = InitStep;
+
+/**
+ * The HTTP status of a failed wizard request, when the server answered.
+ *
+ * The wizard's own axios instance is not the shared one, so the shared
+ * `isUnauthorized()` helper does not apply to it.
+ *
+ * @param error the caught value
+ * @returns the status code, or `undefined` when the request never landed
+ */
+function statusOf(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('response' in error)) return undefined;
+  const response = (error as { response?: { status?: number } }).response;
+  return response?.status;
+}
 
 export default function InitWizard(): JSX.Element {
   const [checking, setChecking] = useState(true);
@@ -49,10 +72,13 @@ export default function InitWizard(): JSX.Element {
   const [checkError, setCheckError] = useState<string | null>(null);
   const [token, setToken] = useState('');
   const [tokenAccepted, setTokenAccepted] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [checkingToken, setCheckingToken] = useState(false);
   const [step, setStep] = useState<Step>(0);
   const [resumed, setResumed] = useState(false);
   const [database, setDatabase] = useState<DatabaseInput | null>(null);
   const [admin, setAdmin] = useState<AdminInput | null>(null);
+  const navigate = useNavigate();
 
   // Ask the backend where the installation stands. `status` never requires
   // the token, so this runs before the operator has typed one.
@@ -80,16 +106,46 @@ export default function InitWizard(): JSX.Element {
     };
   }, []);
 
-  const onUseToken = (): void => {
+  /**
+   * Take the token the operator pasted and check it before opening the steps.
+   *
+   * A wrong token is refused here (the backend answers 403 `Invalid init
+   * token`); a request that never reached the server is reported but does not
+   * block the wizard — the token is checked again when the first step is
+   * submitted.
+   */
+  const onUseToken = async (): Promise<void> => {
     const trimmed = token.trim();
     if (!trimmed) return;
+    setCheckingToken(true);
+    setTokenError(null);
     setInitToken(trimmed);
-    setTokenAccepted(true);
+    try {
+      await initApi.envPreview();
+      setTokenAccepted(true);
+    } catch (err) {
+      if (statusOf(err) === 403) {
+        setTokenError('令牌无效，请核对后端启动时打印的 X-Init-Token');
+      } else {
+        setTokenError(`无法即时校验令牌（${describeInitError(err)}），令牌将在提交第一步时校验`);
+        setTokenAccepted(true);
+      }
+    } finally {
+      setCheckingToken(false);
+    }
   };
 
   if (checking) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 120 }}>
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: tokens.space[5],
+        }}
+      >
         <Spin size="large" tip="正在检查安装状态…" />
       </div>
     );
@@ -102,126 +158,156 @@ export default function InitWizard(): JSX.Element {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '48px 16px',
+        padding: `${tokens.space[6]} ${tokens.space[4]}`,
       }}
     >
-      <Card style={{ width: '100%', maxWidth: 680 }}>
-        <Title level={2} style={{ marginBottom: 4 }}>
-          初始化 DAM
-        </Title>
-        <Text type="secondary">
-          三步把空数据库变成一个可以登录的实例。
-        </Text>
+      <div style={{ width: '100%', maxWidth: 680 }}>
+        <PageHeader
+          title="初始化 DAM"
+          subtitle="三步把空数据库变成一个可以登录的实例。"
+        />
 
-        {checkError ? (
-          <Alert
-            type="error"
-            showIcon
-            style={{ marginTop: 16 }}
-            message="无法读取安装状态"
-            description={checkError}
-          />
-        ) : null}
-
-        {alreadyInitialized ? (
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginTop: 16 }}
-            message="这个实例已经初始化过了"
-            description={
-              <Paragraph style={{ marginBottom: 0 }}>
-                初始化接口已关闭。请直接<Button type="link" href="/" style={{ padding: 0 }}>进入系统</Button>。
-              </Paragraph>
-            }
-          />
-        ) : null}
-
-        {!alreadyInitialized && !tokenAccepted ? (
-          <div style={{ marginTop: 24 }}>
+        <Panel style={{ marginTop: tokens.space[5] }}>
+          {checkError ? (
             <Alert
-              type="warning"
+              type="error"
               showIcon
-              icon={<KeyOutlined />}
-              message="需要初始化令牌"
+              style={{ marginTop: tokens.space[4] }}
+              message="无法读取安装状态"
+              description={checkError}
+            />
+          ) : null}
+
+          {alreadyInitialized ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginTop: tokens.space[4] }}
+              message="这个实例已经初始化过了"
               description={
-                <Paragraph style={{ marginBottom: 0 }}>
-                  后端启动时会在控制台打印一行 <code>X-Init-Token</code>，把它粘贴到这里。
-                  也可以通过环境变量 <code>INIT_TOKEN</code> 固定这个值。
-                </Paragraph>
+                <p style={{ marginBottom: 0 }}>
+                  初始化接口已关闭。请直接
+                  <Button type="link" onClick={() => navigate('/')} style={{ padding: 0 }}>
+                    进入系统
+                  </Button>
+                  。
+                </p>
               }
             />
-            <Space.Compact style={{ width: '100%', marginTop: 16 }}>
-              <Input
-                placeholder="粘贴初始化令牌"
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                onPressEnter={onUseToken}
-                allowClear
-              />
-              <Button type="primary" onClick={onUseToken}>
-                使用
-              </Button>
-            </Space.Compact>
-          </div>
-        ) : null}
+          ) : null}
 
-        {!alreadyInitialized && tokenAccepted ? (
-          <>
-            {resumed ? (
+          {!alreadyInitialized && !tokenAccepted ? (
+            <div style={{ marginTop: tokens.space[5] }}>
               <Alert
-                type="info"
+                type="warning"
                 showIcon
-                style={{ marginTop: 24 }}
-                message="从上次停下的地方继续"
-                description="后端报告前面的步骤已经完成，向导直接打开在尚未完成的那一页。"
+                icon={<KeyOutlined />}
+                message="需要初始化令牌"
+                description={
+                  <p style={{ marginBottom: 0 }}>
+                    后端启动时会在控制台打印一行 <code>X-Init-Token</code>，把它粘贴到这里。
+                    也可以通过环境变量 <code>INIT_TOKEN</code> 固定这个值。
+                  </p>
+                }
               />
-            ) : null}
-
-            <Steps
-              current={step}
-              style={{ marginTop: 24, marginBottom: 24 }}
-              items={[
-                { title: '数据库' },
-                { title: '管理员' },
-                { title: '种子数据' },
-              ]}
-            />
-
-            {step === 0 ? (
-              <InitDatabase
-                onDone={(values) => {
-                  setDatabase(values);
-                  setResumed(false);
-                  setStep(1);
+              <label
+                htmlFor="init-token"
+                style={{
+                  display: 'block',
+                  marginTop: tokens.space[4],
+                  marginBottom: tokens.space[2],
+                  color: tokens.color.textMuted,
+                  fontSize: tokens.fontSize.sm,
                 }}
-              />
-            ) : null}
+              >
+                初始化令牌
+              </label>
+              <Space.Compact style={{ width: '100%' }}>
+                <Input.Password
+                  id="init-token"
+                  aria-label="初始化令牌"
+                  placeholder="粘贴初始化令牌"
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                  onPressEnter={() => void onUseToken()}
+                  allowClear
+                  autoComplete="off"
+                />
+                <Button
+                  type="primary"
+                  onClick={() => void onUseToken()}
+                  loading={checkingToken}
+                  disabled={!token.trim()}
+                >
+                  使用此令牌
+                </Button>
+              </Space.Compact>
+              {tokenError ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  style={{ marginTop: tokens.space[3] }}
+                  message={tokenError}
+                />
+              ) : null}
+            </div>
+          ) : null}
 
-            {step === 1 ? (
-              <InitAdmin
-                onBack={() => setStep(0)}
-                onDone={(values) => {
-                  setAdmin(values);
-                  setResumed(false);
-                  setStep(2);
-                }}
-              />
-            ) : null}
+          {!alreadyInitialized && tokenAccepted ? (
+            <>
+              {resumed ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginTop: tokens.space[5] }}
+                  message="从上次停下的地方继续"
+                  description="后端报告前面的步骤已经完成，向导直接打开在尚未完成的那一页。"
+                />
+              ) : null}
 
-            {step === 2 ? (
-              <InitSeed
-                database={database}
-                admin={admin}
-                onBack={() => setStep(1)}
-                onFinished={() => {
-                  window.location.href = '/';
-                }}
+              <Steps
+                current={step}
+                style={{ marginTop: tokens.space[5], marginBottom: tokens.space[5] }}
+                items={[
+                  { title: '数据库' },
+                  { title: '管理员' },
+                  { title: '种子数据' },
+                ]}
               />
-            ) : null}
-          </>
-        ) : null}
-      </Card>
+
+              {step === 0 ? (
+                <InitDatabase
+                  onDone={(values) => {
+                    setDatabase(values);
+                    setResumed(false);
+                    setStep(1);
+                  }}
+                />
+              ) : null}
+
+              {step === 1 ? (
+                <InitAdmin
+                  onBack={() => setStep(0)}
+                  onDone={(values) => {
+                    setAdmin(values);
+                    setResumed(false);
+                    setStep(2);
+                  }}
+                />
+              ) : null}
+
+              {step === 2 ? (
+                <InitSeed
+                  database={database}
+                  admin={admin}
+                  onBack={() => setStep(1)}
+                  onFinished={() => navigate('/')}
+                />
+              ) : null}
+            </>
+          ) : null}
+        </Panel>
+      </div>
     </div>
   );
 }

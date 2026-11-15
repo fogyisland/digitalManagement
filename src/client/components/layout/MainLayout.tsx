@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Avatar,
   Breadcrumb,
+  Button,
   Dropdown,
   Input,
   Layout,
@@ -17,6 +18,8 @@ import {
   ImportOutlined,
   KeyOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   ProfileOutlined,
   SearchOutlined,
   SettingOutlined,
@@ -24,15 +27,15 @@ import {
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { tokens } from '@/theme/tokens';
 
 const { Sider, Header, Content } = Layout;
 const { Text } = Typography;
 
-const SIDEBAR_WIDTH = 240;
-const TOPBAR_HEIGHT = 56;
+const SIDEBAR_WIDTH = tokens.layout.sidebarWidth;
+const TOPBAR_HEIGHT = tokens.layout.topbarHeight;
 
 interface NavEntry {
   key: string;
@@ -75,6 +78,13 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+const ADMIN_ENTRY: NavEntry = {
+  key: 'users',
+  path: '/users',
+  label: '用户管理',
+  icon: <TeamOutlined />,
+};
+
 /**
  * Match the current pathname against nav entries. Library detail
  * (`/library/:id`) should highlight the Library entry, not fall through.
@@ -89,6 +99,9 @@ function matchNavPath(pathname: string): { selectedKey: string; parentKey: strin
         return { selectedKey: entry.key, parentKey: group.key };
       }
     }
+  }
+  if (pathname === ADMIN_ENTRY.path || pathname.startsWith(`${ADMIN_ENTRY.path}/`)) {
+    return { selectedKey: ADMIN_ENTRY.key, parentKey: 'admin' };
   }
   return { selectedKey: '', parentKey: null };
 }
@@ -117,7 +130,7 @@ function buildMenuItems(isAdmin: boolean): MenuProps['items'] {
       key: 'admin',
       label: '系统',
       children: [
-        { key: 'users', icon: <TeamOutlined />, label: '用户管理' },
+        { key: ADMIN_ENTRY.key, icon: ADMIN_ENTRY.icon, label: ADMIN_ENTRY.label },
       ],
     });
   }
@@ -130,65 +143,63 @@ function findEntryByKey(key: string): { path: string; label: string } | null {
       if (entry.key === key) return { path: entry.path, label: entry.label };
     }
   }
-  if (key === 'users') return { path: '/users', label: '用户管理' };
+  if (key === ADMIN_ENTRY.key) return { path: ADMIN_ENTRY.path, label: ADMIN_ENTRY.label };
   return null;
 }
 
-function buildBreadcrumbItems(pathname: string, isAdmin: boolean) {
+/**
+ * Build the breadcrumb trail for a pathname.
+ *
+ * The previous implementation split the path into segments and tried to map
+ * each one back onto a nav entry, which produced raw path segments as
+ * labels ("/organize/categories" rendered a crumb literally reading
+ * "categories"). This walks the known routes instead and falls back to a
+ * readable label for anything unknown.
+ */
+function buildBreadcrumb(pathname: string): { label: string; path: string }[] {
   const trail: { label: string; path: string }[] = [{ label: '首页', path: '/' }];
-  if (pathname === '/') return trail.map((item, index) => renderCrumb(item, index, pathname));
+  if (pathname === '/') return trail;
 
   const segments = pathname.split('/').filter(Boolean);
-  let accumulated = '';
-  segments.forEach((segment) => {
-    accumulated += `/${segment}`;
-    if (segment === 'library' && pathname.startsWith('/library/')) {
-      trail.push({ label: '资产库', path: '/library' });
-      return;
-    }
-    if (pathname.startsWith('/library/')) {
-      trail.push({ label: '资产详情', path: pathname });
-      return;
-    }
-    const entry = (() => {
-      for (const group of NAV_GROUPS) {
-        for (const e of group.entries) {
-          if (e.path === accumulated || (e.path !== '/' && accumulated.startsWith(`${e.path}/`))) {
-            return { path: e.path, label: e.label };
-          }
-        }
-      }
-      if (isAdmin && accumulated === '/users') return { path: '/users', label: '用户管理' };
-      return null;
-    })();
-    if (entry) {
-      trail.push(entry);
-    } else {
-      trail.push({ label: segment, path: accumulated });
-    }
-  });
+  const root = `/${segments[0]}`;
 
-  return trail.map((item, index) => renderCrumb(item, index, pathname));
+  // Asset detail is the only nested route: 资产库 / 资产详情.
+  if (root === '/library' && segments.length > 1) {
+    trail.push({ label: '资产库', path: '/library' });
+    trail.push({ label: '资产详情', path: pathname });
+    return trail;
+  }
+
+  const entry = findEntryByKey(
+    NAV_GROUPS.flatMap((g) => g.entries).find((e) => e.path === root)?.key ?? '',
+  );
+  if (entry) {
+    trail.push({ label: entry.label, path: entry.path });
+    return trail;
+  }
+  if (root === ADMIN_ENTRY.path) {
+    trail.push({ label: ADMIN_ENTRY.label, path: ADMIN_ENTRY.path });
+    return trail;
+  }
+
+  // Unknown route (the 404 catch-all) — say so instead of echoing the path.
+  trail.push({ label: '页面不存在', path: pathname });
+  return trail;
 }
 
-function renderCrumb(item: { label: string; path: string }, index: number, current: string) {
-  const isLast = current === item.path || (item.path === '/' && current === '/');
-  return {
-    title: isLast ? (
-      <Text style={{ color: tokens.color.text }}>{item.label}</Text>
-    ) : (
-      <a href={item.path} style={{ color: tokens.color.textMuted }}>{item.label}</a>
-    ),
-    key: `${index}-${item.path}`,
-  };
-}
-
-export default function MainLayout() {
+export default function MainLayout(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const isAdmin = user?.role === 'admin';
+
+  const [collapsed, setCollapsed] = useState(false);
+  // Every group starts open: the sidebar only holds seven entries, and
+  // making the user click a group to discover "资产库" is pure friction.
+  const [openKeys, setOpenKeys] = useState<string[]>(
+    NAV_GROUPS.map((g) => g.key).concat(isAdmin ? ['admin'] : []),
+  );
 
   const { selectedKey, parentKey } = useMemo(
     () => matchNavPath(location.pathname),
@@ -197,11 +208,21 @@ export default function MainLayout() {
 
   const menuItems = useMemo(() => buildMenuItems(isAdmin), [isAdmin]);
   const breadcrumbItems = useMemo(
-    () => buildBreadcrumbItems(location.pathname, isAdmin),
-    [location.pathname, isAdmin],
+    () => buildBreadcrumb(location.pathname),
+    [location.pathname],
   );
 
-  const openKeys = parentKey ? [parentKey] : [];
+  // Keep the group that owns the active entry open, even if the user
+  // collapsed every group by hand.
+  useEffect(() => {
+    if (!parentKey) return;
+    setOpenKeys((prev) => (prev.includes(parentKey) ? prev : [...prev, parentKey]));
+  }, [parentKey]);
+
+  // A new route starts at the top of the page.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [location.pathname]);
 
   const onMenuClick: MenuProps['onClick'] = ({ key }) => {
     const entry = findEntryByKey(key);
@@ -213,11 +234,18 @@ export default function MainLayout() {
     navigate('/login');
   };
 
+  const onSearch = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed) navigate(`/library?q=${encodeURIComponent(trimmed)}`);
+  };
+
+  const displayName = user?.display_name || user?.username || '未登录';
+
   const userMenuItems: MenuProps['items'] = [
     {
       key: 'identity',
       icon: <UserOutlined />,
-      label: user?.display_name || user?.username || '未登录',
+      label: displayName,
       disabled: true,
     },
     { type: 'divider' },
@@ -227,30 +255,45 @@ export default function MainLayout() {
       label: '偏好设置',
       onClick: () => navigate('/settings'),
     },
-    {
-      key: 'profile',
-      icon: <ProfileOutlined />,
-      label: '用户管理',
-      onClick: () => navigate('/users'),
-    },
+    // The user table is admin-only — offering the entry to a regular user
+    // sent them to a route that bounced straight back to the dashboard.
+    ...(isAdmin
+      ? [
+          {
+            key: 'profile',
+            icon: <ProfileOutlined />,
+            label: '用户管理',
+            onClick: () => navigate('/users'),
+          },
+        ]
+      : []),
     { type: 'divider' },
     { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true, onClick: onLogout },
   ];
+
+  const toggleCollapsed = useCallback(() => setCollapsed((c) => !c), []);
 
   return (
     <Layout style={{ minHeight: '100vh', background: tokens.color.bg }}>
       <Sider
         width={SIDEBAR_WIDTH}
-        collapsedWidth={SIDEBAR_WIDTH}
+        collapsedWidth={0}
+        collapsible
+        collapsed={collapsed}
+        onCollapse={setCollapsed}
+        onBreakpoint={(broken) => setCollapsed(broken)}
         breakpoint="lg"
         theme="dark"
+        trigger={null}
         style={{
           background: tokens.color.bgAlt,
           borderRight: `1px solid ${tokens.color.border}`,
-          overflow: 'hidden',
+          overflow: 'auto',
           height: '100vh',
           position: 'sticky',
           top: 0,
+          alignSelf: 'flex-start',
+          zIndex: 20,
         }}
       >
         <div
@@ -273,15 +316,15 @@ export default function MainLayout() {
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontWeight: 700,
-              color: '#0d1117',
+              fontWeight: tokens.fontWeight.bold,
+              color: tokens.color.bg,
               marginRight: tokens.space[3],
             }}
           >
             D
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-            <span style={{ fontSize: 14, fontWeight: 600 }}>DAM</span>
+            <span style={{ fontSize: 14, fontWeight: tokens.fontWeight.semibold }}>DAM</span>
             <span style={{ fontSize: 11, color: tokens.color.textMuted }}>数字资产平台</span>
           </div>
         </div>
@@ -290,17 +333,18 @@ export default function MainLayout() {
           theme="dark"
           items={menuItems}
           selectedKeys={selectedKey ? [selectedKey] : []}
-          defaultOpenKeys={openKeys}
           openKeys={openKeys}
+          onOpenChange={(keys) => setOpenKeys(keys as string[])}
           onClick={onMenuClick}
           style={{
             background: 'transparent',
             borderInlineEnd: 0,
             paddingTop: tokens.space[2],
+            paddingBottom: tokens.space[5],
           }}
         />
       </Sider>
-      <Layout style={{ background: tokens.color.bg }}>
+      <Layout style={{ background: tokens.color.bg, minWidth: 0 }}>
         <Header
           style={{
             height: TOPBAR_HEIGHT,
@@ -311,28 +355,50 @@ export default function MainLayout() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            gap: tokens.space[4],
             position: 'sticky',
             top: 0,
             zIndex: 10,
           }}
         >
-          <Breadcrumb
-            items={breadcrumbItems}
-            style={{ lineHeight: `${TOPBAR_HEIGHT}px` }}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[3], minWidth: 0 }}>
+            <Button
+              type="text"
+              aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+              aria-expanded={!collapsed}
+              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              onClick={toggleCollapsed}
+            />
+            <Breadcrumb
+              items={breadcrumbItems.map((item, index) => {
+                const isLast = index === breadcrumbItems.length - 1;
+                return {
+                  key: `${index}-${item.path}`,
+                  title: isLast ? (
+                    <Text style={{ color: tokens.color.text }}>{item.label}</Text>
+                  ) : (
+                    // A router <Link>, not an <a href>: the old markup
+                    // triggered a full document reload on every crumb
+                    // click, throwing away the in-memory session state.
+                    <Link to={item.path} style={{ color: tokens.color.textMuted }}>
+                      {item.label}
+                    </Link>
+                  ),
+                };
+              })}
+              style={{ lineHeight: `${TOPBAR_HEIGHT}px`, minWidth: 0 }}
+            />
+          </div>
           <Space size="middle">
-            <Input
-              placeholder="搜索资产、标签、用户…"
-              prefix={<SearchOutlined style={{ color: tokens.color.textMuted }} />}
+            <Input.Search
+              placeholder="搜索资产、标签…"
               allowClear
+              enterButton={false}
+              onSearch={onSearch}
               style={{
-                width: 280,
+                width: 240,
                 background: tokens.color.bgAlt,
                 borderColor: tokens.color.border,
-              }}
-              onPressEnter={(e) => {
-                const value = (e.target as HTMLInputElement).value.trim();
-                if (value) navigate(`/library?q=${encodeURIComponent(value)}`);
               }}
             />
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
@@ -341,27 +407,28 @@ export default function MainLayout() {
                   size="small"
                   style={{
                     background: `linear-gradient(135deg, ${tokens.color.accent}, ${tokens.color.comfyui})`,
-                    color: '#0d1117',
-                    fontWeight: 600,
+                    color: tokens.color.bg,
+                    fontWeight: tokens.fontWeight.semibold,
                   }}
                 >
                   {(user?.display_name?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase()}
                 </Avatar>
-                <span style={{ color: tokens.color.text }}>
-                  {user?.display_name || user?.username || '未登录'}
-                </span>
+                <span style={{ color: tokens.color.text }}>{displayName}</span>
               </Space>
             </Dropdown>
           </Space>
         </Header>
         <Content
-          className="dam-section-rule"
+          className="dam-content"
           style={{
             margin: tokens.space[5],
             padding: tokens.space[5],
             background: tokens.color.panel,
             borderRadius: tokens.radius.lg,
             border: `1px solid ${tokens.color.border}`,
+            maxWidth: tokens.layout.contentMaxWidth,
+            width: '100%',
+            marginInline: 'auto',
             minHeight: `calc(100vh - ${TOPBAR_HEIGHT}px - ${tokens.space[5] * 2}px)`,
           }}
         >

@@ -9,6 +9,7 @@ import type { Asset } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatBytes } from '@/utils/format';
 import { assetPreviewUrl } from '@/utils/assetUrls';
+import { assetTypeLabel } from './labels';
 
 const { Text } = Typography;
 
@@ -21,6 +22,13 @@ export interface LibraryRowProps {
   onDelete: (asset: Asset) => void;
 }
 
+/**
+ * One asset in the library's list view.
+ *
+ * Uses the same "stretched overlay" pattern as `LibraryCard`: the row is a
+ * plain element, a transparent button carries the row's accessible name and
+ * opens the asset, and the checkbox and the action buttons sit above it.
+ */
 export default function LibraryRow({
   asset,
   isSelected,
@@ -31,38 +39,41 @@ export default function LibraryRow({
 }: LibraryRowProps): JSX.Element {
   const isVideo = asset.asset_type === 'video';
   const url = assetPreviewUrl(asset);
+  const title = asset.title || asset.original_name || '(无标题)';
 
   return (
     <div
+      className="dam-asset-row"
+      data-selected={isSelected}
       style={{
+        position: 'relative',
         display: 'flex',
         alignItems: 'center',
         gap: tokens.space[3],
         padding: `${tokens.space[2]}px ${tokens.space[3]}px`,
-        background: isSelected ? 'rgba(245, 165, 36, 0.06)' : tokens.color.panel,
-        border: `1px solid ${
-          isSelected ? tokens.color.accent : tokens.color.border
-        }`,
+        background: isSelected ? tokens.color.accentFaint : tokens.color.panel,
         borderRadius: tokens.radius.md,
         cursor: 'pointer',
-        transition: 'background 120ms ease, border-color 120ms ease',
       }}
-      onClick={() => onOpen(asset.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen(asset.id);
-        }
-      }}
-      role="button"
-      tabIndex={0}
     >
-      <Checkbox
-        checked={isSelected}
-        onClick={(e) => e.stopPropagation()}
-        onChange={() => onToggle(asset.id)}
+      <button
+        type="button"
+        className="dam-asset-card-overlay"
+        aria-label={`打开 ${title}`}
+        onClick={() => onOpen(asset.id)}
       />
+
+      <span style={{ position: 'relative', zIndex: 2, display: 'inline-flex' }}>
+        <Checkbox
+          checked={isSelected}
+          aria-label={`选择 ${title}`}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggle(asset.id)}
+        />
+      </span>
+
       <div
+        aria-hidden
         style={{
           width: 48,
           height: 48,
@@ -79,7 +90,7 @@ export default function LibraryRow({
         {url ? (
           <img
             src={url}
-            alt={asset.title}
+            alt=""
             loading="lazy"
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
@@ -89,30 +100,34 @@ export default function LibraryRow({
           <FileImageOutlined />
         )}
       </div>
+
       <div style={{ flex: 1, minWidth: 0 }}>
         <Text
           strong
           ellipsis
           style={{ display: 'block', color: tokens.color.text }}
+          title={title}
         >
-          {asset.title}
+          {title}
         </Text>
         <Text
           style={{
             display: 'block',
             color: tokens.color.textMuted,
-            fontSize: 12,
+            fontSize: tokens.fontSize.sm,
             fontFamily: tokens.font.mono,
           }}
         >
-          {asset.asset_type} · {formatBytes(asset.file_size)}
+          {assetTypeLabel(asset.asset_type)} · {formatBytes(asset.file_size)}
           {asset.source_tool ? ` · ${asset.source_tool}` : ''}
         </Text>
       </div>
-      <Space size="small">
+
+      <Space size="small" style={{ position: 'relative', zIndex: 2 }}>
         <Button
           size="small"
           icon={<DownloadOutlined />}
+          aria-label={`下载 ${title} 的原始文件`}
           onClick={(e) => {
             e.stopPropagation();
             onDownload(asset);
@@ -122,6 +137,7 @@ export default function LibraryRow({
           size="small"
           danger
           icon={<DeleteOutlined />}
+          aria-label={`删除 ${title}`}
           onClick={(e) => {
             e.stopPropagation();
             onDelete(asset);

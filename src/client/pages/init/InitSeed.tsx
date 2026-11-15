@@ -1,11 +1,15 @@
 /**
  * Setup wizard — page three: the seed data.
  *
- * The last page shows exactly what is about to be written — the `.env` the
- * backend renders, secrets masked — and what the seed step creates: the
- * starter categories and tags, and nothing else. The confirm button is the
- * only place that writes the signing key, so an operator can step back
- * without leaving a half-initialized instance.
+ * The last page shows what is about to be written — the `.env` the backend
+ * renders, secrets masked — and what the seed step creates: the starter
+ * categories and tags, plus the sample assets the server is configured to
+ * write. The confirm button is the only place that writes the signing key, so
+ * an operator can step back without leaving a half-initialized instance.
+ *
+ * The `.env` preview is fetched before the operator can confirm anything: if
+ * the preview fails, the write button stays disabled — a confirmation page
+ * that shows nothing is not a confirmation.
  *
  * Nothing here restarts the process: the backend hot-reloads the moment the
  * seed succeeds, and the operator walks straight into the application.
@@ -14,10 +18,12 @@
  * issued on the 集成 page, and are revoked when that system stops using one.
  */
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Descriptions, Space, Spin, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, SafetyOutlined } from '@ant-design/icons';
 import { describeInitError, initApi } from './initApi';
 import type { AdminInput, DatabaseInput, SeedResult } from './initApi';
+import { Panel } from '@/components/ui';
+import { tokens } from '@/theme/tokens';
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -87,15 +93,26 @@ export default function InitSeed({
 
   return (
     <div>
-      <Title level={3} style={{ marginBottom: 4 }}>
-        <SafetyOutlined style={{ marginRight: 8 }} />
+      <Title level={3} style={{ marginBottom: tokens.space[1] }}>
+        <SafetyOutlined style={{ marginRight: tokens.space[2] }} />
         确认并写入
       </Title>
       <Text type="secondary">
         确认下面的内容后写入配置。写入完成立即生效，服务不会重启，之后就能进入系统。
       </Text>
 
-      <Card size="small" title="将要创建的记录" style={{ marginTop: 16 }}>
+      <Panel style={{ marginTop: tokens.space[4] }}>
+        <Title
+          level={4}
+          style={{
+            marginTop: 0,
+            marginBottom: tokens.space[3],
+            fontSize: tokens.fontSize.md,
+            color: tokens.color.text,
+          }}
+        >
+          将要创建的记录
+        </Title>
         <Descriptions column={1} size="small">
           <Descriptions.Item label="数据库">
             {database
@@ -116,42 +133,78 @@ export default function InitSeed({
             )}
           </Descriptions.Item>
         </Descriptions>
-      </Card>
+      </Panel>
 
-      <Card size="small" title="将要生成的种子数据" style={{ marginTop: 16 }}>
+      <Panel style={{ marginTop: tokens.space[4] }}>
+        <Title
+          level={4}
+          style={{
+            marginTop: 0,
+            marginBottom: tokens.space[3],
+            fontSize: tokens.fontSize.md,
+            color: tokens.color.text,
+          }}
+        >
+          将要生成的种子数据
+        </Title>
         <Descriptions column={1} size="small">
           <Descriptions.Item label="分类">
-            <Space size={[4, 4]} wrap>
+            <Space size={tokens.space[1]} wrap>
               {SEEDED_CATEGORIES.map((name) => (
                 <Tag key={name}>{name}</Tag>
               ))}
             </Space>
           </Descriptions.Item>
           <Descriptions.Item label="标签">
-            <Space size={[4, 4]} wrap>
+            <Space size={tokens.space[1]} wrap>
               {SEEDED_TAGS.map((name) => (
                 <Tag key={name}>{name}</Tag>
               ))}
             </Space>
           </Descriptions.Item>
         </Descriptions>
-        <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+        <Paragraph type="secondary" style={{ marginTop: tokens.space[3], marginBottom: 0 }}>
+          如果服务端设置了 SEED_SAMPLE_ASSETS=1，这一步还会写入 12 张示例资产：1024×1024
+          的渐变 PNG，并生成 400×400 的 WebP 缩略图，交替归入「AI 生成」和「营销素材」两个分类。
+          该开关默认关闭，关闭时不会写入任何示例资产。
+        </Paragraph>
+        <Paragraph type="secondary" style={{ marginTop: tokens.space[2], marginBottom: 0 }}>
           这一步不会创建 API Key。API Key 进入系统后在「集成」页申请，按外部系统各自一份，不再使用时撤销。
         </Paragraph>
-      </Card>
+      </Panel>
 
-      <Card size="small" title=".env 内容（敏感值已掩码）" style={{ marginTop: 16 }}>
+      <Panel style={{ marginTop: tokens.space[4] }}>
+        <Title
+          level={4}
+          style={{
+            marginTop: 0,
+            marginBottom: tokens.space[3],
+            fontSize: tokens.fontSize.md,
+            color: tokens.color.text,
+          }}
+        >
+          .env 内容（敏感值已掩码）
+        </Title>
         {preview === null && previewError === null ? <Spin /> : null}
-        {previewError ? <Alert type="warning" showIcon message={previewError} /> : null}
+        {previewError ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="无法读取 .env 预览"
+            description={`${previewError}。写入按钮已禁用：请先让预览成功，确认将要写入的内容后再写入。`}
+          />
+        ) : null}
         {preview !== null ? (
           <Paragraph>
             <pre
               style={{
                 margin: 0,
-                padding: 12,
-                borderRadius: 6,
-                background: 'rgba(0, 0, 0, 0.25)',
-                fontSize: 12,
+                padding: tokens.space[3],
+                borderRadius: tokens.radius.md,
+                background: tokens.color.surfaceSunken,
+                color: tokens.color.text,
+                fontFamily: tokens.font.mono,
+                fontSize: tokens.fontSize.sm,
                 lineHeight: 1.6,
                 overflowX: 'auto',
                 maxHeight: 260,
@@ -161,13 +214,13 @@ export default function InitSeed({
             </pre>
           </Paragraph>
         ) : null}
-      </Card>
+      </Panel>
 
       {error ? (
         <Alert
           type="error"
           showIcon
-          style={{ marginTop: 16 }}
+          style={{ marginTop: tokens.space[4] }}
           message="写入失败"
           description={error}
         />
@@ -178,11 +231,11 @@ export default function InitSeed({
           type="success"
           showIcon
           icon={<CheckCircleOutlined />}
-          style={{ marginTop: 16 }}
+          style={{ marginTop: tokens.space[4] }}
           message="配置已写入，系统已就绪"
           description={
             <div>
-              <Paragraph style={{ marginBottom: 8 }}>
+              <Paragraph style={{ marginBottom: tokens.space[2] }}>
                 JWT 密钥已写入 <code>.env</code>，服务已热加载完成，不需要重启。
               </Paragraph>
               <Paragraph style={{ marginBottom: 0 }}>
@@ -193,12 +246,18 @@ export default function InitSeed({
         />
       ) : null}
 
-      <Space style={{ marginTop: 24 }}>
-        <Button onClick={onBack} size="large" disabled={loading}>
+      <Space style={{ marginTop: tokens.space[5] }}>
+        <Button onClick={onBack} size="large" disabled={loading || seed !== null}>
           上一步
         </Button>
         {seed === null ? (
-          <Button type="primary" size="large" loading={loading} onClick={onConfirm}>
+          <Button
+            type="primary"
+            size="large"
+            loading={loading}
+            disabled={preview === null}
+            onClick={onConfirm}
+          >
             写入配置并生成种子数据
           </Button>
         ) : (

@@ -16,11 +16,9 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
-  Empty,
   Input,
   Pagination,
   Select,
-  Skeleton,
   Space,
   Tooltip,
   Typography,
@@ -32,11 +30,20 @@ import {
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApi } from '@/api/hooks';
+import {
+  PageHeader,
+  Panel,
+  Pill,
+  StateBlock,
+  resolveDataStatus,
+} from '@/components/ui';
 import type { Asset, AssetStatus, PageResponse } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatDate } from '@/utils/format';
+import { statusLabel, statusTone } from '@/utils/assetStatus';
+import { describeError } from '@/utils/errors';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 const STATUS_OPTIONS: { value: AssetStatus; label: string }[] = [
   { value: 'ready', label: '就绪' },
@@ -52,36 +59,6 @@ const SOURCE_TOOL_OPTIONS = [
 ];
 
 const PAGE_SIZE_OPTIONS = [12, 24, 48, 96];
-
-function statusColor(status: AssetStatus): string {
-  switch (status) {
-    case 'ready':
-      return tokens.color.success;
-    case 'processing':
-      return tokens.color.jobBadge;
-    case 'failed':
-      return tokens.color.danger;
-    case 'deleted':
-      return tokens.color.textMuted;
-    default:
-      return tokens.color.textMuted;
-  }
-}
-
-function statusLabel(status: AssetStatus): string {
-  switch (status) {
-    case 'ready':
-      return '就绪';
-    case 'processing':
-      return '处理中';
-    case 'failed':
-      return '失败';
-    case 'deleted':
-      return '已删除';
-    default:
-      return status;
-  }
-}
 
 /**
  * Build the `/assets` query path. The backend's `source_tool` filter
@@ -118,7 +95,7 @@ const JOB_BADGE_STYLE: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   background: tokens.color.jobBadge,
-  color: '#ffffff',
+  color: tokens.color.text,
   fontFamily: tokens.font.mono,
   fontSize: 11,
   fontWeight: 600,
@@ -143,7 +120,6 @@ function JobRow({ asset, onOpen, onCopy }: JobRowProps): JSX.Element {
   const jobId = asset.job_id ?? '';
   const title = asset.title || asset.original_name || '(无标题)';
   const description = asset.description ?? '';
-  const color = statusColor(asset.status);
 
   return (
     <div
@@ -205,23 +181,7 @@ function JobRow({ asset, onOpen, onCopy }: JobRowProps): JSX.Element {
       </div>
 
       <Space size="small" align="center">
-        <span
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '2px 10px',
-            fontSize: 12,
-            fontWeight: 500,
-            color,
-            background: 'rgba(13, 17, 23, 0.72)',
-            border: `1px solid ${color}`,
-            borderRadius: tokens.radius.sm,
-          }}
-        >
-          <span aria-hidden style={{ width: 6, height: 6, borderRadius: 3, background: color }} />
-          {statusLabel(asset.status)}
-        </span>
+        <Pill value={statusLabel(asset.status)} tone={statusTone(asset.status)} />
         {jobId && (
           <Tooltip title="复制 job_id">
             <Button
@@ -318,11 +278,7 @@ export default function Jobs(): JSX.Element {
       await navigator.clipboard.writeText(text);
       message.success(`${label}已复制`);
     } catch (e: unknown) {
-      const detail =
-        e && typeof e === 'object' && 'message' in e
-          ? String((e as { message: unknown }).message)
-          : '剪贴板不可用';
-      message.error(detail);
+      message.error(describeError(e, '剪贴板不可用'));
     }
   };
 
@@ -330,33 +286,42 @@ export default function Jobs(): JSX.Element {
     navigate(`/library/${id}`);
   };
 
+  /**
+   * Exactly one of the four result states is rendered. The page used to
+   * test `loading` before `error`, so a failed request (which left
+   * `loading` set) showed the skeleton forever and the error text with
+   * its retry button was unreachable.
+   */
+  const listStatus = resolveDataStatus({
+    loading: jobsState.loading,
+    error: jobsState.error,
+    hasData: !!jobsState.data,
+    isEmpty: items.length === 0,
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
-      <header>
-        <Title level={2} style={{ margin: 0, color: tokens.color.text, fontWeight: 600, letterSpacing: '-0.01em' }}>
-          任务
-        </Title>
-        <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
-          ComfyUI 流水线产生的资产列表 · 共 {total.toLocaleString()} 项
-        </Text>
-      </header>
+      <PageHeader
+        title="任务"
+        subtitle={
+          <>
+            ComfyUI 流水线产生的资产列表 · 共 {total.toLocaleString()} 项
+          </>
+        }
+      />
 
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-        }}
-      >
+      <Panel>
         <Space size={[tokens.space[3], tokens.space[3]]} wrap style={{ width: '100%' }}>
           <Input.Search
             allowClear
+            aria-label="按 job_id 或标题搜索"
             placeholder="按 job_id 或标题搜索"
             value={keywordInput}
             onChange={(e) => setKeywordInput(e.target.value)}
             onSearch={onSearch}
-            enterButton={<SearchOutlined />}
+            // The submit button carries only an icon, so it needs its
+            // own accessible name.
+            enterButton={<Button aria-label="搜索" icon={<SearchOutlined />} />}
             style={{ width: 280 }}
           />
           <Select
@@ -378,63 +343,47 @@ export default function Jobs(): JSX.Element {
             刷新
           </Button>
         </Space>
-      </section>
+      </Panel>
 
       <section>
-        {jobsState.loading ? (
-          <Skeleton
-            active
-            paragraph={{ rows: 6 }}
-            style={{
-              padding: tokens.space[4],
-              background: tokens.color.panel,
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.lg,
-            }}
+        {listStatus === 'loading' && (
+          <Panel>
+            <StateBlock status="loading" rows={6} />
+          </Panel>
+        )}
+
+        {listStatus === 'error' && (
+          <StateBlock
+            status="error"
+            title="任务列表加载失败"
+            error={jobsState.error}
+            errorFallback="无法加载任务列表"
+            onRetry={() => void jobsState.reload()}
           />
-        ) : jobsState.error ? (
-          <div
-            style={{
-              padding: tokens.space[4],
-              background: 'rgba(248, 81, 73, 0.08)',
-              border: `1px solid ${tokens.color.danger}`,
-              borderRadius: tokens.radius.md,
-              color: tokens.color.danger,
-              display: 'flex',
-              alignItems: 'center',
-              gap: tokens.space[3],
-            }}
-          >
-            <span>加载失败：{jobsState.error.message}</span>
-            <Button size="small" onClick={() => void jobsState.reload()}>
-              重试
-            </Button>
-          </div>
-        ) : items.length === 0 ? (
-          <div
-            style={{
-              background: tokens.color.panel,
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.lg,
-              padding: tokens.space[6],
-              textAlign: 'center',
-            }}
-          >
-            <Empty
+        )}
+
+        {listStatus === 'empty' && (
+          <Panel>
+            <StateBlock
+              status="empty"
+              title={q ? `没有匹配「${q}」的任务` : '暂无 ComfyUI 任务'}
               description={
-                <span style={{ color: tokens.color.textMuted }}>
-                  {q ? `没有匹配「${q}」的任务` : '暂无 ComfyUI 任务'}
-                </span>
+                q
+                  ? '换个关键字，或清除筛选条件后再试。'
+                  : '从 ComfyUI 导入流水线，或手动上传一个资产。'
               }
-            >
-              {q ? (
-                <Button onClick={onReset}>清除筛选</Button>
-              ) : (
-                <Button onClick={() => navigate('/import')}>前往导入</Button>
-              )}
-            </Empty>
-          </div>
-        ) : (
+              action={
+                q ? (
+                  <Button onClick={onReset}>清除筛选</Button>
+                ) : (
+                  <Button onClick={() => navigate('/import')}>前往导入</Button>
+                )
+              }
+            />
+          </Panel>
+        )}
+
+        {listStatus === 'ready' && (
           <Space direction="vertical" size="small" style={{ width: '100%' }}>
             {items.map((asset) => (
               <JobRow key={asset.id} asset={asset} onOpen={onOpen} onCopy={onCopy} />
@@ -442,7 +391,9 @@ export default function Jobs(): JSX.Element {
           </Space>
         )}
 
-        {total > 0 && !jobsState.error && (
+        {/* The pager only exists for a rendered list — showing "共 N 项"
+            under an empty state read as a contradiction. */}
+        {listStatus === 'ready' && total > 0 && (
           <div style={{ marginTop: tokens.space[5], display: 'flex', justifyContent: 'flex-end' }}>
             <Pagination
               current={page}

@@ -1,18 +1,18 @@
 /**
- * Dashboard — Task 18.
+ * Dashboard.
  *
  * Visual language:
  *   - 4 large number cards (total / images / videos / size)
  *   - recent 10 assets as a compact mono-typed row list
- *   - no gradient glows, no all-caps eyebrows; uses `tokens` only
+ *   - tokens only — no raw colours, no legacy CSS classes
  *
- * Data fetch goes through `useApi<DashboardData>` so it shares the
- * cache + loading contract with Library/Organize/Jobs. We still read
- * `summary` defensively (the legacy shape had extra fields we no longer
- * render) and trim the recent list to 10 for the compact row.
+ * Data fetch goes through `useApi<DashboardData>` so it shares the loading
+ * and error contract with the rest of the app. We still read `summary`
+ * defensively (the legacy shape had extra fields we no longer render) and
+ * trim the recent list to 10 for the compact row.
  */
 import { useMemo } from 'react';
-import { Skeleton, Space, Typography } from 'antd';
+import { Space, Typography } from 'antd';
 import {
   AppstoreOutlined,
   PictureOutlined,
@@ -21,10 +21,12 @@ import {
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useApi } from '@/api/hooks';
+import { PageHeader, Panel, StateBlock, resolveDataStatus } from '@/components/ui';
 import type { DashboardData } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { formatBytes, formatDate } from '@/utils/format';
 import { assetPreviewUrl } from '@/utils/assetUrls';
+import { assetTypeLabel } from '@/components/library/labels';
 
 const { Text, Title } = Typography;
 
@@ -80,55 +82,47 @@ export default function Dashboard(): JSX.Element {
     ];
   }, [summary]);
 
-  if (state.loading && !state.data) {
+  const status = resolveDataStatus({
+    loading: state.loading,
+    error: state.error,
+    hasData: !!summary,
+    isEmpty: cards.length === 0,
+  });
+
+  if (status === 'loading') {
     return (
-      <div
-        style={{
-          padding: tokens.space[5],
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-        }}
-      >
-        <Skeleton active paragraph={{ rows: 6 }} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
+        <PageHeader title="仪表盘" subtitle="正在读取资产库统计…" />
+        <Panel>
+          <StateBlock status="loading" rows={6} />
+        </Panel>
       </div>
     );
   }
 
-  if (state.error || !summary) {
+  if (status === 'error' || !summary) {
     return (
-      <div
-        style={{
-          padding: tokens.space[5],
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          color: tokens.color.danger,
-        }}
-      >
-        加载失败：{state.error?.message ?? '仪表盘数据不可用'}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
+        <PageHeader title="仪表盘" subtitle="资产库整体状态" />
+        <Panel>
+          <StateBlock
+            status="error"
+            title="仪表盘数据加载失败"
+            error={state.error}
+            errorFallback="仪表盘数据不可用"
+            onRetry={() => void state.reload()}
+          />
+        </Panel>
       </div>
     );
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
-      <header>
-        <Title
-          level={2}
-          style={{
-            margin: 0,
-            color: tokens.color.text,
-            fontWeight: 600,
-            letterSpacing: '-0.01em',
-          }}
-        >
-          仪表盘
-        </Title>
-        <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
-          资产库整体状态 · 数据更新于 {formatDate(new Date().toISOString())}
-        </Text>
-      </header>
+      <PageHeader
+        title="仪表盘"
+        subtitle="资产库整体状态概览"
+      />
 
       {/* Four large number cards */}
       <section
@@ -139,19 +133,7 @@ export default function Dashboard(): JSX.Element {
         }}
       >
         {cards.map((c) => (
-          <div
-            key={c.key}
-            style={{
-              background: tokens.color.panel,
-              border: `1px solid ${tokens.color.border}`,
-              borderLeft: `2px solid ${tokens.color.accent}`,
-              borderRadius: tokens.radius.lg,
-              padding: tokens.space[4],
-              display: 'flex',
-              flexDirection: 'column',
-              gap: tokens.space[2],
-            }}
-          >
+          <Panel key={c.key} accent>
             <Space size="small" align="center">
               <span
                 aria-hidden
@@ -162,7 +144,7 @@ export default function Dashboard(): JSX.Element {
                   width: 32,
                   height: 32,
                   borderRadius: tokens.radius.sm,
-                  background: 'rgba(245, 165, 36, 0.12)',
+                  background: tokens.color.accentSoft,
                   color: tokens.color.accent,
                   fontSize: 16,
                 }}
@@ -172,9 +154,7 @@ export default function Dashboard(): JSX.Element {
               <Text
                 style={{
                   color: tokens.color.textMuted,
-                  fontSize: 12,
-                  textTransform: 'none',
-                  letterSpacing: 0,
+                  fontSize: tokens.fontSize.sm,
                 }}
               >
                 {c.label}
@@ -182,8 +162,9 @@ export default function Dashboard(): JSX.Element {
             </Space>
             <div
               style={{
-                fontSize: 32,
-                fontWeight: 600,
+                marginTop: tokens.space[2],
+                fontSize: tokens.fontSize['3xl'],
+                fontWeight: tokens.fontWeight.semibold,
                 color: tokens.color.text,
                 lineHeight: 1.1,
                 fontFamily: tokens.font.mono,
@@ -192,22 +173,15 @@ export default function Dashboard(): JSX.Element {
             >
               {c.value}
             </div>
-            <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+            <Text style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>
               {c.hint}
             </Text>
-          </div>
+          </Panel>
         ))}
       </section>
 
       {/* Recent 10 assets — compact mono-typed row list */}
-      <section
-        style={{
-          background: tokens.color.panel,
-          border: `1px solid ${tokens.color.border}`,
-          borderRadius: tokens.radius.lg,
-          padding: tokens.space[4],
-        }}
-      >
+      <Panel>
         <div
           style={{
             display: 'flex',
@@ -218,7 +192,7 @@ export default function Dashboard(): JSX.Element {
         >
           <Title
             level={4}
-            style={{ margin: 0, color: tokens.color.text, fontWeight: 600 }}
+            style={{ margin: 0, color: tokens.color.text, fontWeight: tokens.fontWeight.semibold }}
           >
             最近 10 条资产
           </Title>
@@ -228,14 +202,14 @@ export default function Dashboard(): JSX.Element {
               e.preventDefault();
               navigate('/library');
             }}
-            style={{ color: tokens.color.accent, fontSize: 13, textDecoration: 'none' }}
+            style={{ color: tokens.color.accent, fontSize: tokens.fontSize.base, textDecoration: 'none' }}
           >
             查看全部 →
           </a>
         </div>
 
         {recentAssets.length === 0 ? (
-          <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
+          <Text style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.base }}>
             暂无最近上传的资产
           </Text>
         ) : (
@@ -243,11 +217,14 @@ export default function Dashboard(): JSX.Element {
             {recentAssets.map((asset) => {
               const preview = assetPreviewUrl(asset);
               const isVideo = asset.asset_type === 'video';
+              const title = asset.title || asset.original_name || '(无标题)';
               return (
                 <div
                   key={asset.id}
+                  className="dam-asset-row"
                   role="button"
                   tabIndex={0}
+                  aria-label={`打开 ${title}`}
                   onClick={() => navigate(`/library/${asset.id}`)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -261,16 +238,8 @@ export default function Dashboard(): JSX.Element {
                     gap: tokens.space[3],
                     padding: `${tokens.space[2]}px ${tokens.space[3]}px`,
                     background: tokens.color.bgAlt,
-                    border: `1px solid ${tokens.color.border}`,
                     borderRadius: tokens.radius.md,
                     cursor: 'pointer',
-                    transition: 'border-color 120ms ease, background 120ms ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = tokens.color.borderStrong;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = tokens.color.border;
                   }}
                 >
                   <div
@@ -291,7 +260,7 @@ export default function Dashboard(): JSX.Element {
                     {preview ? (
                       <img
                         src={preview}
-                        alt={asset.title}
+                        alt=""
                         loading="lazy"
                         style={{
                           width: '100%',
@@ -312,21 +281,21 @@ export default function Dashboard(): JSX.Element {
                       style={{
                         display: 'block',
                         color: tokens.color.text,
-                        fontSize: 13,
+                        fontSize: tokens.fontSize.base,
                       }}
-                      title={asset.title}
+                      title={title}
                     >
-                      {asset.title || asset.original_name || '(无标题)'}
+                      {title}
                     </Text>
                     <Text
                       style={{
                         display: 'block',
                         color: tokens.color.textMuted,
-                        fontSize: 11,
+                        fontSize: tokens.fontSize.xs,
                         fontFamily: tokens.font.mono,
                       }}
                     >
-                      {asset.asset_type}
+                      {assetTypeLabel(asset.asset_type)}
                       {' · '}
                       {formatBytes(asset.file_size)}
                       {' · '}
@@ -338,7 +307,7 @@ export default function Dashboard(): JSX.Element {
             })}
           </Space>
         )}
-      </section>
+      </Panel>
     </div>
   );
 }

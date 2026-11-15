@@ -3,51 +3,44 @@
  *
  * Renders the tag card cloud plus the create/edit Modal. The backend
  * exposes the full CRUD surface — `POST /tags`, `PUT /tags/:id` and
- * `DELETE /tags/:id` (see `backend/src/routes/tags.js`) — so editing
+ * `DELETE /tags/:id` (see `src/server/routes/tags.js`) — so editing
  * and deleting are wired up here through `tagsApi`.
  *
  * Two behaviours worth knowing:
- *   - `PUT /tags/:id` only honours `name` and `color`. The slug is
- *     re-derived from the name by the backend, never sent from here.
+ *   - `POST /tags` destructures only `{name, color, description}` and
+ *     stores `slugify(name)` (`src/server/routes/tags.js:45` and `:53`);
+ *     `PUT /tags/:id` takes `{name, color}` and re-derives the slug from
+ *     the name (`:69` and `:73`). The slug is therefore never sent from
+ *     here — the old slug input was accepted and then dropped.
  *   - `DELETE /tags/:id` also drops the tag's bindings in
  *     `asset_tags`. The assets survive; they just lose that tag.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
   ColorPicker,
-  Empty,
   Form,
   Input,
-  Modal,
   Popconfirm,
-  Skeleton,
   Tooltip,
 } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { tagsApi } from '@/api/tags';
+import { FormModal, Pill, StateBlock, resolveDataStatus } from '@/components/ui';
 import type { Tag } from '@/types';
 import { tokens } from '@/theme/tokens';
+import { describeError } from '@/utils/errors';
 
 interface TagFormValues {
   name: string;
-  slug?: string;
-  color?: string;
+  /**
+   * 取色器回传的是 Color 对象，提交前由 `extractColorHex` 归一化成 hex。
+   * 存库时写回的是 hex 字符串，`ColorPicker` 的 `value` 同样接受字符串。
+   */
+  color?: string | { toHexString?: () => string; toHex?: () => string };
 }
-
-const PANEL_STYLE: React.CSSProperties = {
-  background: tokens.color.panel,
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.lg,
-  padding: tokens.space[4],
-};
-
-const SLUG_RULE = {
-  pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
-  message: 'slug 只能包含小写字母、数字与连字符',
-};
 
 function extractColorHex(value: unknown): string | null {
   if (!value) return null;
@@ -58,17 +51,6 @@ function extractColorHex(value: unknown): string | null {
     if (typeof obj.toHex === 'function') return obj.toHex();
   }
   return null;
-}
-
-function extractErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const response = (err as { response?: { data?: { detail?: string; message?: string } } }).response;
-    const data = response?.data;
-    if (data?.detail) return String(data.detail);
-    if (data?.message) return String(data.message);
-  }
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
 }
 
 interface TagModalProps {
@@ -82,7 +64,6 @@ interface TagModalProps {
 function TagModal({ open, editing, onCancel, onSaved }: TagModalProps): JSX.Element {
   const { message } = App.useApp();
   const [form] = Form.useForm<TagFormValues>();
-  const [submitting, setSubmitting] = useState<boolean>(false);
   const isEdit = editing !== null;
 
   useEffect(() => {
@@ -91,24 +72,15 @@ function TagModal({ open, editing, onCancel, onSaved }: TagModalProps): JSX.Elem
     if (editing) {
       form.setFieldsValue({
         name: editing.name,
-        slug: editing.slug,
+        // 存库的是 hex 字符串，ColorPicker 的 value 直接接受字符串。
         color: editing.color ?? tokens.color.accent,
       });
     } else {
-      form.setFieldValue('color', tokens.color.accent);
+      form.setFieldsValue({ color: tokens.color.accent });
     }
   }, [open, editing, form]);
 
-  const onOk = async (): Promise<void> => {
-    let values: TagFormValues;
-    try {
-      values = await form.validateFields();
-    } catch (e: unknown) {
-      // antd already renders the field-level validation messages.
-      console.warn('[tags] validation failed:', e);
-      return;
-    }
-    setSubmitting(true);
+  const onSubmit = async (values: TagFormValues): Promise<void> => {
     const name = values.name.trim();
     const color = extractColorHex(values.color) ?? tokens.color.accent;
     try {
@@ -121,50 +93,42 @@ function TagModal({ open, editing, onCancel, onSaved }: TagModalProps): JSX.Elem
       }
       onSaved();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, isEdit ? '保存标签失败' : '新建标签失败'));
-    } finally {
-      setSubmitting(false);
+      message.error(describeError(e, isEdit ? '保存标签失败' : '新建标签失败'));
     }
   };
 
   return (
-    <Modal
-      title={isEdit ? '编辑标签' : '新建标签'}
+    <FormModal
       open={open}
+      title={isEdit ? '编辑标签' : '新建标签'}
+      form={form}
       onCancel={onCancel}
-      onOk={() => void onOk()}
+      onSubmit={onSubmit}
       okText={isEdit ? '保存' : '创建'}
-      cancelText="取消"
-      confirmLoading={submitting}
-      destroyOnClose
       width={480}
+      // AntD 会把字段级错误标在输入框下方；这里再兜一次底，
+      // 免得整表校验失败时用户什么也看不到。
+      onValidationError={() => message.error('请检查表单填写')}
     >
       <Form form={form} layout="vertical" preserve={false}>
         <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入标签名称' }]}>
           <Input placeholder="例如：暖色调" autoFocus />
         </Form.Item>
         <Form.Item
-          name="slug"
-          label="slug"
-          rules={isEdit ? [] : [SLUG_RULE]}
-          extra={
-            isEdit
-              ? 'slug 由后端按名称重新生成，此处仅供查看'
-              : '留空则按名称自动生成'
-          }
+          name="color"
+          label="颜色"
+          extra="仅作视觉提示；标签的 slug 由名称自动生成。"
         >
-          <Input placeholder="例如：warm-tone" disabled={isEdit} />
-        </Form.Item>
-        <Form.Item name="color" label="颜色" extra="仅作视觉提示">
-          <ColorPicker defaultValue={tokens.color.accent} showText format="hex" />
+          <ColorPicker showText format="hex" />
         </Form.Item>
       </Form>
-    </Modal>
+    </FormModal>
   );
 }
 
 interface OrganizeTagsProps {
-  tags: Tag[];
+  /** `undefined` until the list has loaded successfully. */
+  tags?: Tag[];
   loading: boolean;
   error?: Error;
   onReload: () => Promise<void>;
@@ -176,6 +140,8 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
   const [modalOpen, setModalOpen] = useState<boolean>(false);
   const [editing, setEditing] = useState<Tag | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const list = useMemo(() => tags ?? [], [tags]);
 
   const openCreate = (): void => {
     setEditing(null);
@@ -194,43 +160,53 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
       message.success(`已删除标签「${tag.name}」`);
       await onReload();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '删除标签失败'));
+      message.error(describeError(e, '删除标签失败'));
     } finally {
       setDeletingId(null);
     }
   };
 
+  // `useApi` flips `loading` inside an effect, so the very first frame has
+  // neither data nor an error. Treat that as "still loading" instead of
+  // flashing the empty state for one frame.
+  const pending = loading || (!tags && !error);
+  const status = resolveDataStatus({
+    loading: pending,
+    error,
+    hasData: !!tags,
+    isEmpty: list.length === 0,
+  });
+
   return (
-    <div style={{ ...PANEL_STYLE, display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
-      {loading && tags.length === 0 ? (
-        <Skeleton active paragraph={{ rows: 3 }} />
-      ) : error ? (
-        <div
-          style={{
-            padding: tokens.space[4],
-            background: 'rgba(248, 81, 73, 0.08)',
-            border: `1px solid ${tokens.color.danger}`,
-            borderRadius: tokens.radius.md,
-            color: tokens.color.danger,
-            display: 'flex',
-            alignItems: 'center',
-            gap: tokens.space[3],
-          }}
-        >
-          <span>加载标签失败：{error.message}</span>
-          <Button size="small" onClick={() => void onReload()}>
-            重试
-          </Button>
-        </div>
-      ) : tags.length === 0 ? (
-        <Empty description={<span style={{ color: tokens.color.textMuted }}>暂无标签</span>}>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新增标签
-          </Button>
-        </Empty>
-      ) : (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
+      {status === 'loading' && <StateBlock status="loading" rows={3} />}
+
+      {status === 'error' && (
+        <StateBlock
+          status="error"
+          title="加载标签失败"
+          error={error}
+          errorFallback="无法加载标签"
+          onRetry={() => void onReload()}
+        />
+      )}
+
+      {status === 'empty' && (
+        <StateBlock
+          status="empty"
+          title="暂无标签"
+          description="标签用于给资产打标记。"
+          action={
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新增标签
+            </Button>
+          }
+        />
+      )}
+
+      {status === 'ready' && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: tokens.space[3] }}>
-          {tags.map((tag) => {
+          {list.map((tag) => {
             const usageColor = tag.color || tokens.color.accent;
             return (
               <div
@@ -258,20 +234,8 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
                     }}
                   />
                   <span style={{ color: tokens.color.text, fontWeight: 500 }}>{tag.name}</span>
-                  <span
-                    style={{
-                      marginLeft: 'auto',
-                      fontFamily: tokens.font.mono,
-                      fontSize: 11,
-                      padding: '0 6px',
-                      borderRadius: tokens.radius.sm,
-                      background: tokens.color.bgAlt,
-                      color: tokens.color.textMuted,
-                      border: `1px solid ${tokens.color.border}`,
-                    }}
-                    title="使用次数"
-                  >
-                    {tag.usage_count}
+                  <span title="使用次数" style={{ marginLeft: 'auto' }}>
+                    <Pill value={tag.usage_count} tone="accent" />
                   </span>
                   <Tooltip title="编辑">
                     <Button
@@ -300,15 +264,7 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
                     />
                   </Popconfirm>
                 </div>
-                <span
-                  style={{
-                    fontFamily: tokens.font.mono,
-                    fontSize: 11,
-                    color: tokens.color.textMuted,
-                  }}
-                >
-                  {tag.slug}
-                </span>
+                <Pill value={tag.slug} tone="neutral" mono />
               </div>
             );
           })}

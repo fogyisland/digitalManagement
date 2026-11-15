@@ -8,10 +8,11 @@
  * half-configured installation behind.
  */
 import { useState } from 'react';
-import { Alert, Button, Form, Input, InputNumber, Space, Typography } from 'antd';
+import { Alert, Button, Col, Form, Input, InputNumber, Row, Typography } from 'antd';
 import { DatabaseOutlined } from '@ant-design/icons';
 import { describeInitError, initApi } from './initApi';
 import type { DatabaseInput } from './initApi';
+import { tokens } from '@/theme/tokens';
 
 const { Text, Title } = Typography;
 
@@ -56,8 +57,8 @@ export default function InitDatabase({ onDone }: InitDatabaseProps): JSX.Element
 
   return (
     <div>
-      <Title level={3} style={{ marginBottom: 4 }}>
-        <DatabaseOutlined style={{ marginRight: 8 }} />
+      <Title level={3} style={{ marginBottom: tokens.space[1] }}>
+        <DatabaseOutlined style={{ marginRight: tokens.space[2] }} />
         数据库连接
       </Title>
       <Text type="secondary">
@@ -68,7 +69,7 @@ export default function InitDatabase({ onDone }: InitDatabaseProps): JSX.Element
         <Alert
           type="error"
           showIcon
-          style={{ marginTop: 16 }}
+          style={{ marginTop: tokens.space[4] }}
           message="连接失败"
           description={error}
         />
@@ -79,27 +80,28 @@ export default function InitDatabase({ onDone }: InitDatabaseProps): JSX.Element
         layout="vertical"
         initialValues={DEFAULTS}
         onFinish={onFinish}
-        style={{ marginTop: 24 }}
-        requiredMark={false}
+        style={{ marginTop: tokens.space[5] }}
       >
-        <Space size="middle" style={{ display: 'flex' }} align="start">
-          <Form.Item
-            name="host"
-            label="主机"
-            rules={[{ required: true, message: '请填写主机地址' }]}
-            style={{ flex: 2 }}
-          >
-            <Input placeholder="127.0.0.1" autoComplete="off" />
-          </Form.Item>
-          <Form.Item
-            name="port"
-            label="端口"
-            rules={[{ required: true, message: '请填写端口' }]}
-            style={{ width: 120 }}
-          >
-            <InputNumber min={1} max={65535} style={{ width: '100%' }} />
-          </Form.Item>
-        </Space>
+        <Row gutter={tokens.space[3]}>
+          <Col xs={24} md={16}>
+            <Form.Item
+              name="host"
+              label="主机"
+              rules={[{ required: true, message: '请填写主机地址' }]}
+            >
+              <Input placeholder="127.0.0.1" autoComplete="off" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={8}>
+            <Form.Item
+              name="port"
+              label="端口"
+              rules={[{ required: true, message: '请填写端口' }]}
+            >
+              <InputNumber min={1} max={65535} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+        </Row>
 
         <Form.Item
           name="user"
@@ -127,7 +129,7 @@ export default function InitDatabase({ onDone }: InitDatabaseProps): JSX.Element
           <Input placeholder="digital_management" autoComplete="off" />
         </Form.Item>
 
-        <Form.Item style={{ marginTop: 8 }}>
+        <Form.Item style={{ marginTop: tokens.space[2] }}>
           <Button type="primary" htmlType="submit" loading={loading} block size="large">
             测试连接并创建数据表
           </Button>

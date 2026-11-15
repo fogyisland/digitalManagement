@@ -13,43 +13,43 @@
  * The scope vocabulary is fixed by the backend (`KNOWN_SCOPES` in
  * `backend/src/routes/apikeys.js`) and mirrored by
  * `API_KEY_SCOPES` in `@/api/apikeys` — the UI never invents a scope.
+ *
+ * The create modal belongs to this section (it owns the form state), but
+ * the page owns *whether* it is open: the page passes a controlled
+ * `createOpen` flag and this section asks for it through `onCreateRequest`,
+ * so no tick counter has to be shared between the two components.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   App,
   Alert,
   Button,
   Checkbox,
-  Empty,
   Form,
   Input,
   Modal,
-  Popconfirm,
-  Skeleton,
   Space,
-  Switch,
-  Tag,
-  Tooltip,
+  Typography,
 } from 'antd';
 import {
   CheckCircleOutlined,
   CopyOutlined,
-  DeleteOutlined,
-  EditOutlined,
-  KeyOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
 import { API_KEY_SCOPES, API_KEY_SCOPE_LABELS, apiKeysApi } from '@/api/apikeys';
+import ApiKeyRow from '@/components/integrations/ApiKeyRow';
+import {
+  FormModal,
+  Panel,
+  StateBlock,
+  type StateBlockStatus,
+} from '@/components/ui';
 import type { ApiKey, ApiKeyCreated, ApiKeyScope } from '@/types';
+import { describeError } from '@/utils/errors';
 import { tokens } from '@/theme/tokens';
 
-const PANEL_STYLE: React.CSSProperties = {
-  background: tokens.color.panel,
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.lg,
-  padding: tokens.space[4],
-};
+const { Title } = Typography;
 
 /**
  * The scope checkboxes are derived from the backend whitelist so the UI
@@ -61,84 +61,48 @@ const SCOPE_OPTIONS: ReadonlyArray<{ value: ApiKeyScope; label: string }> =
     label: `${API_KEY_SCOPE_LABELS[scope]} (${scope})`,
   }));
 
-function extractErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'response' in err) {
-    const response = (err as { response?: { data?: { detail?: string; message?: string } } }).response;
-    const data = response?.data;
-    if (data?.detail) return String(data.detail);
-    if (data?.message) return String(data.message);
-  }
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
-}
-
-interface CreateKeyFormValues {
-  name: string;
-  scopes: ApiKeyScope[];
-}
-
-interface EditKeyFormValues {
+/** The create and the edit form carry exactly the same fields. */
+interface ApiKeyFormValues {
   name: string;
   scopes: ApiKeyScope[];
 }
 
 interface IntegrationsApiKeysProps {
   apiKeys: ApiKey[];
-  loading: boolean;
+  /** Result state resolved by the page — see `resolveDataStatus`. */
+  status: StateBlockStatus | 'ready';
   error?: Error;
   onReload: () => Promise<void>;
-  createTick?: number;
+  /** Controlled open state of the create modal. */
+  createOpen: boolean;
+  /** Asks the page to open the create modal. */
+  onCreateRequest: () => void;
+  /** The page closed the create modal. */
+  onCreateClose: () => void;
 }
 
 export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JSX.Element {
-  const { apiKeys, loading, error, onReload, createTick } = props;
+  const { apiKeys, status, error, onReload, createOpen, onCreateRequest, onCreateClose } = props;
   const { message } = App.useApp();
 
-  const [createOpen, setCreateOpen] = useState<boolean>(false);
   const [createdPayload, setCreatedPayload] = useState<ApiKeyCreated | null>(null);
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const [lastHandledTick, setLastHandledTick] = useState<number>(0);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [editing, setEditing] = useState<ApiKey | null>(null);
   const [editOpen, setEditOpen] = useState<boolean>(false);
-  const [editSubmitting, setEditSubmitting] = useState<boolean>(false);
-  const [createForm] = Form.useForm<CreateKeyFormValues>();
-  const [editForm] = Form.useForm<EditKeyFormValues>();
+  const [createForm] = Form.useForm<ApiKeyFormValues>();
+  const [editForm] = Form.useForm<ApiKeyFormValues>();
 
-  const openCreate = (): void => {
+  /**
+   * The page owns the open state, so the form has to be reset whenever the
+   * modal is (re)opened — otherwise a half-filled draft from the last
+   * attempt leaks into the next one.
+   */
+  useEffect(() => {
+    if (!createOpen) return;
     createForm.resetFields();
     createForm.setFieldValue('scopes', ['read', 'upload']);
-    setCreateOpen(true);
-  };
-
-  const closeCreate = (): void => {
-    setCreateOpen(false);
-  };
-
-  const onCreateSubmit = async (): Promise<void> => {
-    let values: CreateKeyFormValues;
-    try {
-      values = await createForm.validateFields();
-    } catch (e: unknown) {
-      console.warn('[api-keys] create validation failed:', e);
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const payload = await apiKeysApi.create({
-        name: values.name.trim(),
-        scopes: values.scopes,
-      });
-      setCreatedPayload(payload);
-      setCreateOpen(false);
-      void onReload();
-    } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '新建 API Key 失败'));
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  }, [createOpen, createForm]);
 
   const openEdit = (key: ApiKey): void => {
     setEditing(key);
@@ -149,29 +113,37 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
     setEditOpen(true);
   };
 
-  const onEditSubmit = async (): Promise<void> => {
-    if (!editing) return;
-    let values: EditKeyFormValues;
+  const closeEdit = (): void => {
+    setEditOpen(false);
+    setEditing(null);
+  };
+
+  const onCreateSubmit = async (values: ApiKeyFormValues): Promise<void> => {
     try {
-      values = await editForm.validateFields();
+      const payload = await apiKeysApi.create({
+        name: values.name.trim(),
+        scopes: values.scopes,
+      });
+      setCreatedPayload(payload);
+      onCreateClose();
+      void onReload();
     } catch (e: unknown) {
-      console.warn('[api-keys] edit validation failed:', e);
-      return;
+      message.error(describeError(e, '新建 API Key 失败'));
     }
-    setEditSubmitting(true);
+  };
+
+  const onEditSubmit = async (values: ApiKeyFormValues): Promise<void> => {
+    if (!editing) return;
     try {
       await apiKeysApi.update(editing.id, {
         name: values.name.trim(),
         scopes: values.scopes,
       });
       message.success('已保存');
-      setEditOpen(false);
-      setEditing(null);
+      closeEdit();
       await onReload();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '保存 API Key 失败'));
-    } finally {
-      setEditSubmitting(false);
+      message.error(describeError(e, '保存 API Key 失败'));
     }
   };
 
@@ -189,7 +161,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
       message.success(nextActive ? '已启用' : '已停用');
       await onReload();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, nextActive ? '启用失败' : '停用失败'));
+      message.error(describeError(e, nextActive ? '启用失败' : '停用失败'));
     } finally {
       setTogglingId(null);
     }
@@ -202,7 +174,7 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
       message.success('已撤销');
       await onReload();
     } catch (e: unknown) {
-      message.error(extractErrorMessage(e, '撤销失败'));
+      message.error(describeError(e, '撤销失败'));
     } finally {
       setRevokingId(null);
     }
@@ -218,28 +190,17 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
     }
   };
 
-  // Header "新建 API Key" → open create modal
-  useEffect(() => {
-    if (createTick === undefined) return;
-    if (createTick === lastHandledTick) return;
-    setLastHandledTick(createTick);
-    openCreate();
-  }, [createTick, lastHandledTick]);
-
-  const rows = useMemo(() => apiKeys, [apiKeys]);
-
   // === Render ===
 
   const createModal = (
-    <Modal
-      title="新建 API Key"
+    <FormModal
       open={createOpen}
-      onCancel={closeCreate}
-      onOk={() => void onCreateSubmit()}
+      title="新建 API Key"
+      form={createForm}
+      onCancel={onCreateClose}
+      onSubmit={onCreateSubmit}
+      onValidationError={(e: unknown) => console.warn('[api-keys] create validation failed:', e)}
       okText="创建"
-      cancelText="取消"
-      confirmLoading={submitting}
-      destroyOnClose
       width={520}
     >
       <Form
@@ -263,22 +224,18 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
           <Checkbox.Group options={[...SCOPE_OPTIONS]} />
         </Form.Item>
       </Form>
-    </Modal>
+    </FormModal>
   );
 
   const editModal = (
-    <Modal
-      title="编辑 API Key"
+    <FormModal
       open={editOpen}
-      onCancel={() => {
-        setEditOpen(false);
-        setEditing(null);
-      }}
-      onOk={() => void onEditSubmit()}
+      title="编辑 API Key"
+      form={editForm}
+      onCancel={closeEdit}
+      onSubmit={onEditSubmit}
+      onValidationError={(e: unknown) => console.warn('[api-keys] edit validation failed:', e)}
       okText="保存"
-      cancelText="取消"
-      confirmLoading={editSubmitting}
-      destroyOnClose
       width={520}
     >
       <Form form={editForm} layout="vertical" preserve={false}>
@@ -296,13 +253,9 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
         >
           <Checkbox.Group options={[...SCOPE_OPTIONS]} />
         </Form.Item>
-        <Form.Item label=" " colon={false}>
-          <TextMuted>
-            修改权限范围会立即影响该 Key 的调用；密钥本身不可更改。
-          </TextMuted>
-        </Form.Item>
+        <TextMuted>修改权限范围会立即影响该 Key 的调用；密钥本身不可更改。</TextMuted>
       </Form>
-    </Modal>
+    </FormModal>
   );
 
   const createdModal = createdPayload ? (
@@ -336,219 +289,106 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
         description={createdPayload.warning ?? '出于安全考虑，关闭此弹窗后将无法再次查看完整 Key，只能重新创建。'}
         style={{ marginBottom: tokens.space[3] }}
       />
-      <div
+      {/* Read-only input: the plain key must not be autofilled, spell-checked
+          or picked up as a form field by the browser. */}
+      <Input
+        readOnly
+        spellCheck={false}
+        autoComplete="off"
+        aria-label="完整 API Key，仅在此处显示一次"
+        value={createdPayload.key}
         style={{
-          padding: tokens.space[3],
+          fontFamily: tokens.font.mono,
+          fontSize: tokens.fontSize.base,
+          color: tokens.color.text,
           background: tokens.color.bgAlt,
           border: `1px solid ${tokens.color.border}`,
           borderRadius: tokens.radius.md,
-          wordBreak: 'break-all',
+          padding: tokens.space[3],
         }}
-      >
-        <span
-          style={{
-            fontFamily: tokens.font.mono,
-            fontSize: 13,
-            color: tokens.color.text,
-          }}
-        >
-          {createdPayload.key}
-        </span>
-      </div>
+      />
     </Modal>
   ) : null;
 
-  if (error) {
-    return (
-      <>
-        <div
-          style={{
-            padding: tokens.space[4],
-            background: 'rgba(248, 81, 73, 0.08)',
-            border: `1px solid ${tokens.color.danger}`,
-            borderRadius: tokens.radius.md,
-            color: tokens.color.danger,
-            display: 'flex',
-            alignItems: 'center',
-            gap: tokens.space[3],
-          }}
-        >
-          <span>加载 API Key 失败：{error.message}</span>
-          <Button size="small" onClick={() => void onReload()}>
-            重试
-          </Button>
-        </div>
-        {createModal}
-        {editModal}
-        {createdModal}
-      </>
-    );
-  }
-
-  if (loading && rows.length === 0) {
-    return (
-      <>
-        <div style={PANEL_STYLE}>
-          <Skeleton active paragraph={{ rows: 3 }} />
-        </div>
-        {createModal}
-        {editModal}
-        {createdModal}
-      </>
-    );
-  }
-
-  if (rows.length === 0) {
-    return (
-      <>
-        <div style={PANEL_STYLE}>
-          <Empty
-            description={<span style={{ color: tokens.color.textMuted }}>还没有 API Key</span>}
-          >
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新建 API Key
-            </Button>
-          </Empty>
-        </div>
-        {createModal}
-        {editModal}
-        {createdModal}
-      </>
-    );
-  }
-
   return (
     <>
-      <div style={PANEL_STYLE}>
+      <Panel>
         <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
-          {rows.map((k) => {
-            const scopes = Array.isArray(k.scopes) ? k.scopes : [];
-            return (
-              <div
-                key={k.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: tokens.space[3],
-                  padding: tokens.space[3],
-                  background: tokens.color.panelAlt,
-                  border: `1px solid ${tokens.color.border}`,
-                  borderRadius: tokens.radius.md,
-                }}
-              >
-                <KeyOutlined style={{ color: tokens.color.accent, fontSize: 16 }} aria-hidden />
-                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[2] }}>
-                    <span style={{ color: tokens.color.text, fontWeight: 500 }}>{k.name}</span>
-                    <Tooltip title="编辑名称与权限">
-                      <Button
-                        size="small"
-                        type="text"
-                        icon={<EditOutlined />}
-                        onClick={() => openEdit(k)}
-                        aria-label={`编辑 ${k.name}`}
-                      />
-                    </Tooltip>
-                    <Tooltip title="复制 Key 摘要">
-                      <Button
-                        size="small"
-                        type="text"
-                        icon={<CopyOutlined />}
-                        onClick={() => void onCopy(k.key_masked, 'Key')}
-                        aria-label={`复制 ${k.name} 的 Key 摘要`}
-                      />
-                    </Tooltip>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: tokens.space[2],
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontFamily: tokens.font.mono,
-                        fontSize: 12,
-                        color: tokens.color.textMuted,
-                        background: tokens.color.bgAlt,
-                        border: `1px solid ${tokens.color.border}`,
-                        padding: '0 6px',
-                        borderRadius: tokens.radius.sm,
-                      }}
-                      title={`prefix: ${k.key_prefix}`}
-                    >
-                      {k.key_prefix}
-                    </span>
-                    <span
-                      style={{
-                        fontFamily: tokens.font.mono,
-                        fontSize: 12,
-                        color: tokens.color.text,
-                      }}
-                      title="已脱敏的完整 Key 摘要"
-                    >
-                      {k.key_masked}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: tokens.space[2],
-                      flexWrap: 'wrap',
-                      marginTop: 4,
-                    }}
-                  >
-                    <Space size={4} wrap>
-                      {scopes.length === 0 ? (
-                        <Tag>无权限</Tag>
-                      ) : (
-                        scopes.map((s) => (
-                          <Tag key={s} color={scopeColor(s)}>
-                            {s}
-                          </Tag>
-                        ))
-                      )}
-                    </Space>
-                    <span style={{ color: tokens.color.textMuted, fontSize: 11 }}>
-                      {k.expires_at ? `过期：${k.expires_at}` : '永不过期'}
-                    </span>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: tokens.space[2] }}>
-                  <Tooltip title={k.is_active ? '点击停用' : '点击启用'}>
-                    <Switch
-                      checked={k.is_active}
-                      loading={togglingId === k.id}
-                      onChange={(checked) => void onToggleActive(k, checked)}
-                      aria-label={`切换 ${k.name} 的启用状态`}
-                    />
-                  </Tooltip>
-                  <Popconfirm
-                    title="确认撤销？"
-                    description="撤销后该 Key 将立即失效。"
-                    okText="撤销"
-                    cancelText="取消"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={() => void onRevoke(k)}
-                  >
-                    <Button
-                      size="small"
-                      type="text"
-                      danger
-                      icon={<DeleteOutlined />}
-                      loading={revokingId === k.id}
-                      aria-label={`撤销 ${k.name}`}
-                    />
-                  </Popconfirm>
-                </div>
-              </div>
-            );
-          })}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <Title
+              level={4}
+              style={{
+                margin: 0,
+                color: tokens.color.text,
+                fontWeight: tokens.fontWeight.semibold,
+              }}
+            >
+              API Key
+            </Title>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={onCreateRequest}
+              aria-label="新建 API Key"
+            >
+              新建 API Key
+            </Button>
+          </div>
+
+          {status === 'loading' && <StateBlock status="loading" rows={3} />}
+
+          {status === 'error' && (
+            <StateBlock
+              status="error"
+              title="加载 API Key 失败"
+              error={error}
+              errorFallback="无法加载 API Key 列表"
+              onRetry={() => void onReload()}
+            />
+          )}
+
+          {status === 'empty' && (
+            <StateBlock
+              status="empty"
+              title="还没有 API Key"
+              description="创建一个 API Key，让外部系统可以访问资产。"
+              action={
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  onClick={onCreateRequest}
+                  aria-label="新建 API Key"
+                >
+                  新建 API Key
+                </Button>
+              }
+            />
+          )}
+
+          {status === 'ready' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[3] }}>
+              {apiKeys.map((k) => (
+                <ApiKeyRow
+                  key={k.id}
+                  apiKey={k}
+                  toggling={togglingId === k.id}
+                  revoking={revokingId === k.id}
+                  onEdit={openEdit}
+                  onCopy={(text, label) => void onCopy(text, label)}
+                  onToggleActive={(key, next) => void onToggleActive(key, next)}
+                  onRevoke={(key) => void onRevoke(key)}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      </div>
+      </Panel>
       {createModal}
       {editModal}
       {createdModal}
@@ -559,13 +399,6 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
 /** A muted inline note; kept local so the file has no extra imports. */
 function TextMuted({ children }: { children: React.ReactNode }): JSX.Element {
   return (
-    <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>{children}</span>
+    <span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>{children}</span>
   );
-}
-
-function scopeColor(scope: ApiKeyScope): string {
-  if (scope === 'read') return 'green';
-  if (scope === 'write' || scope === 'upload') return 'blue';
-  if (scope === 'delete') return 'volcano';
-  return 'red';
 }

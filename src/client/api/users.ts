@@ -39,9 +39,9 @@ export const usersApi = {
   /**
    * `POST /users/:id/reset-password`
    *
-   * The backend reads `new_password` from the query string **or** the body;
-   * the body is used here because a password in a URL ends up in access logs
-   * and browser history.
+   * The new password travels in the body. The backend used to accept it in
+   * the query string as well, but a password in a URL ends up in access logs
+   * and browser history, so that form is refused.
    */
   resetPassword: (id: string, new_password: string) =>
     apiPost<void>(`/users/${id}/reset-password`, { new_password }),

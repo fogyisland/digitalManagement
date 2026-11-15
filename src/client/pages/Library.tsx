@@ -2,12 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
-  Empty,
   Pagination,
   Segmented,
-  Skeleton,
   Space,
-  Spin,
   Typography,
 } from 'antd';
 import {
@@ -25,6 +22,7 @@ import LibraryFilters, {
   type LibraryFiltersState,
 } from '@/components/library/LibraryFilters';
 import LibraryRow from '@/components/library/LibraryRow';
+import { PageHeader, Panel, StateBlock } from '@/components/ui';
 import type {
   Asset,
   AssetType,
@@ -32,9 +30,10 @@ import type {
   PageResponse,
 } from '@/types';
 import { assetPreviewUrl } from '@/utils/assetUrls';
+import { describeError } from '@/utils/errors';
 import { tokens } from '@/theme/tokens';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 type ViewMode = 'grid' | 'list';
 
@@ -96,11 +95,16 @@ export default function Library(): JSX.Element {
   const [searchParams, setSearchParams] = useSearchParams();
   const { modal, message } = App.useApp();
 
-  // q lives in the URL so the global header search lands here too.
-  const initialQ = searchParams.get('q') ?? '';
+  /**
+   * The keyword lives in the URL, so the global header search and the
+   * filter bar agree on one source of truth. It used to be a separate
+   * state initialised from the URL — which meant the header search did
+   * nothing while the user was already sitting on this page, because the
+   * component never remounted to pick the new query up.
+   */
+  const appliedQ = searchParams.get('q') ?? '';
 
-  const [keywordInput, setKeywordInput] = useState<string>(initialQ);
-  const [q, setQ] = useState<string>(initialQ);
+  const [keywordInput, setKeywordInput] = useState<string>(appliedQ);
   const [assetType, setAssetType] = useState<AssetType | undefined>(undefined);
   const [categoryId, setCategoryId] = useState<string | undefined>(undefined);
   const [sourceTool, setSourceTool] = useState<string | undefined>(undefined);
@@ -108,6 +112,12 @@ export default function Library(): JSX.Element {
   const [page, setPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(24);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Keep the visible input in step with the applied keyword — this is what
+  // makes the header search update the box as well as the result set.
+  useEffect(() => {
+    setKeywordInput(appliedQ);
+  }, [appliedQ]);
 
   const categoriesState = useApi<Category[] | CategoryNode[]>(
     '/categories',
@@ -118,7 +128,7 @@ export default function Library(): JSX.Element {
   );
 
   const assetsState = useApi<PageResponse<Asset>>(
-    buildQuery({ q, assetType, categoryId, sourceTool, page, pageSize }),
+    buildQuery({ q: appliedQ, assetType, categoryId, sourceTool, page, pageSize }),
   );
 
   // Reset selection whenever the result set changes underneath us.
@@ -126,10 +136,9 @@ export default function Library(): JSX.Element {
     setSelected(new Set());
   }, [assetsState.data]);
 
-  // Sync q back to the URL when the user submits a search.
   const onSearch = (value: string) => {
     const trimmed = value.trim();
-    setQ(trimmed);
+    setKeywordInput(trimmed);
     setPage(1);
     const next = new URLSearchParams(searchParams);
     if (trimmed) next.set('q', trimmed);
@@ -167,11 +176,7 @@ export default function Library(): JSX.Element {
         if (fallback) window.open(fallback, '_blank', 'noopener');
       }
     } catch (e: unknown) {
-      const detail =
-        e && typeof e === 'object' && 'message' in e
-          ? String((e as { message: unknown }).message)
-          : '下载失败';
-      message.error(detail);
+      message.error(describeError(e, '下载失败'));
     }
   };
 
@@ -225,7 +230,6 @@ export default function Library(): JSX.Element {
 
   const onReset = () => {
     setKeywordInput('');
-    setQ('');
     setAssetType(undefined);
     setCategoryId(undefined);
     setSourceTool(undefined);
@@ -265,79 +269,64 @@ export default function Library(): JSX.Element {
   const total = assetsState.data?.total ?? 0;
   const items = assetsState.data?.items ?? [];
 
-  // Hover affordance for cards: reveal action bar without forcing every
-  // card to have a focus ring. CSS-in-JS keeps it inside the token system.
+  // Hover affordance for cards: reveal the action bar without forcing every
+  // card to carry a permanent focus ring.
   const gridStyle: React.CSSProperties = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
     gap: tokens.space[4],
   };
 
-  return (
-    <div className="library-root">
-      <style>{`
-        .library-root .library-card-actions { opacity: 0; }
-        .library-root [role="button"]:hover .library-card-actions,
-        .library-root [role="button"]:focus-visible .library-card-actions {
-          opacity: 1;
-        }
-        .library-root [role="button"]:focus-visible {
-          outline: 2px solid ${tokens.color.accent};
-          outline-offset: 2px;
-        }
-      `}</style>
+  /**
+   * Exactly one of the three result states is rendered. Before, the empty
+   * state and the error banner could appear together, so a failed request
+   * read as "no results" with a red strip under it.
+   */
+  const resultStatus: 'loading' | 'empty' | 'error' | 'ready' =
+    assetsState.error
+      ? 'error'
+      : assetsState.loading && !assetsState.data
+        ? 'loading'
+        : items.length === 0
+          ? 'empty'
+          : 'ready';
 
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          justifyContent: 'space-between',
-          marginBottom: tokens.space[5],
-          gap: tokens.space[4],
-          flexWrap: 'wrap',
-        }}
-      >
-        <div>
-          <Title
-            level={2}
-            style={{
-              margin: 0,
-              color: tokens.color.text,
-              fontWeight: 600,
-              letterSpacing: '-0.01em',
-            }}
-          >
-            资产库
-          </Title>
-          <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
+  return (
+    <div className="library-root" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
+      <PageHeader
+        title="资产库"
+        subtitle={
+          <>
             共 {total.toLocaleString()} 项资产
             {selected.size > 0 && (
               <span style={{ color: tokens.color.accent, marginLeft: 8 }}>
                 · 已选 {selected.size}
               </span>
             )}
-          </Text>
-        </div>
-        <Space size="middle" wrap>
-          {selected.size > 0 && (
-            <Button
-              danger
-              icon={<DeleteOutlined />}
-              onClick={onDeleteSelected}
-            >
-              删除选中 ({selected.size})
-            </Button>
-          )}
-          <Segmented
-            value={view}
-            onChange={(v) => setView(v as ViewMode)}
-            options={[
-              { value: 'grid', label: '网格', icon: <AppstoreOutlined /> },
-              { value: 'list', label: '列表', icon: <BarsOutlined /> },
-            ]}
-          />
-        </Space>
-      </header>
+          </>
+        }
+        extra={
+          <Space size="middle" wrap>
+            {selected.size > 0 && (
+              <Button
+                danger
+                icon={<DeleteOutlined />}
+                onClick={onDeleteSelected}
+              >
+                删除选中 ({selected.size})
+              </Button>
+            )}
+            <Segmented
+              value={view}
+              onChange={(v) => setView(v as ViewMode)}
+              options={[
+                { value: 'grid', label: '网格', icon: <AppstoreOutlined /> },
+                { value: 'list', label: '列表', icon: <BarsOutlined /> },
+              ]}
+            />
+          </Space>
+        }
+      />
 
       <LibraryFilters
         state={filterState}
@@ -346,83 +335,67 @@ export default function Library(): JSX.Element {
         categoriesLoading={categoriesState.loading}
       />
 
-      <section>
-        {assetsState.loading ? (
-          <Skeleton
-            active
-            paragraph={{ rows: view === 'grid' ? 6 : 4 }}
-            style={{ padding: tokens.space[4] }}
+      <section className="dam-results" data-busy={assetsState.loading && !!assetsState.data}>
+        {resultStatus === 'loading' && (
+          <StateBlock status="loading" rows={view === 'grid' ? 6 : 4} />
+        )}
+
+        {resultStatus === 'error' && (
+          <StateBlock
+            status="error"
+            title="资产列表加载失败"
+            error={assetsState.error}
+            errorFallback="无法加载资产列表"
+            onRetry={() => void assetsState.reload()}
           />
-        ) : items.length === 0 ? (
-          <div
-            style={{
-              background: tokens.color.panel,
-              border: `1px solid ${tokens.color.border}`,
-              borderRadius: tokens.radius.lg,
-              padding: tokens.space[6],
-              textAlign: 'center',
-            }}
-          >
-            <Empty
-              description={
-                <span style={{ color: tokens.color.textMuted }}>
-                  没有匹配的资产
-                </span>
+        )}
+
+        {resultStatus === 'empty' && (
+          <Panel>
+            <StateBlock
+              status="empty"
+              title="没有匹配的资产"
+              description="调整筛选条件或清空搜索关键字后再试。"
+              action={
+                <Button onClick={onReset}>重置筛选</Button>
               }
             />
-          </div>
-        ) : view === 'grid' ? (
-          <div style={gridStyle}>
-            {items.map((asset) => (
-              <LibraryCard
-                key={asset.id}
-                asset={asset}
-                isSelected={selected.has(asset.id)}
-                onToggle={onToggle}
-                onOpen={onOpen}
-                onDownload={onDownload}
-                onDelete={onDeleteOne}
-              />
-            ))}
-          </div>
-        ) : (
-          <Space direction="vertical" size="small" style={{ width: '100%' }}>
-            {items.map((asset) => (
-              <LibraryRow
-                key={asset.id}
-                asset={asset}
-                isSelected={selected.has(asset.id)}
-                onToggle={onToggle}
-                onOpen={onOpen}
-                onDownload={onDownload}
-                onDelete={onDeleteOne}
-              />
-            ))}
-          </Space>
+          </Panel>
         )}
 
-        {assetsState.error && !assetsState.loading && (
-          <div
-            style={{
-              marginTop: tokens.space[4],
-              padding: tokens.space[3],
-              background: 'rgba(248, 81, 73, 0.08)',
-              border: `1px solid ${tokens.color.danger}`,
-              borderRadius: tokens.radius.md,
-              color: tokens.color.danger,
-              display: 'flex',
-              alignItems: 'center',
-              gap: tokens.space[3],
-            }}
-          >
-            <span>加载失败：{assetsState.error.message}</span>
-            <Button size="small" onClick={() => void assetsState.reload()}>
-              重试
-            </Button>
-          </div>
+        {resultStatus === 'ready' && (
+          view === 'grid' ? (
+            <div style={gridStyle}>
+              {items.map((asset) => (
+                <LibraryCard
+                  key={asset.id}
+                  asset={asset}
+                  isSelected={selected.has(asset.id)}
+                  onToggle={onToggle}
+                  onOpen={onOpen}
+                  onDownload={onDownload}
+                  onDelete={onDeleteOne}
+                />
+              ))}
+            </div>
+          ) : (
+            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+              {items.map((asset) => (
+                <LibraryRow
+                  key={asset.id}
+                  asset={asset}
+                  isSelected={selected.has(asset.id)}
+                  onToggle={onToggle}
+                  onOpen={onOpen}
+                  onDownload={onDownload}
+                  onDelete={onDeleteOne}
+                />
+              ))}
+            </Space>
+          )
         )}
 
-        {total > 0 && (
+        {total > 0 && resultStatus !== 'error' && (
           <div
             style={{
               marginTop: tokens.space[5],
@@ -445,21 +418,6 @@ export default function Library(): JSX.Element {
           </div>
         )}
       </section>
-
-      {/* Suspense fallback hint while route transitions land */}
-      {assetsState.loading && items.length > 0 && (
-        <div
-          aria-hidden
-          style={{
-            position: 'fixed',
-            top: 72,
-            right: tokens.space[5],
-            color: tokens.color.textMuted,
-          }}
-        >
-          <Spin size="small" />
-        </div>
-      )}
     </div>
   );
 }

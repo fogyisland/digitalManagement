@@ -12,7 +12,7 @@
  * remain independently testable.
  */
 
-import { Tabs, Typography } from 'antd';
+import { Tabs } from 'antd';
 import {
   CloudUploadOutlined,
   LinkOutlined,
@@ -21,67 +21,56 @@ import {
 import ImportUploadTab from '@/pages/ImportUploadTab';
 import ImportUrlTab from '@/pages/ImportUrlTab';
 import ImportComfyUiTab from '@/pages/ImportComfyUiTab';
+import { PageHeader, Panel } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
-
-const { Title, Text } = Typography;
 
 type TabKey = 'upload' | 'url' | 'comfyui';
 
 export default function Import(): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[4] }}>
-      <header>
-        <Title
-          level={2}
-          style={{
-            margin: 0,
-            color: tokens.color.text,
-            fontWeight: 600,
-            letterSpacing: '-0.01em',
-          }}
-        >
-          导入
-        </Title>
-        <Text style={{ color: tokens.color.textMuted, fontSize: 13 }}>
-          把外部资产纳入资产库：本地文件、URL 抓取、ComfyUI 任务登记
-        </Text>
-      </header>
-
-      <Tabs
-        defaultActiveKey="upload"
-        items={[
-          {
-            key: 'upload' as TabKey,
-            label: (
-              <span>
-                <CloudUploadOutlined style={{ marginRight: tokens.space[2] }} />
-                上传
-              </span>
-            ),
-            children: <ImportUploadTab />,
-          },
-          {
-            key: 'url' as TabKey,
-            label: (
-              <span>
-                <LinkOutlined style={{ marginRight: tokens.space[2] }} />
-                URL 抓取
-              </span>
-            ),
-            children: <ImportUrlTab />,
-          },
-          {
-            key: 'comfyui' as TabKey,
-            label: (
-              <span>
-                <ExperimentOutlined style={{ marginRight: tokens.space[2] }} />
-                ComfyUI 任务登记
-              </span>
-            ),
-            children: <ImportComfyUiTab />,
-          },
-        ]}
+      <PageHeader
+        title="导入"
+        subtitle="把外部资产纳入资产库：本地文件、URL 抓取、ComfyUI 任务登记"
       />
+
+      <Panel>
+        <Tabs
+          defaultActiveKey="upload"
+          items={[
+            {
+              key: 'upload' as TabKey,
+              label: (
+                <span>
+                  <CloudUploadOutlined style={{ marginRight: tokens.space[2] }} />
+                  上传
+                </span>
+              ),
+              children: <ImportUploadTab />,
+            },
+            {
+              key: 'url' as TabKey,
+              label: (
+                <span>
+                  <LinkOutlined style={{ marginRight: tokens.space[2] }} />
+                  URL 抓取
+                </span>
+              ),
+              children: <ImportUrlTab />,
+            },
+            {
+              key: 'comfyui' as TabKey,
+              label: (
+                <span>
+                  <ExperimentOutlined style={{ marginRight: tokens.space[2] }} />
+                  ComfyUI 任务登记
+                </span>
+              ),
+              children: <ImportComfyUiTab />,
+            },
+          ]}
+        />
+      </Panel>
     </div>
   );
 }
