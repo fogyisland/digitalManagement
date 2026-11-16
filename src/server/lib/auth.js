@@ -98,6 +98,11 @@ function expiresAtOf(ttl) {
  * which would shift every comparison by the server's UTC offset. The server
  * writes UTC (`SET time_zone = '+00:00'`), so the value is re-read as UTC.
  *
+ * The naive form is the same one the interface reads, and the two must not
+ * drift apart: the server compares a stored expiry against the clock, and the
+ * interface renders a stored heartbeat against the clock, and both have to
+ * be talking about the same instant.
+ *
  * @param {string|Date|null|undefined} value
  * @returns {Date|null}
  */
@@ -105,8 +110,8 @@ function parseDateTime(value) {
   if (value === null || value === undefined || value === '') return null;
   if (value instanceof Date) return value;
   const text = String(value);
-  const naive = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})$/.exec(text);
-  if (naive) return new Date(`${naive[1]}T${naive[2]}Z`);
+  const naive = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/.exec(text);
+  if (naive) return new Date(`${naive[1]}T${naive[2]}${naive[3] || ''}Z`);
   return new Date(text);
 }
 

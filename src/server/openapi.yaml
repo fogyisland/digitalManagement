@@ -20,6 +20,10 @@ info:
     **文件链接是签名的**：`/storage/...` 上的 URL 带有效期和 HMAC 签名，签名
     覆盖文件所属的租户，所以它只打开签发时的那一个文件。链接在平台设置了
     「访问域名」之后是绝对地址，复制到别处也能用。
+
+    **时间是 UTC**：所有时间字段都是 UTC 的 `YYYY-MM-DD HH:MM:SS`——MySQL 的
+    `DATETIME` 形式，不带时区后缀。调用方要自己按 UTC 读它：JavaScript 的
+    `new Date("2026-11-16 04:33:42")` 会按本地时间解析，差出一整个时区。
   license:
     name: Proprietary
 

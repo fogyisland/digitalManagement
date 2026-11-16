@@ -6,7 +6,7 @@
  * sends the wrong path, the wrong field name or the wrong verb, the check
  * fails here — not in the browser.
  *
- * The checks live in eight files, one per area of the system:
+ * The checks live in nine files, one per area of the system:
  *
  *   - `runtime-checks-identity.js`     — login, tokens, list envelopes, catalogue
  *   - `runtime-checks-tenants.js`      — the tenant registry, the two doors
@@ -18,6 +18,7 @@
  *   - `runtime-checks-integrations.js` — API keys, delivery, chunked upload,
  *                                        import-by-URL, ComfyUI, webhooks
  *   - `runtime-checks-init.js`         — the first-boot wizard
+ *   - `runtime-checks-time.js`         — how the interface reads a timestamp
  *   - `runtime-checks-session.js`      — token rotation and logout
  *
  * They run in that order and share one context: later checks depend on the
@@ -28,6 +29,10 @@
  *
  * The settings checks sit after the asset checks because one of them looks at
  * the links to a file, and there has to be a file to look at.
+ *
+ * The time checks come first because they read nothing from the instance:
+ * they are about how the interface turns a timestamp into something a person
+ * reads, and every other check writes timestamps for them to read.
  *
  * Negative cases go through `rawRequest` rather than the axios instance: a
  * rejected axios call triggers the client's 401 handler, which clears the
@@ -42,6 +47,7 @@ import { platformChecks } from './runtime-checks-platform.js';
 import { sessionChecks } from './runtime-checks-session.js';
 import { settingsChecks } from './runtime-checks-settings.js';
 import { tenantChecks } from './runtime-checks-tenants.js';
+import { timeChecks } from './runtime-checks-time.js';
 
 /**
  * @typedef {object} CheckContext
@@ -56,6 +62,7 @@ import { tenantChecks } from './runtime-checks-tenants.js';
  * @property {any} apiKeysApi
  * @property {any} webhooksApi
  * @property {any} platformApi the platform layer's own API
+ * @property {any} formatUtils the interface's time helpers (`utils/format.ts`)
  * @property {any} initSteps the wizard's step module
  * @property {(form: {url: string, title?: string}) => Promise<any>} importUrlByUrl
  * @property {(jobId: string) => Promise<any|null>} lookupComfyUiJob
@@ -83,6 +90,7 @@ import { tenantChecks } from './runtime-checks-tenants.js';
  * checks created.
  */
 export const runtimeChecks = [
+  ...timeChecks,
   ...identityChecks,
   ...tenantChecks,
   ...platformChecks,

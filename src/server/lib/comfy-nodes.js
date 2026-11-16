@@ -18,6 +18,8 @@
  */
 
 const { nanoid } = require('nanoid');
+const { parseDateTime } = require('./auth');
+const { toMysqlDateTime } = require('./util');
 const { ALL_TENANTS } = require('./tenant');
 
 /**
@@ -29,34 +31,47 @@ const { ALL_TENANTS } = require('./tenant');
  */
 const NODE_STALE_MINUTES = 15;
 
-/** The same judgement, in the unit the database counts in. */
-const NODE_STALE_SECONDS = NODE_STALE_MINUTES * 60;
-
-/**
- * Whether a node is online — computed by the database, not here.
- *
- * The question is "how long ago did it last speak", and answering it needs
- * two clocks to agree: the one that wrote the timestamp and the one that
- * reads it. The database writes `NOW()` in its own timezone and hands the
- * result over as a naive string; the process would read that string as its
- * own local time. On a machine whose timezone is not the database's, the two
- * are hours apart — enough to call every node offline.
- *
- * So the comparison happens on the database's side of the fence, where both
- * timestamps come from the same clock.
- */
-const STATUS_SQL = `CASE
-       WHEN last_seen_at IS NOT NULL
-        AND TIMESTAMPDIFF(SECOND, last_seen_at, NOW()) <= ${NODE_STALE_SECONDS}
-     THEN 'online' ELSE 'offline' END`;
+/** The same judgement, in the unit the clock counts in. */
+const NODE_STALE_MS = NODE_STALE_MINUTES * 60 * 1000;
 
 /**
  * The columns a node row is read with.
  *
- * The status is computed, not stored: it changes with the clock rather than
- * with the row, and a stored copy would go stale by itself.
+ * The status is not among them: it changes with the clock rather than with the
+ * row, and a stored copy would go stale by itself.
  */
-const NODE_COLUMNS = `*, ${STATUS_SQL} AS status`;
+const NODE_COLUMNS = `id, node_key, name, version, comfyui_version, platform,
+       last_seen_at, created_at, updated_at`;
+
+/**
+ * Whether a node is online.
+ *
+ * The question is "how long ago did it last speak", and answering it needs
+ * two clocks to agree: the one that wrote the timestamp and the one that
+ * reads it. The column holds a naive string — `YYYY-MM-DD HH:MM:SS` — and V8
+ * reads that form as LOCAL time, which on a machine that is not on UTC shifts
+ * the answer by the machine's offset. Enough to call every node offline, and
+ * enough to call a live node idle for eight hours.
+ *
+ * So the string is read the one way this codebase reads a DATETIME:
+ * `parseDateTime`, which takes the naive form for the UTC instant it is.
+ *
+ * The other half of the question is the clock the answer is compared against.
+ * `last_seen_at` is stamped by this process, not by the database, so both
+ * sides of the subtraction come from the same clock and cannot drift apart.
+ *
+ * @param {string|Date|null|undefined} lastSeenAt
+ * @returns {'online'|'offline'}
+ */
+function nodeStatus(lastSeenAt) {
+  const when = parseDateTime(lastSeenAt);
+  if (!when) return 'offline';
+  const age = Date.now() - when.getTime();
+  // A timestamp in the future means the two clocks disagree — the node spoke
+  // after the moment we are comparing against, not that it went quiet.
+  if (age < 0) return 'online';
+  return age <= NODE_STALE_MS ? 'online' : 'offline';
+}
 
 /**
  * Serialize a `comfy_nodes` row into the shape the interface and the node
@@ -74,7 +89,7 @@ function toComfyNode(row) {
     version: row.version ?? null,
     comfyui_version: row.comfyui_version ?? null,
     platform: row.platform ?? null,
-    status: row.status || 'offline',
+    status: nodeStatus(row.last_seen_at),
     last_seen_at: row.last_seen_at ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -114,6 +129,9 @@ async function registerNode(db, input) {
   const version = String(input.version || '').trim() || null;
   const comfyuiVersion = String(input.comfyuiVersion || '').trim() || null;
   const platform = String(input.platform || '').trim() || null;
+  // The heartbeat is stamped here rather than by the database, so that the
+  // moment it records and the moment it is read against are the same clock.
+  const seenAt = toMysqlDateTime(new Date());
 
   const existing = await db
     .prepare('SELECT id FROM comfy_nodes WHERE tenant_id = ? AND node_key = ?')
@@ -123,10 +141,10 @@ async function registerNode(db, input) {
     await db
       .prepare(
         `UPDATE comfy_nodes SET name = ?, version = ?, comfyui_version = ?, platform = ?,
-                last_seen_at = NOW()
+                last_seen_at = ?
            WHERE id = ? AND tenant_id = ?`,
       )
-      .run(name, version, comfyuiVersion, platform, existing.id, tenantId);
+      .run(name, version, comfyuiVersion, platform, seenAt, existing.id, tenantId);
     const row = await db
       .prepare(`SELECT ${NODE_COLUMNS} FROM comfy_nodes WHERE id = ? AND tenant_id = ?`)
       .get(existing.id, tenantId);
@@ -137,9 +155,9 @@ async function registerNode(db, input) {
   await db
     .prepare(
       `INSERT INTO comfy_nodes (id, tenant_id, node_key, name, version, comfyui_version, platform, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, tenantId, nodeKey, name, version, comfyuiVersion, platform);
+    .run(id, tenantId, nodeKey, name, version, comfyuiVersion, platform, seenAt);
 
   const row = await db
     .prepare(`SELECT ${NODE_COLUMNS} FROM comfy_nodes WHERE id = ? AND tenant_id = ?`)
@@ -197,6 +215,7 @@ async function findNodeByKey(db, tenantId, nodeKey) {
 
 module.exports = {
   NODE_STALE_MINUTES,
+  nodeStatus,
   toComfyNode,
   registerNode,
   listNodes,
