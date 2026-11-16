@@ -40,6 +40,17 @@ export function maskSource(source) {
       continue;
     }
     if (ch === '/' && source[i + 1] === '*') {
+      // A block comment has to close. `/*` that never closes is not a comment
+      // at all: in JSX text — `<span>/api/v1/*</span>` — the sequence is
+      // ordinary text, and reading it as a comment swallows the rest of the
+      // file. That is not a cosmetic problem: everything after it stops being
+      // scanned, so the checks quietly report less than they looked at.
+      const close = source.indexOf('*/', i + 2);
+      if (close === -1) {
+        out += '/*';
+        i += 2;
+        continue;
+      }
       out += '  ';
       i += 2;
       while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {

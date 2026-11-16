@@ -278,15 +278,6 @@ export default function Settings(): JSX.Element {
           <Field label="公开投递">
             <span style={MONO_CODE_STYLE}>/api/public/v1/*</span>
           </Field>
-          <Field label="文档">
-            <a href="/docs" target="_blank" rel="noreferrer" style={{ color: tokens.color.accent }}>
-              Swagger UI
-            </a>
-            <span style={{ color: tokens.color.textMuted, margin: '0 6px' }}>·</span>
-            <a href="/redoc" target="_blank" rel="noreferrer" style={{ color: tokens.color.accent }}>
-              ReDoc
-            </a>
-          </Field>
           <Field label="存储">
             <span style={MONO_CODE_STYLE}>./storage</span>
             <span style={{ color: tokens.color.textMuted, marginLeft: tokens.space[2] }}>

@@ -80,6 +80,15 @@ import {
 } from './lib/init-token-storage-fixtures.js';
 import { findSpaRouteCollisions, parseSpaRoutes } from './lib/spa-routes.js';
 import { SPA_ROUTE_CASES, findSpaRouteFixtureProblems } from './lib/spa-route-fixtures.js';
+import {
+  MINIMUM_LINKS,
+  findDeadLinkProblems,
+  parseInternalLinks,
+} from './lib/frontend-links.js';
+import {
+  FRONTEND_LINK_CASES,
+  findFrontendLinkFixtureProblems,
+} from './lib/frontend-link-fixtures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -268,6 +277,49 @@ function runStaticLint() {
     `SPA route lint OK — ${spaRoutes.length} page paths, none on a mounted path ` +
       `(${SPA_ROUTE_CASES.length} fixtures)`,
   );
+
+  // A link in the interface is a promise. The SPA answers every unknown path
+  // with its own "not found" page, so a link to somewhere that does not
+  // exist comes back as HTTP 200 and a dead end. The settings page used to
+  // advertise `/docs` as "Swagger UI" for an address nothing ever served.
+  const linkFixtureProblems = findFrontendLinkFixtureProblems();
+  assert.deepEqual(
+    linkFixtureProblems,
+    [],
+    `the internal-link rule mis-read a fixture:\n` +
+      linkFixtureProblems.map((v) => `  - ${v}`).join('\n'),
+  );
+  const { links, skipped: skippedLinks } = parseInternalLinks({ srcDir: SRC_DIR });
+  assert.ok(
+    links.length >= MINIMUM_LINKS,
+    `the internal-link lint found ${links.length} link(s) — a scan that finds ` +
+      `almost nothing is not a scan, it is a rule that stopped working`,
+  );
+  const deadLinks = findDeadLinkProblems({
+    links,
+    spaRoutes,
+    backendRoutes: routes,
+    mounts,
+    staticRoots: [path.join(REPO_ROOT, 'public'), path.join(REPO_ROOT, 'dist')],
+  });
+  assert.deepEqual(
+    deadLinks,
+    [],
+    `internal-link lint failed (a link may not point at a place that does not exist):\n` +
+      deadLinks.map((v) => `  - ${v}`).join('\n'),
+  );
+  console.log(
+    `internal-link lint OK — ${links.length} link(s), all of them lead somewhere ` +
+      `(${FRONTEND_LINK_CASES.length} fixtures)`,
+  );
+  if (skippedLinks.length > 0) {
+    console.log(
+      `${skippedLinks.length} link(s) are not internal literals and are NOT statically checked:`,
+    );
+    for (const entry of skippedLinks) {
+      console.log(`  - ${entry.file} — ${entry.reason}`);
+    }
+  }
 
   console.log(
     `static route lint OK — ${sites.length} call sites checked against ` +
