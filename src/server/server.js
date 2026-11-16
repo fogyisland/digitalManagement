@@ -40,6 +40,7 @@ const { seedDatabase } = require('./lib/seed');
 const { hasConfiguration, resolveInitToken } = require('./lib/init');
 const { reloadConfiguration } = require('./lib/reload');
 const { createUploader, uploadErrorHandler, reapExpiredUploadSessions } = require('./lib/upload');
+const { createRequestLogger, pruneRequestLogs } = require('./lib/request-log');
 const { asyncHandler } = require('./lib/http');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
@@ -68,6 +69,9 @@ const config = getConfig();
 /** How often the expired upload sessions are reclaimed. */
 const UPLOAD_SESSION_SWEEP_MS = 10 * 60 * 1000;
 
+/** How often the request log loses the rows that fell out of the retention window. */
+const REQUEST_LOG_SWEEP_MS = 60 * 60 * 1000;
+
 // --- Storage layout ---------------------------------------------------------
 fs.mkdirSync(config.storageDir, { recursive: true });
 fs.mkdirSync(path.join(config.storageDir, 'originals'), { recursive: true });
@@ -91,6 +95,12 @@ const db = createDb(createPool(config));
 // to decide whether to skip the boot work.
 const isConfigured = hasConfiguration(ENV_FILE);
 const initToken = resolveInitToken();
+
+// Whether the request log may write. The table the log writes into is created
+// with the rest of the schema, so before that — while the setup wizard is
+// still open — there is nowhere to write to, and the logger stays out of the
+// way instead of failing on every call.
+let requestLogReady = false;
 
 const ready = (async () => {
   if (!isConfigured) {
@@ -133,6 +143,26 @@ const ready = (async () => {
   const sweepTimer = setInterval(sweepUploads, UPLOAD_SESSION_SWEEP_MS);
   // The timer must not hold the process open on its own.
   if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
+
+  // The request log grows by one row per API call. The rows that fell out of
+  // the retention window are dropped at boot and then every hour, so the log
+  // cannot fill the disk on its own.
+  const sweepRequestLog = async () => {
+    try {
+      const dropped = await pruneRequestLogs(db, config.requestLogRetentionDays);
+      if (dropped > 0) {
+        console.log(`[request-log] dropped ${dropped} row(s) past the retention window`);
+      }
+    } catch (error) {
+      console.warn('[request-log] the sweep failed:', error.message);
+    }
+  };
+  await sweepRequestLog();
+  const requestLogTimer = setInterval(sweepRequestLog, REQUEST_LOG_SWEEP_MS);
+  if (typeof requestLogTimer.unref === 'function') requestLogTimer.unref();
+
+  // The schema exists now, so the request log has a table to write into.
+  requestLogReady = true;
 })();
 
 // --- App --------------------------------------------------------------------
@@ -153,6 +183,13 @@ app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
+
+// The stored half of the request log: one row per API call, with the bytes
+// that came in and went out. The console line above says what happened; this
+// says it in a form the platform layer can count.
+if (config.requestLogEnabled) {
+  app.use(createRequestLogger({ db, isReady: () => requestLogReady }));
+}
 
 // --- Health probes ----------------------------------------------------------
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'dam' }));
@@ -184,6 +221,9 @@ app.use(
       const result = await reloadConfiguration({ db, envFile: ENV_FILE });
       app.locals.isConfigured = true;
       app.locals.ready = Promise.resolve();
+      // The wizard brought the schema with it, so the request log has a table
+      // to write into from here on.
+      requestLogReady = true;
       // The wizard kept a connection of its own while it configured the
       // instance; the application now has its own pool on the same schema,
       // so the wizard's is one too many.

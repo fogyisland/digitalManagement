@@ -66,6 +66,7 @@ export const BUSINESS_TABLES = [
   'audit_logs',
   'asset_tags',
   'manifest_writes',
+  'request_logs',
 ];
 
 /**

@@ -44,7 +44,11 @@ async function platformStats(db) {
          (SELECT COUNT(*) FROM assets WHERE status = 'deleted') AS trashed_assets,
          (SELECT COALESCE(SUM(file_size), 0) FROM assets WHERE status != 'deleted') AS storage_bytes,
          (SELECT COUNT(*) FROM categories) AS categories,
-         (SELECT COUNT(*) FROM tags) AS tags`,
+         (SELECT COUNT(*) FROM tags) AS tags,
+         (SELECT COUNT(*) FROM request_logs WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS requests_24h,
+         (SELECT COALESCE(SUM(bytes_in), 0) FROM request_logs WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS bytes_in_24h,
+         (SELECT COALESCE(SUM(bytes_out), 0) FROM request_logs WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS bytes_out_24h,
+         (SELECT COUNT(*) FROM request_logs WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) AND status >= 400) AS errors_24h`,
     )
     .get();
 
@@ -58,6 +62,10 @@ async function platformStats(db) {
     storage_bytes: Number(totals.storage_bytes),
     categories: Number(totals.categories),
     tags: Number(totals.tags),
+    requests_24h: Number(totals.requests_24h),
+    bytes_in_24h: Number(totals.bytes_in_24h),
+    bytes_out_24h: Number(totals.bytes_out_24h),
+    errors_24h: Number(totals.errors_24h),
   };
 }
 

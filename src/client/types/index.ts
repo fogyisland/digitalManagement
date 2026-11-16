@@ -270,6 +270,14 @@ export interface PlatformStats {
   storage_bytes: number
   categories: number
   tags: number
+  /** 最近 24 小时的请求数。 */
+  requests_24h: number
+  /** 最近 24 小时进来的字节数。 */
+  bytes_in_24h: number
+  /** 最近 24 小时出去的字节数。 */
+  bytes_out_24h: number
+  /** 最近 24 小时里出错（4xx / 5xx）的请求数。 */
+  errors_24h: number
 }
 
 /** 平台层看到的账号——跨租户。 */
@@ -311,6 +319,72 @@ export interface PlatformAuditEntry {
 /** `GET /platform/audit` 的响应。 */
 export interface PlatformAuditListResponse {
   items: PlatformAuditEntry[]
+}
+
+/** 一次 API 调用——流量日志里的一行。 */
+export interface PlatformRequest {
+  id: string
+  /** 这次调用说的是哪个租户；没有租户的调用记在 `*`。 */
+  tenant_id: string
+  user_id: string | null
+  /** 调用人的用户名；没有凭证的调用是 `null`。 */
+  username: string | null
+  method: string
+  /** 实际请求的路径。 */
+  path: string
+  /** 命中的路由样式，比如 `/assets/:id`。 */
+  route: string
+  status: number
+  duration_ms: number
+  bytes_in: number
+  bytes_out: number
+  ip_address: string | null
+  created_at: string
+}
+
+/** `GET /platform/requests` 的响应。 */
+export interface PlatformRequestListResponse {
+  items: PlatformRequest[]
+  total: number
+}
+
+/** 一个时间窗里的流量总数。 */
+export interface PlatformTrafficSummary {
+  /** 这个窗口有多长（小时）。 */
+  window_hours: number
+  requests: number
+  bytes_in: number
+  bytes_out: number
+  errors: number
+  server_errors: number
+  /** 出错的请求占比，0–1。 */
+  error_rate: number
+  avg_duration_ms: number
+}
+
+/** 流量曲线上的一个桶（一个小时）。 */
+export interface PlatformTrafficBucket {
+  /** 桶的起点，形如 `2026-11-16 04:00:00`。 */
+  bucket: string
+  requests: number
+  bytes_in: number
+  bytes_out: number
+  errors: number
+}
+
+/** 流量最重的几个路由。 */
+export interface PlatformTrafficRoute {
+  route: string
+  requests: number
+  bytes_out: number
+  avg_duration_ms: number
+}
+
+/** `GET /platform/traffic` 的响应。 */
+export interface PlatformTrafficReport {
+  summary: PlatformTrafficSummary
+  buckets: PlatformTrafficBucket[]
+  routes: PlatformTrafficRoute[]
 }
 
 /* --------------------------------------------------------------------------

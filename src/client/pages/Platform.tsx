@@ -16,6 +16,7 @@ import {
   DashboardOutlined,
   ExportOutlined,
   FileTextOutlined,
+  LineChartOutlined,
   LogoutOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
@@ -28,6 +29,7 @@ import Mcp from './Mcp';
 import Overview from './platform/Overview';
 import Accounts from './platform/Accounts';
 import Audit from './platform/Audit';
+import Requests from './platform/Requests';
 
 const { Text } = Typography;
 
@@ -160,6 +162,16 @@ export default function Platform(): JSX.Element {
                 </span>
               ),
               children: <Audit />,
+            },
+            {
+              key: 'requests',
+              label: (
+                <span>
+                  <LineChartOutlined style={{ marginRight: 6 }} />
+                  调用日志
+                </span>
+              ),
+              children: <Requests />,
             },
             {
               key: 'mcp',

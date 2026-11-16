@@ -211,6 +211,34 @@ const BASE_SCHEMA_SQL = [
   created_at ${TIMESTAMP}
 ) ENGINE=InnoDB ${CHARSET}`,
 
+  // The request log: one row per API call, with what came in and what went
+  // back out.
+  //
+  // This is the **traffic** record, not the audit trail: the audit trail says
+  // what a person changed, this says what the instance was asked to do and how
+  // much it moved. A row belongs to the tenant the request spoke for, so the
+  // platform layer can read the whole platform's traffic and a tenant can read
+  // its own.
+  //
+  // It grows by one row per request, so it is pruned on a retention window —
+  // an unbounded log is a disk that fills on its own.
+  `CREATE TABLE IF NOT EXISTS request_logs (
+  id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
+  user_id ${ID},
+  method VARCHAR(8) NOT NULL,
+  path VARCHAR(255) NOT NULL,
+  route VARCHAR(191) NOT NULL DEFAULT '',
+  status INT NOT NULL,
+  duration_ms INT NOT NULL DEFAULT 0,
+  bytes_in BIGINT NOT NULL DEFAULT 0,
+  bytes_out BIGINT NOT NULL DEFAULT 0,
+  ip_address VARCHAR(64),
+  created_at ${TIMESTAMP},
+  KEY idx_request_logs_created (created_at),
+  KEY idx_request_logs_tenant (tenant_id, created_at)
+) ENGINE=InnoDB ${CHARSET}`,
+
   `CREATE TABLE IF NOT EXISTS webhook_endpoints (
   id ${ID} NOT NULL PRIMARY KEY,
   ${TENANT_ID_COLUMN},

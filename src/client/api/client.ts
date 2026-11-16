@@ -194,8 +194,28 @@ async function rotateTokens(): Promise<TokenPair | null> {
   }
 }
 
-/** Endpoints that must never trigger a refresh attempt of their own. */
-const NON_REFRESHABLE_PATHS = ['/auth/login', '/auth/refresh'];
+/**
+ * Endpoints that must never trigger a refresh attempt of their own.
+ *
+ * The platform door is in the list for the same reason the tenant door is: a
+ * rejected sign-in answers 401, and there is no session to renew — the caller
+ * has not got one yet.
+ */
+const NON_REFRESHABLE_PATHS = ['/auth/login', '/auth/platform-login', '/auth/refresh'];
+
+/**
+ * The pages a sign-in is typed on.
+ *
+ * A 401 on one of these is the *answer* to the sign-in, not an expired
+ * session: the page shows the refusal itself. Redirecting away from it would
+ * throw the message away before anybody could read it — and would send a
+ * platform administrator who mistyped their password to the tenant door.
+ */
+const SIGN_IN_PATHS = ['/login', '/platform/login'];
+
+function onSignInPage(pathname: string): boolean {
+  return SIGN_IN_PATHS.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
 
 function isRefreshable(url: string | undefined): boolean {
   if (!url) return false;
@@ -242,7 +262,7 @@ apiClient.interceptors.response.use(
       }
     }
 
-    if (status === 401 && !location.pathname.startsWith('/login')) {
+    if (status === 401 && !onSignInPage(location.pathname)) {
       setToken(null);
       setRefreshToken(null);
       location.href = '/login';

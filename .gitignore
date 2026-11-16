@@ -57,6 +57,7 @@ vite.config.d.ts
 storage/ui-probe*/
 .probe-*
 .fix-*.js
+.tmp-inspect/
 
 # Virtual environments (not used by this project, kept out of the repo)
 venv/

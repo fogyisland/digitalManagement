@@ -24,7 +24,6 @@ import {
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { authApi } from '@/api/auth';
 import { useAuthStore } from '@/stores/authStore';
-import { useTenantStore } from '@/stores/tenantStore';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/errors';
 import type { TenantDirectoryEntry } from '@/types';
@@ -82,12 +81,10 @@ export default function Login(): JSX.Element {
     try {
       const resp = await authApi.login(values.username, values.password, values.tenant);
       setAuth(resp.user, resp.access_token, resp.refresh_token);
-      // A platform administrator may open any tenant; the scope of the
-      // session is narrowed to the one they picked. Everybody else belongs to
-      // a single tenant, and their session is already scoped to it.
-      if (resp.user.role === 'superadmin' && values.tenant) {
-        useTenantStore.getState().setTenantId(values.tenant);
-      }
+      // A tenant account belongs to exactly one tenant, and the session the
+      // server opened is already scoped to it. A platform administrator has its
+      // own door one layer up — the server refuses this one for them — so
+      // there is no tenant to narrow here.
       message.success(`欢迎回来，${resp.user.display_name || resp.user.username}`);
       const state = (location.state as { from?: string } | null);
       const from = state?.from || '/';

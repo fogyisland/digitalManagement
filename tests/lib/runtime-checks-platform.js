@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import bcrypt from 'bcryptjs';
-import { queryTestDb } from './runtime.js';
+import { queryTestDb, sleep } from './runtime.js';
 import { ADMIN_PASSWORD, ADMIN_USERNAME } from './runtime-checks-identity.js';
 
 /** The platform administrator the check signs in as. */
@@ -50,6 +50,28 @@ async function asSeededAdministrator(ctx) {
   const back = await ctx.authApi.login(ADMIN_USERNAME, ADMIN_PASSWORD);
   ctx.client.setToken(back.access_token);
   ctx.client.setRefreshToken(back.refresh_token);
+}
+
+/**
+ * Wait for a request to show up in the traffic log.
+ *
+ * The row is written after the response has been flushed — the call the client
+ * is waiting on must not wait for the log — so the row lands a moment after
+ * the answer. The check polls for it rather than assuming it is there.
+ *
+ * @param {object} ctx
+ * @param {(row: object) => boolean} predicate
+ * @param {number} attempts
+ * @returns {Promise<object|null>} the row, or null if it never showed up
+ */
+async function waitForLogged(ctx, predicate, attempts = 30) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const log = await ctx.platformApi.requests({ limit: 200 });
+    const found = log.items.find(predicate);
+    if (found) return found;
+    await sleep(100);
+  }
+  return null;
 }
 
 /** @type {RuntimeCheck[]} */
@@ -140,6 +162,48 @@ export const platformChecks = [
 
       // The subject account is not wanted by the rest of the suite.
       await queryTestDb(ctx.dbName, 'DELETE FROM users WHERE id = ?', [SUBJECT_ID]);
+
+      await asSeededAdministrator(ctx);
+    },
+  },
+
+  {
+    name: 'the platform layer counts the traffic it was asked for',
+    async run(ctx) {
+      // A tenant administrator may not read the traffic of the platform.
+      let status = 0;
+      try {
+        await ctx.platformApi.traffic({ hours: 1 });
+        status = 200;
+      } catch (error) {
+        status = error?.response?.status ?? 0;
+      }
+      assert.equal(status, 403, 'a tenant administrator must not be able to read the platform traffic');
+
+      await asPlatformAdministrator(ctx);
+
+      // Two calls that have to show up in the log.
+      await ctx.platformApi.stats();
+      await ctx.platformApi.accounts();
+
+      const row = await waitForLogged(ctx, (entry) => entry.route === '/platform/stats');
+      assert.ok(row, 'the platform statistics call must show up in the request log');
+      assert.equal(row.method, 'GET', 'the log must record the method');
+      assert.equal(row.status, 200, 'the log must record the status');
+      assert.equal(row.tenant_id, '*', "a platform administrator's call belongs to no tenant");
+      assert.equal(row.username, SUPERADMIN_USERNAME, 'the log must name who called');
+      assert.ok(row.bytes_out > 0, 'the log must record what went out');
+      assert.ok(row.duration_ms >= 0, 'the log must record how long the call took');
+
+      // The traffic report counts the same calls.
+      const traffic = await ctx.platformApi.traffic({ hours: 1 });
+      assert.ok(traffic.summary.requests > 0, 'the traffic report must count the calls');
+      assert.ok(traffic.summary.bytes_out > 0, 'the traffic report must count the bytes');
+      assert.ok(traffic.buckets.length > 0, 'the traffic report must have a curve');
+      assert.ok(
+        traffic.routes.some((route) => route.route === '/platform/stats'),
+        'the traffic report must name the busiest endpoints',
+      );
 
       await asSeededAdministrator(ctx);
     },

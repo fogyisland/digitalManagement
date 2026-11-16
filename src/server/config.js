@@ -93,6 +93,8 @@ function ttlToSeconds(ttl) {
  *   appBaseUrl: string,
  *   seedSampleAssets: boolean,
  *   usesDefaultSecret: boolean,
+ *   requestLogEnabled: boolean,
+ *   requestLogRetentionDays: number,
  *   corsOrigins: string[]
  * }}
  */
@@ -134,6 +136,13 @@ function getConfig() {
     // product data: a new installation starts with an empty library and the
     // twelve sample images are opt-in.
     seedSampleAssets: process.env.SEED_SAMPLE_ASSETS === '1',
+    // The request log is one row per API call. It is worth having — it is the
+    // only way to see what the instance was actually asked to do — but it is
+    // also the one table that grows on its own, so it is kept for a window
+    // rather than forever. An operator who does not want the write at all can
+    // turn it off.
+    requestLogEnabled: process.env.REQUEST_LOG_ENABLED !== '0',
+    requestLogRetentionDays: parseInt(process.env.REQUEST_LOG_RETENTION_DAYS || '30', 10),
     accessTokenTtl,
     refreshTokenTtl,
     accessTokenTtlSeconds: ttlToSeconds(accessTokenTtl),
