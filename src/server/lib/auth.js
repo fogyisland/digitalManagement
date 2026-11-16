@@ -16,7 +16,13 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
-const { resolveTenantFromUser, tenantScope, loadTenant, SUPERADMIN_ROLE } = require('./tenant');
+const {
+  resolveTenantFromUser,
+  resolveScope,
+  tenantScope,
+  loadTenant,
+  SUPERADMIN_ROLE,
+} = require('./tenant');
 const { DEFAULT_TENANT_ID } = require('./tenant-schema');
 
 /**
@@ -255,6 +261,12 @@ function authRequired(db) {
       if (tenant.status !== 'active') {
         return res.status(403).json({ detail: 'Tenant is suspended' });
       }
+      // The `X-Tenant` header narrows a platform administrator's scope to one
+      // tenant — for reads as well as writes. It is read here, in one place,
+      // so that "the tenant this request speaks for" has a single answer for
+      // the whole request. A caller who already has a tenant is not affected:
+      // the header is not a way out of one.
+      const resolved = await resolveScope(db, user, tenant, req);
       req.user = {
         id: user.id,
         username: user.username,
@@ -262,8 +274,8 @@ function authRequired(db) {
         tenant_id: user.tenant_id,
       };
       req.token = payload;
-      req.tenant = tenant;
-      req.tenantScope = tenantScope(user, tenant);
+      req.tenant = resolved.tenant;
+      req.tenantScope = resolved.scope;
       return next();
     })().catch(next);
   };
@@ -286,6 +298,31 @@ function adminRequired(db) {
       // manage every tenant, so they may manage the users of every tenant.
       if (req.user.role !== 'admin' && req.user.role !== SUPERADMIN_ROLE) {
         return res.status(403).json({ detail: 'Admin role required' });
+      }
+      return next();
+    });
+  };
+}
+
+/**
+ * Middleware: require a platform-administrator access token.
+ *
+ * The gate reads the *role*, not the scope. A platform administrator who
+ * narrowed their request to one tenant with `X-Tenant` still is one — the
+ * header chooses which tenant the request speaks for, it does not unmake
+ * the account. And a tenant admin never passes this gate, however wide
+ * their scope is: there is no tenant admin whose scope is wide.
+ *
+ * @param {object} db
+ * @returns {import('express').RequestHandler}
+ */
+function superadminRequired(db) {
+  const requireAuth = authRequired(db);
+  return (req, res, next) => {
+    requireAuth(req, res, (err) => {
+      if (err) return next(err);
+      if (req.user.role !== SUPERADMIN_ROLE) {
+        return res.status(403).json({ detail: 'Platform administrator role required' });
       }
       return next();
     });
@@ -357,6 +394,7 @@ module.exports = {
   bearerToken,
   authRequired,
   adminRequired,
+  superadminRequired,
   apiKeyRequired,
   expiresAtOf,
   parseDateTime,

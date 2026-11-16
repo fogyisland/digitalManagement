@@ -148,7 +148,7 @@ function createWebhooksRouter({ db }) {
     // The endpoint belongs to the caller's tenant — its deliveries and its
     // log rows are that tenant's alone. A write lands in one concrete
     // tenant, so a platform administrator names it in `X-Tenant`.
-    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     await db
       .prepare(
         'INSERT INTO webhook_endpoints (id, tenant_id, name, url, secret, events) VALUES (?, ?, ?, ?, ?, ?)',
@@ -172,7 +172,10 @@ function createWebhooksRouter({ db }) {
   }));
 
   router.put('/webhooks/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const endpoint = await db
       .prepare('SELECT * FROM webhook_endpoints WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);
@@ -233,7 +236,10 @@ function createWebhooksRouter({ db }) {
   }));
 
   router.delete('/webhooks/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const endpoint = await db
       .prepare('SELECT id FROM webhook_endpoints WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);

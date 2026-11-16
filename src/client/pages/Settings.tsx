@@ -10,11 +10,12 @@
  * `dam-card` / `page-header` classes are gone and AntD's `Descriptions` is
  * themed via `labelStyle` to match the muted eyebrow tone.
  */
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { App, Button, Form, Input, Space, Typography } from 'antd';
 import { KeyOutlined, LockOutlined, ApiOutlined } from '@ant-design/icons';
 import { authApi } from '@/api/auth';
 import { useAuthStore } from '@/stores/authStore';
+import { useTenantStore } from '@/stores/tenantStore';
 import { PageHeader, Panel, Pill } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
 
@@ -81,8 +82,22 @@ function roleTone(role: string | undefined): 'danger' | 'accent' | 'neutral' {
 export default function Settings(): JSX.Element {
   const { message } = App.useApp();
   const user = useAuthStore((s) => s.user);
+  const tenantId = useTenantStore((s) => s.tenantId);
+  const tenants = useTenantStore((s) => s.tenants);
+  const loadTenants = useTenantStore((s) => s.loadTenants);
   const [pwForm] = Form.useForm<PasswordFormValues>();
   const [loading, setLoading] = useState(false);
+
+  // A platform administrator belongs to no tenant, so the page shows the one
+  // they are currently acting in — the name if the registry has been read,
+  // the id it was named by otherwise.
+  const isSuperadmin = user?.role === 'superadmin';
+  const currentTenantName = tenants.find((tenant) => tenant.id === tenantId)?.name;
+
+  useEffect(() => {
+    if (!isSuperadmin) return;
+    void loadTenants();
+  }, [isSuperadmin, loadTenants]);
 
   const onChangePassword = async (): Promise<void> => {
     let values: PasswordFormValues;
@@ -197,6 +212,11 @@ export default function Settings(): JSX.Element {
               mono
             />
           </Field>
+          {isSuperadmin && (
+            <Field label="当前租户" mono={!currentTenantName}>
+              {currentTenantName ?? tenantId ?? '全部租户'}
+            </Field>
+          )}
           <Field label="最近登录" mono>
             {user?.last_login_at || '—'}
           </Field>

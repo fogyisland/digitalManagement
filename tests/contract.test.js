@@ -287,7 +287,7 @@ function runStaticLint() {
  */
 async function runRuntimeIntegration() {
   installBrowserGlobals();
-  installTypeScriptResolver();
+  installTypeScriptResolver(SRC_DIR);
 
   const server = await startBackend({ backendEntry: BACKEND_SRC });
   try {
@@ -302,7 +302,14 @@ async function runRuntimeIntegration() {
     // the frontend source — the check and the wizard read the same function.
     const initSteps = await loadInitSteps(SRC_DIR);
 
-    const context = { origin: server.origin, srcDir: SRC_DIR, ...apis, initSteps, state: {} };
+    const context = {
+      origin: server.origin,
+      srcDir: SRC_DIR,
+      dbName: server.dbName,
+      ...apis,
+      initSteps,
+      state: {},
+    };
     const passed = await runRuntimeChecks(context);
     console.log(`runtime integration OK — ${passed.length} checks passed`);
     return passed.length;

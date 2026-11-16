@@ -25,6 +25,7 @@ import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined } from '@ant-de
 import { useNavigate } from 'react-router-dom';
 import { usersApi } from '@/api/users';
 import { useAuthStore } from '@/stores/authStore';
+import { useTenantStore } from '@/stores/tenantStore';
 import type { PageResponse, User, UserRole, UserStatus } from '@/types';
 import { PageHeader, Panel, Pill, StateBlock } from '@/components/ui';
 import { FormModal } from '@/components/ui';
@@ -83,6 +84,13 @@ export default function Users(): JSX.Element {
   const { message } = App.useApp();
   const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
+  /**
+   * 当前选中的租户。
+   *
+   * 它是取数的依赖：同一个 URL 对不同租户答案不同，所以换了租户就得重新
+   * 取一次，否则表格里还是上一个租户的人。
+   */
+  const tenantId = useTenantStore((s) => s.tenantId);
 
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
@@ -128,7 +136,10 @@ export default function Users(): JSX.Element {
         setLoading(false);
       }
     },
-    [page],
+    // `tenantId` is here for the same reason `page` is: the answer depends on
+    // it, so a change of tenant has to re-run the query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [page, tenantId],
   );
 
   useEffect(() => {

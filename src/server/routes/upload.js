@@ -159,7 +159,7 @@ function createUploadRouter({ db }) {
       )
       .run(
         sessionId,
-        await resolveWriteTenant(db, req.tenantScope, req),
+        await resolveWriteTenant(db, req.tenantScope),
         req.user.id,
         filename,
         fileSize,
@@ -198,7 +198,7 @@ function createUploadRouter({ db }) {
     asyncHandler(async (req, res) => {
       const sessionId = String(req.params.session_id || '');
       // A write lands in one concrete tenant — see `resolveWriteTenant`.
-      const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+      const tenantId = await resolveWriteTenant(db, req.tenantScope);
       const loaded = await loadSession(db, tenantId, sessionId);
       if (!loaded) return res.status(404).json({ detail: 'Upload session not found' });
       const { session, received } = loaded;
@@ -256,7 +256,7 @@ function createUploadRouter({ db }) {
     const sessionId = String(body.session_id || '').trim();
     if (!sessionId) return res.status(400).json({ detail: 'session_id required' });
 
-    const loaded = await loadSession(db, await resolveWriteTenant(db, req.tenantScope, req), sessionId);
+    const loaded = await loadSession(db, await resolveWriteTenant(db, req.tenantScope), sessionId);
     if (!loaded) return res.status(404).json({ detail: 'Upload session not found' });
     const { session, received } = loaded;
     if (session.owner_id !== req.user.id && req.user.role !== 'admin' && req.user.role !== SUPERADMIN_ROLE) {

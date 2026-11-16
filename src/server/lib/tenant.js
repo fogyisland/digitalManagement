@@ -68,6 +68,53 @@ async function resolveTenantFromUser(db, user) {
 }
 
 /**
+ * The tenant a request names in its `X-Tenant` header.
+ *
+ * @param {import('express').Request} req
+ * @returns {string} the reference, or '' when the header is absent
+ */
+function tenantHeader(req) {
+  const raw = req && req.headers ? req.headers['x-tenant'] : '';
+  return String(raw || '').trim();
+}
+
+/**
+ * Resolve a tenant reference to the tenant it names.
+ *
+ * A reference matches by id, by slug or by name — the three things a caller
+ * can reasonably hold. A platform administrator works in the UI, where a
+ * tenant is a name, and typing a nanoid would be a chore; an API caller knows
+ * the id. The id wins over the slug, and the slug over the name, so a
+ * reference that happens to be both a name and an id always means the same
+ * tenant.
+ *
+ * The reference travels in an HTTP header, and a header value has to be a
+ * byte string: a tenant whose name is not ASCII cannot be named that way at
+ * all — the request is refused before it reaches the server. The id is
+ * always ASCII, which is why the UI sends the id and the name is only a
+ * convenience for the ASCII ones.
+ *
+ * @param {object} db
+ * @param {string} ref
+ * @returns {Promise<{id: string, slug: string, name: string, status: string} | null>}
+ */
+async function resolveTenantRef(db, ref) {
+  const value = String(ref || '').trim();
+  if (!value) return null;
+  const row = await db
+    .prepare(
+      `SELECT id, slug, name, status
+         FROM tenants
+        WHERE id = ? OR slug = ? OR name = ?
+        ORDER BY CASE WHEN id = ? THEN 0 WHEN slug = ? THEN 1 ELSE 2 END
+        LIMIT 1`,
+    )
+    .get(value, value, value, value, value);
+  if (!row) return null;
+  return { id: row.id, slug: row.slug, name: row.name, status: row.status };
+}
+
+/**
  * Whether a scope covers every tenant.
  *
  * @param {{tenantId: string}|null|undefined} scope
@@ -81,8 +128,10 @@ function isAllTenants(scope) {
  * The tenant condition for a query.
  *
  * Returns the clause fragment *and* its parameter, so a caller cannot add
- * one without the other. A platform administrator's scope covers every
- * tenant, so the fragment is empty — their reads are unfiltered by design.
+ * one without the other. A scope that covers every tenant produces an empty
+ * fragment — those reads are unfiltered by design. A platform administrator
+ * who named a tenant in `X-Tenant` has a scope that covers one tenant, so
+ * theirs is filtered like anybody else's.
  *
  * @param {{tenantId: string, isSuperadmin: boolean}} scope
  * @param {string} [column] the qualified column, e.g. `a.tenant_id`
@@ -111,15 +160,15 @@ function tenantClause(scope, column = 'tenant_id') {
  *
  * So a write has to name a concrete tenant. Everybody else gets it from
  * their credential; a platform administrator names it in the `X-Tenant`
- * header. The header is ignored for a caller who already has a tenant — it
- * is not a way out of one.
+ * header, and the header narrows their scope to that tenant before the
+ * handler runs (`resolveScope`). The header is ignored for a caller who
+ * already has a tenant — it is not a way out of one.
  *
  * @param {{tenantId: string, isSuperadmin: boolean}} scope
- * @param {import('express').Request} req
  * @returns {string} the tenant the row belongs to
  * @throws {Error & {status: number}} 400 when no concrete tenant is named
  */
-function writeTenantId(scope, req) {
+function writeTenantId(scope) {
   if (!scope) {
     throw Object.assign(new Error('A write cannot run without a tenant scope'), {
       status: 403,
@@ -127,14 +176,10 @@ function writeTenantId(scope, req) {
     });
   }
   if (!isAllTenants(scope)) return scope.tenantId;
-  const named = String((req.headers && req.headers['x-tenant']) || '').trim();
-  if (!named) {
-    throw Object.assign(
-      new Error('A platform administrator must name the tenant to write into (X-Tenant)'),
-      { status: 400, code: 'TENANT_REQUIRED' },
-    );
-  }
-  return named;
+  throw Object.assign(
+    new Error('A platform administrator must name the tenant to write into (X-Tenant)'),
+    { status: 400, code: 'TENANT_REQUIRED' },
+  );
 }
 
 /**
@@ -146,12 +191,11 @@ function writeTenantId(scope, req) {
  *
  * @param {object} db
  * @param {{tenantId: string, isSuperadmin: boolean}} scope
- * @param {import('express').Request} req
  * @returns {Promise<string>} the tenant id
  * @throws {Error & {status: number}} 400 when the tenant does not exist
  */
-async function resolveWriteTenant(db, scope, req) {
-  const tenantId = writeTenantId(scope, req);
+async function resolveWriteTenant(db, scope) {
+  const tenantId = writeTenantId(scope);
   const tenant = await loadTenant(db, tenantId);
   if (!tenant) {
     throw Object.assign(new Error(`There is no tenant '${tenantId}'`), {
@@ -163,10 +207,66 @@ async function resolveWriteTenant(db, scope, req) {
 }
 
 /**
+ * The scope a request runs in, once the `X-Tenant` header has been applied.
+ *
+ * A platform administrator's scope covers every tenant — unless the request
+ * names one, in which case the scope narrows to it. The narrowing is the
+ * whole point of the header: it turns "every tenant" into "this tenant", for
+ * reads as well as writes, so one header means one thing. Without it a
+ * platform administrator's reads span the whole platform while their writes
+ * have nowhere to land, and every update they try answers 404.
+ *
+ * The header is ignored for a caller who already has a tenant. It is not a
+ * way out of one.
+ *
+ * @param {object} db
+ * @param {{id: string, role: string}} user
+ * @param {{id: string, slug: string, name: string, status: string}|null} tenant
+ * @param {import('express').Request} req
+ * @returns {Promise<{scope: {tenantId: string, isSuperadmin: boolean}|null, tenant: object|null}>}
+ * @throws {Error & {status: number}} 400 when the named tenant does not exist
+ */
+async function resolveScope(db, user, tenant, req) {
+  const base = tenantScope(user, tenant);
+  if (!base) return { scope: null, tenant };
+  if (!isAllTenants(base)) return { scope: base, tenant };
+
+  const named = tenantHeader(req);
+  if (!named) return { scope: base, tenant };
+
+  const target = await resolveTenantRef(db, named);
+  if (!target) {
+    throw Object.assign(new Error(`There is no tenant '${named}'`), {
+      status: 400,
+      code: 'NO_SUCH_TENANT',
+    });
+  }
+  if (target.status !== 'active') {
+    throw Object.assign(new Error(`The tenant '${target.name}' is suspended`), {
+      status: 403,
+      code: 'TENANT_SUSPENDED',
+    });
+  }
+  // The narrowed scope is an ordinary one-tenant scope: `isSuperadmin` says
+  // how far the request reaches, and it no longer reaches past this tenant.
+  // Who the caller *is* is `req.user.role` — the role gates read that.
+  return { scope: { tenantId: target.id, isSuperadmin: false }, tenant: target };
+}
+
+/**
  * The scope a request runs in.
  *
- * `isSuperadmin` is the flag the business layer reads: a superadmin's reads
- * are not filtered, their writes still name the tenant they write into.
+ * The scope says how far a request reaches, not who the caller is:
+ *
+ *   - `tenantId` — the tenant the request speaks for; `ALL_TENANTS` means
+ *     every tenant.
+ *   - `isSuperadmin` — whether the scope reaches every tenant. It says the
+ *     same thing as `isAllTenants(scope)`, and is kept as a field so a
+ *     handler can read it without a helper call.
+ *
+ * A platform administrator whose request names a tenant gets a scope
+ * narrowed to it (`resolveScope`), and then `isSuperadmin` is false — the
+ * request no longer reaches past that tenant.
  *
  * @param {{id: string, role: string} | null} user
  * @param {{id: string} | null} tenant
@@ -188,8 +288,11 @@ module.exports = {
   isAllTenants,
   tenantClause,
   loadTenant,
+  resolveTenantRef,
+  resolveScope,
   resolveTenantFromUser,
   resolveWriteTenant,
   tenantScope,
+  tenantHeader,
   writeTenantId,
 };

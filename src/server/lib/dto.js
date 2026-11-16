@@ -181,6 +181,27 @@ function toCategory(row) {
 }
 
 /**
+ * Serialize a `tenants` row into the canonical shape.
+ *
+ * The tenant is the thing that holds the others apart, so its shape is the
+ * one the platform administrator picks from: the id (what a request names),
+ * the slug and the name (what a human reads).
+ *
+ * @param {Record<string, any>|null|undefined} row
+ * @returns {import('../../frontend/src/types/index').Tenant|null}
+ */
+function toTenant(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    status: row.status,
+    created_at: row.created_at,
+  };
+}
+
+/**
  * Split the CSV stored in `webhook_endpoints.events`.
  *
  * An empty result means "subscribed to every event" — see
@@ -250,6 +271,7 @@ module.exports = {
   toApiKey,
   toTag,
   toCategory,
+  toTenant,
   toWebhook,
   toPage,
 };

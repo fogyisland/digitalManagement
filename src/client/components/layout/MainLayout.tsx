@@ -29,6 +29,7 @@ import {
 } from '@ant-design/icons';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
+import TenantSelect from '@/components/layout/TenantSelect';
 import { tokens } from '@/theme/tokens';
 
 const { Sider, Header, Content } = Layout;
@@ -192,7 +193,13 @@ export default function MainLayout(): JSX.Element {
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const isAdmin = user?.role === 'admin';
+  // A platform administrator is at least an administrator: they may manage
+  // every tenant, so they may manage the users of every tenant. Hiding the
+  // entry from them would leave the role with an API it cannot reach.
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  // Only a platform administrator has a tenant to pick: everybody else
+  // belongs to exactly one tenant and never chooses.
+  const isSuperadmin = user?.role === 'superadmin';
 
   const [collapsed, setCollapsed] = useState(false);
   // Every group starts open: the sidebar only holds seven entries, and
@@ -298,35 +305,43 @@ export default function MainLayout(): JSX.Element {
       >
         <div
           style={{
-            height: TOPBAR_HEIGHT,
+            minHeight: TOPBAR_HEIGHT,
             display: 'flex',
-            alignItems: 'center',
-            padding: `0 ${tokens.space[4]}px`,
+            flexDirection: 'column',
+            gap: tokens.space[2],
+            padding: `${tokens.space[2]}px ${tokens.space[4]}px ${tokens.space[3]}px`,
             borderBottom: `1px solid ${tokens.color.border}`,
             color: tokens.color.text,
           }}
         >
-          <div
-            aria-hidden
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: tokens.radius.md,
-              background: `linear-gradient(135deg, ${tokens.color.accent} 0%, ${tokens.color.comfyui} 100%)`,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontWeight: tokens.fontWeight.bold,
-              color: tokens.color.bg,
-              marginRight: tokens.space[3],
-            }}
-          >
-            D
+          <div style={{ display: 'flex', alignItems: 'center', minHeight: 32 }}>
+            <div
+              aria-hidden
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: tokens.radius.md,
+                background: `linear-gradient(135deg, ${tokens.color.accent} 0%, ${tokens.color.comfyui} 100%)`,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: tokens.fontWeight.bold,
+                color: tokens.color.bg,
+                marginRight: tokens.space[3],
+              }}
+            >
+              D
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
+              <span style={{ fontSize: 14, fontWeight: tokens.fontWeight.semibold }}>DAM</span>
+              <span style={{ fontSize: 11, color: tokens.color.textMuted }}>数字资产平台</span>
+            </div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-            <span style={{ fontSize: 14, fontWeight: tokens.fontWeight.semibold }}>DAM</span>
-            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>数字资产平台</span>
-          </div>
+          {/* The tenant picker lives here, not in the top bar: the bar has to
+              hold the breadcrumb, the search and the account menu as well,
+              and in a narrow window it cannot hold all of them. The sider's
+              width is fixed, so this one always fits. */}
+          {isSuperadmin && <TenantSelect />}
         </div>
         <Menu
           mode="inline"

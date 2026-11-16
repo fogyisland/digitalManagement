@@ -58,16 +58,31 @@ export function installBrowserGlobals() {
 }
 
 /**
- * Node's ESM resolver does not try extensions. The frontend's API modules
- * import each other as `./client`, so teach the resolver to find `.ts`.
+ * Node's ESM resolver does not try extensions, and it knows nothing about the
+ * `@/` alias the frontend uses. The frontend's API modules import each other
+ * as `./client`, so teach the resolver to find `.ts` — and to turn `@/x` into
+ * `<srcDir>/x`.
  *
  * `registerHooks` landed in Node 22.15, so the guard needs that or newer.
  * The repository declares no Node floor, which makes this the one place the
  * requirement is written down.
+ *
+ * @param {string} srcDir the frontend source root (`src/client`)
  */
-export function installTypeScriptResolver() {
+export function installTypeScriptResolver(srcDir) {
   registerHooks({
     resolve(specifier, context, nextResolve) {
+      // The alias first: `@/api/tenants` is a real module, not a relative
+      // path, and Node would not know where to look.
+      if (specifier.startsWith('@/')) {
+        const base = path.join(srcDir, specifier.slice(2));
+        const candidates = [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')];
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+            return nextResolve(pathToFileURL(candidate).href, context);
+          }
+        }
+      }
       if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
         return nextResolve(specifier, context);
       }
@@ -214,9 +229,41 @@ export async function startBackend({ backendEntry }) {
     origin: `http://127.0.0.1:${port}`,
     child,
     tmpRoot,
+    // The throw-away schema's name, so a check that needs to look at a row
+    // where it lives can find it.
+    dbName,
     log: () => serverLog,
     stop,
   };
+}
+
+/**
+ * Run a query against the throw-away schema the contract run created.
+ *
+ * Some facts are only visible where the row lives: the tenant a row belongs
+ * to is not in the DTO of a category, for instance. The check that needs it
+ * asks here.
+ *
+ * @param {string} dbName the schema the contract run created
+ * @param {string} sql the statement
+ * @param {unknown[]} [params]
+ * @returns {Promise<any[]>} the rows
+ */
+export async function queryTestDb(dbName, sql, params = []) {
+  const connection = await mysql.createConnection({
+    host: process.env.DB_HOST || '127.0.0.1',
+    port: parseInt(process.env.DB_PORT || '3306', 10),
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: dbName,
+    charset: 'utf8mb4_unicode_ci',
+  });
+  try {
+    const [rows] = await connection.query(sql, params);
+    return rows;
+  } finally {
+    await connection.end();
+  }
 }
 
 /**
@@ -367,16 +414,19 @@ export const TINY_PNG = Buffer.from([
  * @returns {Promise<Record<string, any>>}
  */
 export async function loadFrontendApis(srcDir) {
-  const [client, auth, assets, users, tags, categories, apikeys, webhooks] = await Promise.all([
-    importFrontendModule(srcDir, 'api/client.ts'),
-    importFrontendModule(srcDir, 'api/auth.ts'),
-    importFrontendModule(srcDir, 'api/assets.ts'),
-    importFrontendModule(srcDir, 'api/users.ts'),
-    importFrontendModule(srcDir, 'api/tags.ts'),
-    importFrontendModule(srcDir, 'api/categories.ts'),
-    importFrontendModule(srcDir, 'api/apikeys.ts'),
-    importFrontendModule(srcDir, 'api/webhooks.ts'),
-  ]);
+  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore] =
+    await Promise.all([
+      importFrontendModule(srcDir, 'api/client.ts'),
+      importFrontendModule(srcDir, 'api/auth.ts'),
+      importFrontendModule(srcDir, 'api/assets.ts'),
+      importFrontendModule(srcDir, 'api/users.ts'),
+      importFrontendModule(srcDir, 'api/tags.ts'),
+      importFrontendModule(srcDir, 'api/categories.ts'),
+      importFrontendModule(srcDir, 'api/apikeys.ts'),
+      importFrontendModule(srcDir, 'api/webhooks.ts'),
+      importFrontendModule(srcDir, 'api/tenants.ts'),
+      importFrontendModule(srcDir, 'stores/tenantStore.ts'),
+    ]);
 
   return {
     client,
@@ -387,6 +437,9 @@ export async function loadFrontendApis(srcDir) {
     categoriesApi: categories.categoriesApi,
     apiKeysApi: apikeys.apiKeysApi,
     webhooksApi: webhooks.webhooksApi,
+    tenantsApi: tenants.tenantsApi,
+    // The tenant context store — the piece the UI picks a tenant through.
+    tenantStore: tenantStore.useTenantStore,
     // The import / job helpers live outside the `assetsApi` object — they are
     // standalone functions in the same module.
     importUrlByUrl: assets.importUrlByUrl,

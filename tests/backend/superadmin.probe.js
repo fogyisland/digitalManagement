@@ -183,11 +183,19 @@ async function main() {
       database: SCHEMA,
     });
     const password = await bcrypt.hash('Probe@123456', 10);
-    for (const tenant of ['tenant-a', 'tenant-b']) {
+    // The three things a tenant can be named by — its id, its slug and its
+    // name — are deliberately different here, so the probe can tell which one
+    // the `X-Tenant` header actually resolved. The name is ASCII because a
+    // header value has to be a byte string: a tenant named "甲方租户" cannot
+    // travel in a header at all, which is why the UI sends the id.
+    for (const [tenant, tenantName, tenantSlug] of [
+      ['tenant-a', 'Tenant A', 'tenant-a-slug'],
+      ['tenant-b', 'Tenant B', 'tenant-b-slug'],
+    ]) {
       await db.query('INSERT INTO tenants (id, name, slug, status) VALUES (?, ?, ?, ?)', [
         tenant,
-        tenant,
-        tenant,
+        tenantName,
+        tenantSlug,
         'active',
       ]);
       await db.query(
@@ -453,12 +461,181 @@ async function main() {
       `the created account must be able to act: ${JSON.stringify(createdMe.body)}`,
     );
 
+    // --- the header narrows the reads too --------------------------------
+    // One header, one meaning: the tenant a request speaks for. A read that
+    // names it must answer with that tenant's rows and nobody else's —
+    // otherwise "every tenant" and "this tenant" would be two meanings for
+    // the same header, and the UI could never show one tenant's data.
+    const narrowed = await call('/api/v1/users?page_size=200', {
+      headers: { ...auth, 'x-tenant': 'tenant-a' },
+    });
+    assert.equal(
+      narrowed.status,
+      200,
+      `a narrowed read must succeed: ${JSON.stringify(narrowed.body)}`,
+    );
+    const narrowedTenants = [...new Set((narrowed.body.items || []).map((u) => u.tenant_id))];
+    assert.deepEqual(
+      narrowedTenants,
+      ['tenant-a'],
+      'a narrowed read must only show the tenant the header named',
+    );
+
+    // The same tenant, named by its slug and by its name: the header takes a
+    // reference, not only an id, because the UI offers names.
+    for (const reference of ['tenant-a-slug', 'Tenant A']) {
+      const byReference = await call('/api/v1/users?page_size=200', {
+        headers: { ...auth, 'x-tenant': reference },
+      });
+      assert.equal(
+        byReference.status,
+        200,
+        `the tenant reference "${reference}" must resolve: ${JSON.stringify(byReference.body)}`,
+      );
+      const referenceTenants = [
+        ...new Set((byReference.body.items || []).map((u) => u.tenant_id)),
+      ];
+      assert.deepEqual(
+        referenceTenants,
+        ['tenant-a'],
+        `the reference "${reference}" must name the same tenant the id names`,
+      );
+    }
+
+    // A reference that names no tenant is refused, and it says which refusal.
+    const unknownReference = await call('/api/v1/users', {
+      headers: { ...auth, 'x-tenant': 'no-such-tenant' },
+    });
+    assert.equal(
+      unknownReference.status,
+      400,
+      `a reference to a tenant that does not exist must be refused: ${JSON.stringify(unknownReference.body)}`,
+    );
+    assert.equal(
+      unknownReference.body && unknownReference.body.code,
+      'NO_SUCH_TENANT',
+      `the refusal must name itself: ${JSON.stringify(unknownReference.body)}`,
+    );
+
+    // --- the tenant registry ----------------------------------------------
+    const registry = await call('/api/v1/tenants', { headers: auth });
+    assert.equal(
+      registry.status,
+      200,
+      `a platform administrator must be able to list the tenants: ${JSON.stringify(registry.body)}`,
+    );
+    assert.ok(
+      ['tenant-a', 'tenant-b'].every((id) => registry.body.items.some((t) => t.id === id)),
+      'the registry must list every tenant of the platform',
+    );
+    assert.ok(
+      registry.body.items.some((t) => t.id === 'tenant-a' && t.name === 'Tenant A'),
+      'the registry must carry the tenant id the request names and the name a human reads',
+    );
+
+    // The registry is the platform administrator's: a tenant admin has no
+    // business learning the names of the tenants they share a platform with.
+    const deniedRegistry = await call('/api/v1/tenants', {
+      headers: { authorization: `Bearer ${ownerLogin.body.access_token}` },
+    });
+    assert.equal(
+      deniedRegistry.status,
+      403,
+      'a tenant admin must not read the tenant registry',
+    );
+
+    // --- updates and deletes ----------------------------------------------
+    // This is the gap the header closes: a platform administrator's scope
+    // names no tenant, so every update answered 404 — the row was there, the
+    // tenant it belonged to was not.
+    const unnamedUpdate = await call('/api/v1/categories/cat-tenant-a', {
+      method: 'PUT',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: 'renamed without naming a tenant' }),
+    });
+    assert.equal(
+      unnamedUpdate.status,
+      400,
+      'an update that names no tenant must be refused',
+    );
+    assert.equal(
+      unnamedUpdate.body && unnamedUpdate.body.code,
+      'TENANT_REQUIRED',
+      `the refusal must name itself: ${JSON.stringify(unnamedUpdate.body)}`,
+    );
+
+    const renamed = await call('/api/v1/categories/cat-tenant-a', {
+      method: 'PUT',
+      headers: { ...json, ...auth, 'x-tenant': 'tenant-a' },
+      body: JSON.stringify({ name: 'renamed by the platform administrator' }),
+    });
+    assert.equal(
+      renamed.status,
+      200,
+      `an update in a named tenant must succeed: ${JSON.stringify(renamed.body)}`,
+    );
+    assert.equal(
+      renamed.body && renamed.body.name,
+      'renamed by the platform administrator',
+      'the update must land',
+    );
+
+    // The same request, against the other tenant's row, must not reach it.
+    const foreign = await call('/api/v1/categories/cat-tenant-b', {
+      method: 'PUT',
+      headers: { ...json, ...auth, 'x-tenant': 'tenant-a' },
+      body: JSON.stringify({ name: 'reaching into another tenant' }),
+    });
+    assert.equal(
+      foreign.status,
+      404,
+      'a narrowed update must not reach another tenant\'s row',
+    );
+
+    const removed = await call('/api/v1/categories/cat-tenant-b', {
+      method: 'DELETE',
+      headers: { ...json, ...auth, 'x-tenant': 'tenant-b' },
+    });
+    assert.equal(
+      removed.status,
+      204,
+      `a delete in a named tenant must succeed: ${JSON.stringify(removed.body)}`,
+    );
+
+    // --- the manifest narrows as well -------------------------------------
+    const manifest = await call('/api/v1/manifest', {
+      headers: { ...auth, 'x-tenant': 'tenant-a' },
+    });
+    assert.equal(
+      manifest.status,
+      200,
+      `a narrowed manifest must succeed: ${JSON.stringify(manifest.body)}`,
+    );
+    const manifestTenants = [
+      ...new Set((manifest.body.assets || []).map((a) => a.tenant_id)),
+    ];
+    assert.deepEqual(
+      manifestTenants,
+      ['tenant-a'],
+      'the manifest must follow the same narrowing as every other read',
+    );
+
     console.log('\n--- the superadmin write path ---');
     console.log('  a write that names no tenant is refused       OK');
     console.log('  a write into a tenant that does not exist     OK');
     console.log('  a write into a named tenant lands there       OK');
     console.log('  the account it created can authenticate       OK');
     console.log('  the header does not move a tenant write       OK');
+    console.log('\n--- the tenant header ---');
+    console.log('  a narrowed read shows only the named tenant    OK');
+    console.log('  a tenant resolves by id, by slug and by name  OK');
+    console.log('  an unknown reference is refused by name       OK');
+    console.log('  the registry lists every tenant               OK');
+    console.log('  the registry is closed to a tenant admin      OK');
+    console.log('  an update in a named tenant lands             OK');
+    console.log('  a narrowed update cannot reach another tenant OK');
+    console.log('  a delete in a named tenant lands              OK');
+    console.log('  the manifest follows the same narrowing       OK');
     console.log('superadmin probe OK');
   } finally {
     if (child) {

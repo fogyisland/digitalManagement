@@ -31,6 +31,7 @@ import { identityChecks } from './runtime-checks-identity.js';
 import { initChecks } from './runtime-checks-init.js';
 import { integrationChecks } from './runtime-checks-integrations.js';
 import { sessionChecks } from './runtime-checks-session.js';
+import { tenantChecks } from './runtime-checks-tenants.js';
 
 /**
  * @typedef {object} CheckContext
@@ -57,9 +58,18 @@ import { sessionChecks } from './runtime-checks-session.js';
  * @property {(ctx: CheckContext) => Promise<void>} run
  */
 
-/** Every check, in the order they run. */
+/**
+ * Every check, in the order they run.
+ *
+ * The tenant checks sit right after the identity ones: they need a session
+ * to begin with (the first of them checks that a tenant administrator is
+ * kept out of the registry), and they give the session back before they
+ * finish — the rest of the suite runs as the seeded administrator, which is
+ * what it has always assumed.
+ */
 export const runtimeChecks = [
   ...identityChecks,
+  ...tenantChecks,
   ...assetChecks,
   ...integrationChecks,
   ...initChecks,

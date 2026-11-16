@@ -17,8 +17,8 @@ import assert from 'node:assert/strict';
 import { rawRequest } from './runtime.js';
 
 /** The account the backend seeds on first boot. */
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSWORD = 'Admin@123456';
+export const ADMIN_USERNAME = 'admin';
+export const ADMIN_PASSWORD = 'Admin@123456';
 
 /**
  * @typedef {import('./runtime-checks.js').RuntimeCheck} RuntimeCheck

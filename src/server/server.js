@@ -44,6 +44,7 @@ const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manif
 
 const createAuthRouter = require('./routes/auth');
 const createUsersRouter = require('./routes/users');
+const createTenantsRouter = require('./routes/tenants');
 const createTagsRouter = require('./routes/tags');
 const createCategoriesRouter = require('./routes/categories');
 const createAssetsRouter = require('./routes/assets');
@@ -192,6 +193,9 @@ app.use(
   '/api/v1',
   createAuthRouter({ db }),
   createUsersRouter({ db }),
+  // The tenant registry. Only a platform administrator may read it — it is
+  // the list they pick from when they choose which tenant to act in.
+  createTenantsRouter({ db }),
   createTagsRouter({ db }),
   createCategoriesRouter({ db }),
   createAssetsRouter({ db, uploader }),

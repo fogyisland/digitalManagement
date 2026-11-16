@@ -90,6 +90,27 @@ npm start
 
 > ⚠️ 首次部署后请立即修改密码！
 
+### 多租户与平台管理员
+
+一个租户是库里所有数据归属的边界。初始化向导会建好第一个租户，之后的租户在控制台建：
+
+```bash
+# 建一个租户（--id 是请求里 X-Tenant 用的那个名字）
+npm run tenant:create -- --name "Acme Corp" --slug acme --id acme
+```
+
+**平台管理员**（`role=superadmin`）的账号不属于任何租户：它默认能读整个平台，并可以用 `X-Tenant` 头把请求收窄到任意一个租户。这个角色没有对应的 API——能读所有租户的角色是一道安全边界，给它一个发放入口就是提权后门——所以它在控制台发：
+
+```bash
+# 新建一个平台管理员（不给 --password 就随机生成并打印一次）
+npm run superadmin -- --username root
+
+# 把一个已有的租户账号提升为平台管理员
+npm run superadmin -- --username alice --promote
+```
+
+拿到账号后登录，右上角会出现租户选择器：选中哪个租户，接下来的读写就都在那个租户里。
+
 ### 方式三：Docker Compose
 
 ```bash
@@ -135,6 +156,7 @@ npm run dev:server   # 后端热重启 :8000
 | PUT | `/api/v1/users/:id` | 更新用户 |
 | DELETE | `/api/v1/users/:id` | 删除用户 |
 | POST | `/api/v1/users/:id/reset-password` | 重置密码 |
+| GET | `/api/v1/tenants` | 租户列表（**仅平台管理员**） |
 | GET | `/api/v1/assets` | 资产列表（筛选、搜索、分页） |
 | POST | `/api/v1/assets/upload` | 上传（multipart，字段名 `files`，最多 20 个） |
 | POST | `/api/v1/assets/import-url` | 从外部 URL 导入（拒绝内网地址） |
@@ -168,7 +190,21 @@ npm run dev:server   # 后端热重启 :8000
 | GET | `/api/v1/stats/dashboard` | 仪表盘统计 |
 | GET | `/api/v1/jobs/by-comfyui/:job_id` | 按 ComfyUI 任务号查资产 |
 
-> **超级管理员（`role=superadmin`）写入时必须指明租户。** 超级管理员的凭证本身不属于任何租户，创建资源（用户 / 分类 / 标签 / API Key / Webhook / 资产）时需要带一个 `X-Tenant: <租户名>` 头，指明这次写入落到哪个租户；不带头返回 `400 TENANT_REQUIRED`，租户不存在返回 `400 NO_SUCH_TENANT`。普通租户的凭证会忽略这个头——它不能用来越权。
+> **平台管理员（`role=superadmin`）用 `X-Tenant` 指定这次请求服务的租户。**
+>
+> 平台管理员的凭证本身不属于任何租户，所以它的默认范围是**整个平台**：不带这个头时，所有读取覆盖全部租户。带上这个头，读和写**同时**收窄到这个租户——列表只看得到它的行，更新和删除也只作用在它的行上。一个头一个意思。
+>
+> 头的值是一个**引用**：租户的 id、slug 或名称都行（`X-Tenant: acme`、`X-Tenant: acme-slug`、`X-Tenant: Acme Corp`），后端按 id → slug → 名称的顺序解析。
+>
+> ⚠️ HTTP 头只能是字节串，所以**非 ASCII 的租户名放不进这个头**（请求在到达服务端之前就被拒了）。前端发的永远是租户 **id**；只有 ASCII 的 slug / 名称才能直接用在头上。
+>
+> - 不带这个头就写入 → `400 TENANT_REQUIRED`（写入必须落到一个具体租户；落在通配租户上的行谁都读不到）
+> - 头指向的租户不存在 → `400 NO_SUCH_TENANT`
+> - 头指向的租户已停用 → `403 TENANT_SUSPENDED`
+>
+> 普通租户的凭证会**忽略**这个头——它不能用来越权。
+>
+> `GET /api/v1/tenants` 只有平台管理员能读，它列出全部租户（id / 名称 / slug），前端的头部租户选择器就是从它取数据的。这个接口**不**受 `X-Tenant` 影响：它正是用来*选*租户的。
 
 ### 公开投递 API（API Key 鉴权）
 

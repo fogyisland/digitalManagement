@@ -12,6 +12,8 @@
     "type-check": "tsc --noEmit",
     "seed": "node src/server/scripts/seed.js",
     "seed:force": "node src/server/scripts/seed.js --force",
+    "superadmin": "node src/server/scripts/superadmin.js",
+    "tenant:create": "node src/server/scripts/tenant.js",
     "test": "npm run test:contract && npm run test:backend",
     "test:contract": "node tests/contract.test.js",
     "test:backend": "node tests/backend/run.js"

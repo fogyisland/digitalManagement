@@ -100,10 +100,11 @@ function createUsersRouter({ db }) {
     }
     const safeRole = ROLES.includes(role) ? role : 'viewer';
     const id = nanoid();
-    // A write lands in one concrete tenant. For everybody else that is the
-    // tenant their credential speaks for; a platform administrator names it
-    // in `X-Tenant`, because their scope covers every tenant and names none.
-    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. For
+    // everybody else that is the tenant their credential speaks for; a
+    // platform administrator names it in `X-Tenant`, which narrows their
+    // scope to that tenant before this handler runs.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     try {
       await db
         .prepare(
@@ -128,7 +129,10 @@ function createUsersRouter({ db }) {
   }));
 
   router.put('/users/:id', requireAdmin, asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const target = await db
       .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);
@@ -188,7 +192,10 @@ function createUsersRouter({ db }) {
   }));
 
   router.delete('/users/:id', requireAdmin, asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const target = await db
       .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);
@@ -215,7 +222,10 @@ function createUsersRouter({ db }) {
   }));
 
   router.post('/users/:id/reset-password', requireAdmin, asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const target = await db
       .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);

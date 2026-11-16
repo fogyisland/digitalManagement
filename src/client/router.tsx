@@ -26,7 +26,10 @@ function Protected() {
 function AdminOnly() {
   const user = useAuthStore((s) => s.user);
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== 'admin') return <Navigate to="/" replace />;
+  // A platform administrator is at least an administrator — the backend's
+  // `adminRequired` lets them through as well, and a guard that is stricter
+  // than the server hides a page they may actually use.
+  if (user.role !== 'admin' && user.role !== 'superadmin') return <Navigate to="/" replace />;
   return <Outlet />;
 }
 

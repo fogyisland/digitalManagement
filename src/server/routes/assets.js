@@ -97,7 +97,7 @@ function createAssetsRouter({ db, uploader }) {
       const extras = uploadExtras(req.body || {});
       const storageDir = getConfig().storageDir;
       // A write lands in one concrete tenant — see `resolveWriteTenant`.
-      const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+      const tenantId = await resolveWriteTenant(db, req.tenantScope);
       const results = [];
       for (let index = 0; index < req.files.length; index += 1) {
         const file = req.files[index];
@@ -147,7 +147,7 @@ function createAssetsRouter({ db, uploader }) {
         ...uploadExtras(body),
         source_tool: body.source_tool || 'import-url',
       },
-      tenantId: await resolveWriteTenant(db, req.tenantScope, req),
+      tenantId: await resolveWriteTenant(db, req.tenantScope),
     });
     return res.status(201).json(toAsset(result.asset));
   }));
@@ -157,7 +157,7 @@ function createAssetsRouter({ db, uploader }) {
     if (!jobId) return res.status(400).json({ detail: 'job_id required' });
     const body = req.body || {};
     // A write lands in one concrete tenant — see `resolveWriteTenant`.
-    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
 
     const existing = await db
       .prepare(
@@ -292,7 +292,10 @@ function createAssetsRouter({ db, uploader }) {
         asset.tenant_id,
       );
     if (tag_names !== undefined && tag_names !== null) {
-      await attachTags(db, req.tenantScope.tenantId, asset.id, tag_names);
+      // The tags land in the asset's own tenant — the row was read through
+      // the scope above, so this is the tenant the asset belongs to and not
+      // the one the request happens to speak for.
+      await attachTags(db, asset.tenant_id, asset.id, tag_names);
     }
     const updated = await findAssetById(db, req.tenantScope, asset.id);
     await emitAssetEvent(db, 'asset.updated', updated);

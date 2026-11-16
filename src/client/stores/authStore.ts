@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import type { User } from '@/types'
 import { authApi } from '@/api/auth'
 import { getToken, getRefreshToken, setToken, setRefreshToken, isUnauthorized } from '@/api/client'
+import { clearTenantSelection } from './tenantStore'
 
 interface AuthState {
   user: User | null
@@ -36,6 +37,10 @@ export const useAuthStore = create<AuthState>()(
       setAuth: (user, access, refresh) => {
         setToken(access)
         setRefreshToken(refresh ?? null)
+        // A platform administrator picks the tenant to act in; everybody else
+        // has a tenant of their own, and a leftover selection from a previous
+        // session is not theirs to keep.
+        if (user.role !== 'superadmin') clearTenantSelection()
         set({ user })
       },
       setUser: (user) => set({ user }),
@@ -46,7 +51,8 @@ export const useAuthStore = create<AuthState>()(
        * `revoked_tokens` table, so the access token dies immediately instead
        * of lingering until its expiry). The local copy is cleared
        * unconditionally — a failed revocation must never leave a usable
-       * token behind.
+       * token behind. The tenant selection goes with them: it belongs to the
+       * session, not to the browser.
        */
       logout: () => {
         void authApi.logout().catch((error: unknown) => {
@@ -54,6 +60,7 @@ export const useAuthStore = create<AuthState>()(
         })
         setToken(null)
         setRefreshToken(null)
+        clearTenantSelection()
         set({ user: null })
       },
       hasRole: (...roles) => {
@@ -62,7 +69,8 @@ export const useAuthStore = create<AuthState>()(
       },
       canWrite: () => {
         const u = get().user
-        return !!u && (u.role === 'admin' || u.role === 'editor')
+        // A platform administrator writes too — inside the tenant they picked.
+        return !!u && (u.role === 'admin' || u.role === 'editor' || u.role === 'superadmin')
       },
     }),
     {

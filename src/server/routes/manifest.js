@@ -21,6 +21,7 @@
 
 const express = require('express');
 const { authRequired } = require('../lib/auth');
+const { isAllTenants } = require('../lib/tenant');
 const { safeParse } = require('../lib/util');
 const { asyncHandler } = require('../lib/http');
 
@@ -34,8 +35,10 @@ function createManifestRouter({ db }) {
   router.get('/manifest', authRequired(db), asyncHandler(async (req, res) => {
     const scope = req.tenantScope;
     // The listing is the caller's tenant's. A platform administrator's scope
-    // covers every tenant, so their listing covers the whole platform.
-    const rows = scope && scope.isSuperadmin
+    // covers every tenant — unless they named one in `X-Tenant`, which
+    // narrows the scope to it. The question is therefore "how far does this
+    // scope reach", not "who is the caller".
+    const rows = isAllTenants(scope)
       ? await db
           .prepare(
             `SELECT id, tenant_id, title, asset_type, file_size, original_name, mime_type,

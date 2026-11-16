@@ -63,7 +63,7 @@ function createCategoriesRouter({ db }) {
     if (!name) return res.status(400).json({ detail: 'name required' });
     const id = nanoid();
     // A write lands in one concrete tenant — see `resolveWriteTenant`.
-    const tenantId = await resolveWriteTenant(db, req.tenantScope, req);
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     try {
       await db
         .prepare(
@@ -88,7 +88,10 @@ function createCategoriesRouter({ db }) {
   }));
 
   router.put('/categories/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const category = await db
       .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);
@@ -115,7 +118,10 @@ function createCategoriesRouter({ db }) {
   }));
 
   router.delete('/categories/:id', authRequired(db), asyncHandler(async (req, res) => {
-    const tenantId = req.tenantScope.tenantId;
+    // A write lands in one concrete tenant — see `resolveWriteTenant`. A
+    // platform administrator who has not named one is refused with a 400 that
+    // says so, instead of a 404 that reads like a missing row.
+    const tenantId = await resolveWriteTenant(db, req.tenantScope);
     const category = await db
       .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, tenantId);

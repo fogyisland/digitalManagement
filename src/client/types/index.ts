@@ -197,6 +197,29 @@ export interface UserListParams {
 }
 
 /* --------------------------------------------------------------------------
+   Tenant — 镜像 toTenant()
+   -------------------------------------------------------------------------- */
+
+/**
+ * 一个租户。
+ *
+ * 平台管理员用它决定「当前在哪个租户里行事」：选中之后，请求带上
+ * `X-Tenant: <id>`，后端把这次请求的读写都收窄到这个租户。
+ */
+export interface Tenant {
+  id: string
+  name: string
+  slug: string
+  status: string
+  created_at: string
+}
+
+/** `GET /tenants` 的响应。 */
+export interface TenantListResponse {
+  items: Tenant[]
+}
+
+/* --------------------------------------------------------------------------
    Auth — 镜像 issueTokenPair()
    -------------------------------------------------------------------------- */
 

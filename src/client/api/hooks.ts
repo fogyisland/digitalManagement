@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiClient } from './client';
+import { useTenantStore } from '@/stores/tenantStore';
 import { toError } from '@/utils/errors';
 
 interface State<T> {
@@ -40,6 +41,16 @@ export function useApi<T>(path: string | null, init?: UseApiInit): State<T> {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<Error>();
   const [loading, setLoading] = useState(false);
+
+  /**
+   * The tenant the request speaks for.
+   *
+   * It is a dependency of the fetch, not of the request: the same URL
+   * answers differently for a different tenant, so a change of tenant has to
+   * re-run the query — otherwise the page keeps showing the previous
+   * tenant's rows under the new tenant's name.
+   */
+  const tenantId = useTenantStore((s) => s.tenantId);
 
   /** Monotonic request id — only the newest response may touch state. */
   const seq = useRef(0);
@@ -95,9 +106,10 @@ export function useApi<T>(path: string | null, init?: UseApiInit): State<T> {
       if (alive.current && current === seq.current) setLoading(false);
     }
     // `requestKey` stands in for the request config; `initRef` carries the
-    // current values. See the comment above.
+    // current values. `tenantId` is here for the same reason: a different
+    // tenant answers the same URL differently.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, requestKey]);
+  }, [path, requestKey, tenantId]);
 
   useEffect(() => {
     void run();

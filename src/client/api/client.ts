@@ -26,6 +26,18 @@
  * `stores/authStore.ts` is the only writer of the *session*; this module is
  * the reader the request interceptor uses, plus the writer of the *rotated*
  * pair (which happens below the store, inside the interceptor).
+ *
+ * ## Tenant contract
+ *
+ * A platform administrator acts in one tenant at a time. The tenant it picked
+ * lives in `localStorage` under `dam_tenant_id` and travels with every
+ * request as the `X-Tenant` header. The backend reads that header once, when
+ * it resolves the request's scope, and both the reads and the writes are
+ * narrowed to the tenant it names — so one header means one thing.
+ *
+ * A caller who is not a platform administrator has a tenant of its own; the
+ * header is ignored for it, and the tenant selection is cleared when such an
+ * account signs in.
  */
 import axios from 'axios';
 import type { AxiosError, AxiosRequestConfig, AxiosResponse } from 'axios';
@@ -33,6 +45,7 @@ import type { TokenPair } from '@/types';
 
 const ACCESS_TOKEN_KEY = 'dam_access_token';
 const REFRESH_TOKEN_KEY = 'dam_refresh_token';
+const TENANT_KEY = 'dam_tenant_id';
 
 export function getToken(): string | null {
   return localStorage.getItem(ACCESS_TOKEN_KEY);
@@ -57,6 +70,33 @@ export function setRefreshToken(token: string | null): void {
     localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
 }
+
+/**
+ * The tenant the request speaks for.
+ *
+ * `null` means "no tenant was picked" — for a platform administrator that is
+ * the whole platform, for everybody else it never happens.
+ */
+export function getTenantId(): string | null {
+  return localStorage.getItem(TENANT_KEY);
+}
+
+export function setTenantId(tenantId: string | null): void {
+  if (tenantId) {
+    localStorage.setItem(TENANT_KEY, tenantId);
+  } else {
+    localStorage.removeItem(TENANT_KEY);
+  }
+}
+
+/**
+ * Announced when a tenant selection was dropped because it named a tenant
+ * that does not exist.
+ *
+ * This module owns the stored selection, and the store that mirrors it in
+ * memory listens for this event — so the two cannot drift apart.
+ */
+export const TENANT_CLEARED_EVENT = 'dam:tenant-cleared';
 
 /**
  * True when the failure was an authentication rejection (HTTP 401).
@@ -89,12 +129,37 @@ export const apiClient = axios.create({ baseURL: '/api/v1', timeout: 30000 });
 apiClient.interceptors.request.use((cfg) => {
   const token = getToken();
   if (token) cfg.headers.Authorization = `Bearer ${token}`;
+  // The tenant a platform administrator picked. It travels with the request
+  // rather than with the URL, so every route narrows to it the same way.
+  //
+  // The header is written from the current selection every time — and taken
+  // off again when there is no selection — so a replayed request never
+  // carries a tenant that was cleared in the meantime.
+  const tenantId = getTenantId();
+  if (tenantId) cfg.headers['X-Tenant'] = tenantId;
+  else delete cfg.headers['X-Tenant'];
   return cfg;
 });
 
 /** A request config that has already been through the refresh dance. */
 interface RetriableConfig extends AxiosRequestConfig {
   _hasRetried?: boolean;
+  /** A request that already survived a stale tenant. */
+  _hasRetriedTenant?: boolean;
+}
+
+/**
+ * Did the backend refuse because the named tenant does not exist?
+ *
+ * Only that one code means "the tenant you named is gone": the server
+ * refuses the request before it reaches the handler, so nothing was written.
+ *
+ * @param error the axios error
+ * @returns whether the tenant in the header is stale
+ */
+function isStaleTenant(error: AxiosError): boolean {
+  const data = (error.response?.data ?? null) as { code?: unknown } | null;
+  return data?.code === 'NO_SUCH_TENANT';
 }
 
 /**
@@ -143,6 +208,24 @@ apiClient.interceptors.response.use(
   async (error: AxiosError) => {
     const status = error.response?.status;
     const original = error.config as RetriableConfig | undefined;
+
+    // The tenant the request named no longer exists — the tenant was
+    // removed, or the browser kept a selection from another installation.
+    // The selection is dropped and the request is replayed without it: the
+    // platform-wide answer is always valid, and a stale pointer should not
+    // turn every page into an error. The replay is flagged, so a second
+    // refusal cannot loop.
+    if (status === 400 && original && !original._hasRetriedTenant && isStaleTenant(error)) {
+      original._hasRetriedTenant = true;
+      setTenantId(null);
+      // The store that mirrors the selection listens for this. The guard is
+      // for the environments without a DOM — the test harness runs this
+      // module in Node.
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new CustomEvent(TENANT_CLEARED_EVENT));
+      }
+      return apiClient.request(original);
+    }
 
     // A 401 on an authenticated call usually means the access token expired.
     // Rotate the pair once and replay the request; the retry is flagged so a
