@@ -1,0 +1,2411 @@
+openapi: 3.0.3
+
+info:
+  title: 数字资产管理系统 · API
+  version: 1.0.0
+  description: |
+    这个实例的 HTTP 接口一览。
+
+    **单端口**：API、前端、静态文件、签名文件路由和 MCP 端点都在同一个端口上，
+    下面的路径都相对于它。
+
+    **两扇门**：租户里的账号走 `POST /api/v1/auth/login`，平台管理员走
+    `POST /api/v1/auth/platform-login`。两扇门互不通用——租户门对平台管理员返
+    403，平台门对租户账号返 403。
+
+    **租户作用域**：一个会话令牌只属于一个租户。要操作别的租户的数据，请求
+    必须带 `X-Tenant` 头；不写就写进这个令牌自己的租户。平台层的管理员可以
+    切换租户，但**写操作必须落到一个具体的租户**——不选就返 400。
+
+    **文件链接是签名的**：`/storage/...` 上的 URL 带有效期和 HMAC 签名，签名
+    覆盖文件所属的租户，所以它只打开签发时的那一个文件。链接在平台设置了
+    「访问域名」之后是绝对地址，复制到别处也能用。
+  license:
+    name: Proprietary
+
+servers:
+  - url: /
+    description: 这个实例自己
+
+tags:
+  - name: 认证
+    description: 两扇门、会话与密码
+  - name: 资产
+    description: 上传、查询、修改与三种删除状态
+  - name: 分类与标签
+    description: 资产的归类
+  - name: 账号与密钥
+    description: 租户里的账号、API Key 与 MCP 令牌
+  - name: 集成
+    description: Webhook 与导入
+  - name: 平台层
+    description: 租户之上那一层：租户、账号目录、审计、流量与设置
+  - name: 外部接入
+    description: 给外部系统用的接口：投递、接入与 MCP
+  - name: 系统
+    description: 统计、清单与实例设置
+  - name: 首装向导
+    description: 第一次安装时用的接口，装完即关闭
+  - name: 探针
+    description: 健康检查
+  - name: 文件
+    description: 带签名的文件读取
+
+paths:
+  # ---------------------------------------------------------------- 探针 ----
+  /api/health:
+    get:
+      tags: [探针]
+      summary: 存活探针
+      description: 实例在跑就答 200。它不碰数据库，所以它答 200 不代表数据库可达。
+      responses:
+        '200':
+          description: 实例活着
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: dam }
+
+  /api/health/ready:
+    get:
+      tags: [探针]
+      summary: 就绪探针
+      description: 它真的问一次数据库。答 503 就说明这个实例还没准备好。
+      responses:
+        '200':
+          description: 准备好了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+                  db: { type: string, example: ok }
+        '503':
+          description: 数据库还连不上
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: not-ready }
+                  db: { type: string, example: error }
+                  detail: { type: string }
+
+  # ------------------------------------------------------------ 首装向导 ----
+  /api/init/status:
+    get:
+      tags: [首装向导]
+      summary: 装好了没有
+      description: 向导问的第一个问题：实例配置好了吗。装好了它就关门。
+      responses:
+        '200':
+          description: 当前状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: { type: boolean }
+                  has_admin: { type: boolean }
+                  has_tenants: { type: boolean }
+
+  /api/init/env-preview:
+    get:
+      tags: [首装向导]
+      summary: 看看环境变量
+      description: 向导第三页要给运维看一眼这个实例会读到什么。密钥本身不返回，只有「是不是占位串」。
+      responses:
+        '200':
+          description: 环境变量预览
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  env:
+                    type: object
+                    additionalProperties: { type: string }
+
+  /api/init/database:
+    post:
+      tags: [首装向导]
+      summary: 建库建表
+      description: 连上数据库，把 schema 建出来。幂等：重复调用不会重建已有的东西。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [db_host, db_user, db_password, db_name]
+              properties:
+                db_host: { type: string, example: 127.0.0.1 }
+                db_port: { type: integer, example: 3306 }
+                db_user: { type: string, example: root }
+                db_password: { type: string }
+                db_name: { type: string, example: digital_management }
+      responses:
+        '200':
+          description: schema 就绪
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/init/admin:
+    post:
+      tags: [首装向导]
+      summary: 建第一个管理员
+      description: 建平台管理员和它的第一个租户。密码由这里定，只在这一刻出现。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, example: admin }
+                password: { type: string, format: password }
+                email: { type: string, format: email }
+                tenant_name: { type: string, example: 默认租户 }
+      responses:
+        '201':
+          description: 建好了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  tenant_id: { type: string }
+                  admin:
+                    type: object
+                    properties:
+                      created: { type: boolean }
+                      username: { type: string }
+                      password: { type: string, description: 只有这一次会返回 }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/init/seed:
+    post:
+      tags: [首装向导]
+      summary: 灌一批示例资产
+      description: 装一套示例图，方便看看界面长什么样。空库才需要。
+      responses:
+        '200':
+          description: 灌了多少
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  skipped: { type: boolean }
+
+  # ---------------------------------------------------------------- 认证 ----
+  /api/v1/auth/login:
+    post:
+      tags: [认证]
+      summary: 租户门登录
+      description: |
+        用租户里的账号与密码换一对令牌。
+
+        平台管理员**不能**走这扇门：它会答 403 并说明原因——平台管理员要走的
+        是平台门。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                tenant: { type: string, description: 租户 id 或 slug }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/auth/platform-login:
+    post:
+      tags: [认证]
+      summary: 平台门登录
+      description: |
+        平台管理员从这里进门。它不属于任何租户——登录之后，平台管理员可以用
+        `X-Tenant` 头选择要操作哪个租户。
+
+        租户账号走这扇门会答 403。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [认证]
+      summary: 换一对新令牌
+      description: 用刷新令牌换新的访问令牌与刷新令牌。旧的刷新令牌用完就作废。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: 换好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResult' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [认证]
+      summary: 登出
+      description: 作废这个会话。已经签出去的访问令牌还在有效期内——服务端不记黑名单。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 登出了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/me:
+    get:
+      tags: [认证]
+      summary: 我是谁
+      description: 当前令牌是谁的，以及它属于哪个租户。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 当前的账号
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/tenants:
+    get:
+      tags: [认证]
+      summary: 可以选的租户
+      description: |
+        登录页上那个下拉框的来源。租户账号只会看到自己那一个；平台管理员会
+        看到全部。
+      responses:
+        '200':
+          description: 租户列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tenant' }
+
+  /api/v1/auth/change-password:
+    post:
+      tags: [认证]
+      summary: 改自己的密码
+      description: 要给旧密码。改完现有会话仍然有效。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string, format: password }
+                new_password: { type: string, format: password }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---------------------------------------------------------------- 资产 ----
+  /api/v1/assets:
+    get:
+      tags: [资产]
+      summary: 资产列表
+      description: 租户自己的资产。默认不含回收站里的。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          description: 状态过滤。`deleted` 看回收站。
+          schema: { type: string, enum: [ready, processing, deleted] }
+        - name: keyword
+          in: query
+          description: 按标题或文件名搜
+          schema: { type: string }
+        - name: category_id
+          in: query
+          schema: { type: string }
+        - name: include_deleted
+          in: query
+          description: 带上回收站里的
+          schema: { type: boolean }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: 一页资产
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetPage' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/assets/upload:
+    post:
+      tags: [资产]
+      summary: 上传文件
+      description: |
+        multipart 上传。字段名是 **`files`**（复数），一次可以带多个文件。
+
+        同一个文件按内容去重：同样的字节再传一次，回来的是同一个资产。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+                title: { type: string }
+                description: { type: string }
+                category_id: { type: string }
+                tag_names: { type: string, description: 逗号分隔 }
+      responses:
+        '200':
+          description: 存好了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/assets/{id}:
+    get:
+      tags: [资产]
+      summary: 资产详情
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: 这个资产
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [资产]
+      summary: 改标题、描述和标签
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                category_id: { type: string }
+                tag_names: { type: string, description: 逗号分隔 }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [资产]
+      summary: 删除资产
+      description: |
+        默认是**软删除**：行移到回收站，`GET /assets?status=deleted` 能看到。
+
+        `?permanent=true` 是彻底删除，数据和文件一起消失。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+        - name: permanent
+          in: query
+          description: 彻底删除，不可逆
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: 删掉了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  permanent: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/assets/{id}/manifest:
+    get:
+      tags: [资产]
+      summary: 资产的清单
+      description: 这个资产的原图、缩略图与元数据，以及一张对外的签名链接。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: 清单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetManifest' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/assets/{id}/download:
+    post:
+      tags: [资产]
+      summary: 要一张下载票
+      description: |
+        换一张带签名的下载链接。浏览器不能给 `<img src>` 带 Authorization
+        头，所以文件走签名链接——签名覆盖这个资产的租户，它只打开签发时的那一个文件。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: 下载票
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DownloadTicket' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/assets/{id}/restore:
+    post:
+      tags: [资产]
+      summary: 从回收站里捡回来
+      description: 只对回收站里的资产有效；别的资产会答 400。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AssetId'
+      responses:
+        '200':
+          description: 捡回来了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/assets/import-url:
+    post:
+      tags: [集成]
+      summary: 从一个网址导入
+      description: |
+        服务器自己去把那个文件抓回来。
+
+        目标地址默认**不许指向内网**（10.x、172.16-31.x、192.168.x、127.0.0.1、
+        169.254.x 等）——那台服务器自己够得着的地址，不该由一个外部请求指出来。
+        接收方确实在你自己的网络里时，运维得把 `WEBHOOK_ALLOW_PRIVATE_TARGETS`
+        设成 `1`。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+                title: { type: string }
+                tag_names: { type: string }
+      responses:
+        '200':
+          description: 导进来了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/assets/from-comfyui/{job_id}:
+    post:
+      tags: [集成]
+      summary: 认领一个 ComfyUI 任务
+      description: |
+        ComfyUI 那边跑完了，把 `job_id` 报过来，这里给它登记成一个资产。
+
+        任务还没产出文件时，这里先登记一个**占位资产**：清单指向一个占位文件，
+        真正的图产出之后再登记一次。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                prompt: { type: string }
+                seed: { type: integer }
+                model_name: { type: string }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: 登记好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------------------------------------------------------- 分类与标签 ----
+  /api/v1/categories:
+    get:
+      tags: [分类与标签]
+      summary: 分类树
+      description: 租户自己的分类，按排序号排好。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 分类列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Category' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [分类与标签]
+      summary: 建一个分类
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                parent_id: { type: string, description: 父分类；不给就是根分类 }
+                description: { type: string }
+                sort_order: { type: integer }
+      responses:
+        '201':
+          description: 建好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/categories/{id}:
+    put:
+      tags: [分类与标签]
+      summary: 改分类
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                parent_id: { type: string }
+                description: { type: string }
+                sort_order: { type: integer }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [分类与标签]
+      summary: 删分类
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 删掉了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/tags:
+    get:
+      tags: [分类与标签]
+      summary: 标签列表
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 标签列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tag' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [分类与标签]
+      summary: 建一个标签
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                color: { type: string, example: '#fa8c16' }
+      responses:
+        '201':
+          description: 建好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tag' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/tags/{id}:
+    put:
+      tags: [分类与标签]
+      summary: 改标签
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                color: { type: string }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tag' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [分类与标签]
+      summary: 删标签
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 删掉了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # -------------------------------------------------------- 账号与密钥 ----
+  /api/v1/users:
+    get:
+      tags: [账号与密钥]
+      summary: 账号列表
+      description: 租户管理员看得到全部；别的成员只看自己。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: 一页账号
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPage' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [账号与密钥]
+      summary: 建账号
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                email: { type: string, format: email }
+                display_name: { type: string }
+                role: { type: string, enum: [admin, editor, viewer] }
+      responses:
+        '201':
+          description: 建好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/users/{id}:
+    put:
+      tags: [账号与密钥]
+      summary: 改账号
+      description: 改角色会**结束这个账号现有的会话**——令牌里带着签发时的角色。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                display_name: { type: string }
+                role: { type: string, enum: [admin, editor, viewer] }
+                is_active: { type: boolean }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [账号与密钥]
+      summary: 删账号
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 删掉了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/users/{id}/reset-password:
+    post:
+      tags: [账号与密钥]
+      summary: 重置密码
+      description: 管理员给某个账号换个新密码，并且结束这个账号现有的会话。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password]
+              properties:
+                new_password: { type: string, format: password }
+      responses:
+        '200':
+          description: 换好了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  password: { type: string, description: 明文新密码，只在这里出现一次 }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/api-keys:
+    get:
+      tags: [账号与密钥]
+      summary: API Key 列表
+      description: 只列得下前缀和掩码——明文只在签发时出现一次。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Key 列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ApiKey' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [账号与密钥]
+      summary: 签发一个 API Key
+      description: 给外部系统投递文件用的凭证。明文只在这一次返回。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                scopes: { type: array, items: { type: string } }
+                expires_at: { type: string, format: date-time }
+      responses:
+        '201':
+          description: 签好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKeyIssued' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/api-keys/{id}:
+    put:
+      tags: [账号与密钥]
+      summary: 改 API Key
+      description: 能改的是名字、权限范围和有效期。明文改不了。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                scopes: { type: array, items: { type: string } }
+                is_active: { type: boolean }
+                expires_at: { type: string, format: date-time }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiKey' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [账号与密钥]
+      summary: 吊销 API Key
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 吊销了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/mcp/tokens:
+    get:
+      tags: [账号与密钥]
+      summary: MCP 令牌列表
+      description: 自己的令牌自己看；管理员看得到本租户的全部。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 令牌列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/McpToken' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [账号与密钥]
+      summary: 签发一个 MCP 令牌
+      description: AI 客户端用的凭证。明文只在这一次返回。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                scopes: { type: array, items: { type: string, enum: [read, write, delete] } }
+      responses:
+        '201':
+          description: 签好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/McpTokenIssued' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/mcp/tokens/{id}:
+    delete:
+      tags: [账号与密钥]
+      summary: 吊销 MCP 令牌
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 吊销了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # -------------------------------------------------------------- 集成 ----
+  /api/v1/webhooks:
+    get:
+      tags: [集成]
+      summary: Webhook 列表
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Webhook 列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Webhook' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [集成]
+      summary: 登记一个 Webhook
+      description: |
+        资产发生变化时，服务器自己向这个地址发通知。
+
+        `events` 留空表示**订阅所有事件**。目标地址默认不许指向内网——理由同
+        `/assets/import-url`。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url]
+              properties:
+                name: { type: string }
+                url: { type: string, format: uri }
+                events: { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: 登记好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Webhook' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/webhooks/{id}:
+    put:
+      tags: [集成]
+      summary: 改 Webhook
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                url: { type: string, format: uri }
+                events: { type: array, items: { type: string } }
+                is_active: { type: boolean }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Webhook' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [集成]
+      summary: 删 Webhook
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 删掉了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # -------------------------------------------------------------- 系统 ----
+  /api/v1/audit:
+    get:
+      tags: [系统]
+      summary: 操作日志
+      description: |
+        租户里的人的改动。管理员看得到本租户的全部，其他成员只看得到自己的。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: query
+          description: 只看某个人
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: 日志
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditEntry' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/stats:
+    get:
+      tags: [系统]
+      summary: 资产统计
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  images: { type: integer }
+                  videos: { type: integer }
+                  audios: { type: integer }
+                  documents: { type: integer }
+                  others: { type: integer }
+                  storage_bytes: { type: integer }
+                  category_count: { type: integer }
+                  tag_count: { type: integer }
+                  user_count: { type: integer }
+
+  /api/v1/stats/dashboard:
+    get:
+      tags: [系统]
+      summary: 仪表盘
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 仪表盘数据
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    additionalProperties: true
+                  upload_trend:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  recent_assets:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+
+  /api/v1/manifest:
+    get:
+      tags: [系统]
+      summary: 资产清单（整库）
+      description: 全部资产的清单索引，给外部系统用。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: integer }
+                  updated_at: { type: string, format: date-time }
+                  count: { type: integer }
+                  assets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+
+  /api/v1/jobs/by-comfyui/{job_id}:
+    get:
+      tags: [集成]
+      summary: 查一个 ComfyUI 任务
+      description: 任务跑完了就返回对应的资产，还没完就答 404。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 对应的资产
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/upload/init:
+    post:
+      tags: [资产]
+      summary: 开一个分片上传
+      description: 大文件用分片传。先在这里拿到 `upload_id` 和分片总数。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename, total_size]
+              properties:
+                filename: { type: string }
+                total_size: { type: integer }
+                total_chunks: { type: integer }
+                mime_type: { type: string }
+                title: { type: string }
+      responses:
+        '200':
+          description: 会话开了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_id: { type: string }
+                  chunk_size: { type: integer }
+                  total_chunks: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/upload/chunk/{upload_id}:
+    put:
+      tags: [资产]
+      summary: 传一个分片
+      description: 分片可以乱序到达，服务器按序号拼。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: upload_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: index
+          in: query
+          required: true
+          description: 第几片，从 0 开始
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: 收到几片了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received_chunks: { type: integer }
+                  received: { type: integer }
+                  total_chunks: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/upload/complete:
+    post:
+      tags: [资产]
+      summary: 分片传完了
+      description: 拼好、落库、生成缩略图——然后它就是一个普通资产了。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [upload_id]
+              properties:
+                upload_id: { type: string }
+                title: { type: string }
+                tag_names: { type: string }
+                category_id: { type: string }
+      responses:
+        '200':
+          description: 存好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/settings:
+    get:
+      tags: [系统]
+      summary: 实例的访问域名
+      description: |
+        每个登录账号都能读：界面要显示这个实例自己的地址，而不是浏览器碰巧
+        到达的那个地址——复制出去的链接得在别处也能用。
+
+        跨域白名单不在这里：它说的是「谁可以调用这个实例」。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 访问域名
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstanceSettings' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ------------------------------------------------------------ 平台层 ----
+  /api/v1/tenants:
+    get:
+      tags: [平台层]
+      summary: 租户列表
+      description: 只有平台管理员能读。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 租户列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tenant' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [平台层]
+      summary: 建一个租户
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                slug: { type: string }
+                admin_username: { type: string }
+                admin_password: { type: string, format: password }
+      responses:
+        '201':
+          description: 建好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/tenants/{id}:
+    put:
+      tags: [平台层]
+      summary: 改租户
+      description: |
+        停用是开关：该租户的所有账号**立刻无法登录**，数据留着。
+
+        改归属或角色会结束相关账号的现有会话——令牌里带着签发时的租户和角色。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                status: { type: string, enum: [active, suspended] }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [平台层]
+      summary: 删掉租户
+      description: |
+        不可逆：租户和它里面的资产、账号、分类、标签、密钥、文件一起消失。
+        平台层的审计里那条「它被删了」仍然留着。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: 删掉了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/platform/stats:
+    get:
+      tags: [平台层]
+      summary: 平台总览
+      description: 平台上有多少租户、账号、资产、存储，外加最近 24 小时的流量。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 总览
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformStats' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/platform/accounts:
+    get:
+      tags: [平台层]
+      summary: 账号目录
+      description: 跨租户的账号目录。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: keyword
+          in: query
+          description: 按用户名或邮箱搜
+          schema: { type: string }
+        - name: tenant_id
+          in: query
+          schema: { type: string }
+        - name: role
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: 账号目录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PlatformAccount' }
+                  total: { type: integer }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/platform/accounts/{id}:
+    put:
+      tags: [平台层]
+      summary: 改账号的角色或归属
+      description: |
+        提升成平台管理员，账号就属于平台（租户记 `*`）；降级时必须**显式**指定
+        回到哪个租户——平台不记忆它原来在哪。
+
+        改完会结束这个账号现有的会话。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [superadmin, admin, editor, viewer] }
+                tenant_id: { type: string }
+                status: { type: string, enum: [active, disabled] }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformAccount' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/platform/audit:
+    get:
+      tags: [平台层]
+      summary: 平台层的审计
+      description: 平台层自己做过的事。租户 id 记成通配 `*`，所以删掉租户之后记录还在。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        '200':
+          description: 审计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PlatformAuditEntry' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/platform/requests:
+    get:
+      tags: [平台层]
+      summary: 请求日志
+      description: |
+        实例被要求做了什么的流水：方法、路径、状态码、耗时、进出字节、哪个租户、
+        谁调的。行是**响应发出之后**才写的。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: tenant_id
+          in: query
+          schema: { type: string }
+        - name: keyword
+          in: query
+          schema: { type: string }
+        - name: method
+          in: query
+          schema: { type: string }
+        - name: status_class
+          in: query
+          schema: { type: string, enum: ['2xx', '3xx', '4xx', '5xx'] }
+        - name: hours
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: 请求日志
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PlatformRequest' }
+                  total: { type: integer }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/platform/traffic:
+    get:
+      tags: [平台层]
+      summary: 流量汇总
+      description: 同一个窗口里的总量、按小时的曲线，和最重的几个接口。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: tenant_id
+          in: query
+          schema: { type: string }
+        - name: hours
+          in: query
+          schema: { type: integer, default: 24 }
+        - name: buckets
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 流量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformTrafficReport' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/platform/settings:
+    get:
+      tags: [平台层]
+      summary: 平台设置
+      description: 实例的访问域名与跨域白名单。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 设置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformSettings' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [平台层]
+      summary: 改平台设置
+      description: |
+        **只改请求里带了的字段**：传 `access_domain` 不会顺手清掉白名单，传空串
+        才是清空。
+
+        保存**立即生效**，不用重启。CORS 是每个请求现查的。
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                access_domain:
+                  type: string
+                  description: 对外地址。不给 scheme 会补 `https://`；尾斜杠会被去掉。
+                  example: https://dam.example.com
+                cors_origins:
+                  type: array
+                  description: 允许跨域调用的来源。访问域名本身永远在允许之列。
+                  items: { type: string, format: uri }
+      responses:
+        '200':
+          description: 改好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformSettings' }
+        '400':
+          description: 域名不是一个能用的网址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                detail: The access domain must be http or https
+                code: BAD_ACCESS_DOMAIN
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ---------------------------------------------------------- 外部接入 ----
+  /api/public/v1/delivery/assets:
+    get:
+      tags: [外部接入]
+      summary: 投递资产列表
+      description: |
+        给拿着 API Key 的外部系统用。Key 的权限范围决定它能看见什么。
+
+        认证走 `X-API-Key` 头。
+      security: [{ apiKeyAuth: [] }]
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: 一页资产
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetPage' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/public/v1/delivery/upload:
+    post:
+      tags: [外部接入]
+      summary: 投递一个文件
+      description: 外部系统把文件交进来。字段名是 `files`（复数）。
+      security: [{ apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+                title: { type: string }
+                tag_names: { type: string }
+      responses:
+        '200':
+          description: 收下了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/ingest/v1/assets:
+    post:
+      tags: [外部接入]
+      summary: 接入一个资产
+      description: 外部系统登记一个自己的文件。认证走 `X-API-Key` 头。
+      security: [{ apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename]
+              properties:
+                filename: { type: string }
+                title: { type: string }
+                description: { type: string }
+                mime_type: { type: string }
+                file_size: { type: integer }
+                file_hash: { type: string }
+                source: { type: string }
+                source_tool: { type: string }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        '201':
+          description: 登记好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/ingest/v1/assets/{id}/metadata:
+    post:
+      tags: [外部接入]
+      summary: 补一个资产的元数据
+      description: 产出文件之后，外部系统把结果补回来。
+      security: [{ apiKeyAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                metadata: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: 补好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/ingest/v1/comfyui/{job_id}:
+    post:
+      tags: [外部接入]
+      summary: 接入一个 ComfyUI 任务
+      description: ComfyUI 那边跑完了，从这里报过来。
+      security: [{ apiKeyAuth: [] }]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                prompt: { type: string }
+                seed: { type: integer }
+                model_name: { type: string }
+      responses:
+        '201':
+          description: 登记好了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/ingest/v1/events:
+    post:
+      tags: [外部接入]
+      summary: 报一个事件
+      description: 外部系统报告一件发生了的事（比如渲染完成）。
+      security: [{ apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event]
+              properties:
+                event: { type: string }
+                asset_id: { type: string }
+                payload: { type: object, additionalProperties: true }
+      responses:
+        '202':
+          description: 收下了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # -------------------------------------------------------------- MCP ----
+  /mcp:
+    get:
+      tags: [外部接入]
+      summary: MCP 端点（SSE）
+      description: |
+        模型上下文协议的机器端点。AI 客户端被配置成这个地址。
+
+        认证用**每个账号自己的 MCP 令牌**（`Authorization: Bearer <token>`），
+        不是会话令牌。
+
+        这个路径归协议所有：`/mcp` 下的一切都是它。人看的那个页面在
+        `/mcp-access`。
+      security: [{ mcpToken: [] }]
+      responses:
+        '200':
+          description: 事件流
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [外部接入]
+      summary: MCP 端点（JSON-RPC）
+      description: 客户端把 JSON-RPC 请求发到这里。
+      security: [{ mcpToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                jsonrpc: { type: string, example: '2.0' }
+                id: { type: string }
+                method: { type: string }
+                params:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: JSON-RPC 响应
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc: { type: string, example: '2.0' }
+                  id: { type: string }
+                  result:
+                    type: object
+                    additionalProperties: true
+                  error:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [外部接入]
+      summary: 断开 MCP 会话
+      security: [{ mcpToken: [] }]
+      responses:
+        '200':
+          description: 断开了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
+  # -------------------------------------------------------------- 文件 ----
+  /storage/{path}:
+    get:
+      tags: [文件]
+      summary: 读一个文件
+      description: |
+        文件不走 API 命名空间：浏览器的 `<img src>` 带不了 Authorization 头，
+        所以链接自己带签名。
+
+        URL 上的 `exp` 是有效期，`sig` 是覆盖租户与路径的 HMAC。没有签名或
+        签名不对，答 403。
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: 文件在存储目录下的相对路径
+          schema: { type: string }
+        - name: exp
+          in: query
+          description: 有效期（Unix 秒）
+          schema: { type: integer }
+        - name: sig
+          in: query
+          description: 签名
+          schema: { type: string }
+      responses:
+        '200':
+          description: 文件内容
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '403':
+          description: 签名不对或过期了
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 登录拿到的访问令牌。`POST /api/v1/auth/login` 或平台门。
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: 外部系统用的 API Key。
+    mcpToken:
+      type: http
+      scheme: bearer
+      description: 每个账号自己的 MCP 令牌，不是会话令牌。
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    AssetId:
+      name: id
+      in: path
+      required: true
+      description: 资产 id
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: 请求写错了
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: 没有凭证，或者凭证无效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 凭证有效，但这个动作不归你做
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: 没有这个东西
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      description: 错误。`code` 只有在错误自己命名时才带。
+      properties:
+        detail: { type: string }
+        code: { type: string, example: TENANT_REQUIRED }
+
+    LoginResult:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: 访问令牌还有多少秒 }
+        user: { $ref: '#/components/schemas/User' }
+
+    User:
+      type: object
+      description: 账号。`is_superuser` 实际指的是「租户管理员」。
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string, nullable: true }
+        display_name: { type: string, nullable: true }
+        role: { type: string, enum: [superadmin, admin, editor, viewer] }
+        status: { type: string, enum: [active, disabled] }
+        is_superuser: { type: boolean }
+        tenant_id: { type: string, nullable: true }
+        last_login_at: { type: string, nullable: true }
+        created_at: { type: string }
+
+    UserPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        total_pages: { type: integer }
+
+    Asset:
+      type: object
+      description: 资产。
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        filename: { type: string }
+        original_name: { type: string }
+        mime_type: { type: string }
+        file_size: { type: integer }
+        file_hash: { type: string }
+        asset_type: { type: string, enum: [image, video, audio, document, other] }
+        category_id: { type: string, nullable: true }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        duration: { type: number, nullable: true }
+        storage_path: { type: string }
+        thumbnail_path: { type: string, nullable: true }
+        thumbnail_url: { type: string, nullable: true, description: 带签名的缩略图链接 }
+        preview_url: { type: string, nullable: true }
+        original_url: { type: string, nullable: true, description: 带签名的原图链接 }
+        status: { type: string, enum: [ready, processing, deleted] }
+        deleted_at: { type: string, nullable: true }
+        uploaded_by: { type: string, nullable: true }
+        source: { type: string }
+        source_tool: { type: string, nullable: true }
+        prompt: { type: string, nullable: true }
+        seed: { type: integer, nullable: true }
+        model_name: { type: string, nullable: true }
+        job_id: { type: string, nullable: true }
+        metadata_json: { type: string, nullable: true, description: JSON 文本 }
+        tag_names:
+          type: array
+          items: { type: string }
+        tenant_id: { type: string, nullable: true }
+        created_at: { type: string }
+        updated_at: { type: string }
+
+    AssetPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        total_pages: { type: integer }
+
+    AssetManifest:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        asset_type: { type: string }
+        original_path: { type: string }
+        thumbnail_path: { type: string, nullable: true }
+        public_url: { type: string, nullable: true, description: 带签名的对外链接 }
+        size: { type: integer }
+        created_at: { type: string }
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    DownloadTicket:
+      type: object
+      properties:
+        filename: { type: string }
+        size: { type: integer }
+        mime_type: { type: string }
+        download_url: { type: string, description: 带签名的下载链接 }
+        expires_at: { type: string }
+
+    Category:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        parent_id: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        sort_order: { type: integer }
+        created_at: { type: string }
+
+    Tag:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        color: { type: string, nullable: true }
+        usage_count: { type: integer }
+        created_at: { type: string }
+
+    ApiKey:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        key_prefix: { type: string }
+        key_masked: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        is_active: { type: boolean }
+        last_used_at: { type: string, nullable: true }
+        expires_at: { type: string, nullable: true }
+        created_at: { type: string }
+
+    ApiKeyIssued:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          properties:
+            key: { type: string, description: 明文，只在签发这一次返回 }
+            warning: { type: string }
+
+    McpToken:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        token_prefix: { type: string }
+        token_masked: { type: string }
+        scopes:
+          type: array
+          items: { type: string, enum: [read, write, delete] }
+        is_active: { type: boolean }
+        last_used_at: { type: string, nullable: true }
+        created_at: { type: string }
+        user_id: { type: string, nullable: true }
+        tenant_id: { type: string, nullable: true }
+
+    McpTokenIssued:
+      allOf:
+        - $ref: '#/components/schemas/McpToken'
+        - type: object
+          properties:
+            token: { type: string, description: 明文，只在签发这一次返回 }
+            warning: { type: string }
+
+    Webhook:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        url: { type: string }
+        is_active: { type: boolean }
+        events:
+          type: array
+          items: { type: string }
+          description: 空数组表示订阅所有事件
+        created_at: { type: string }
+
+    Tenant:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        created_at: { type: string }
+        asset_count: { type: integer }
+        user_count: { type: integer }
+
+    AuditEntry:
+      type: object
+      description: 租户里有人改过的一件事。
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        user_id: { type: string, nullable: true }
+        username: { type: string, nullable: true }
+        action: { type: string, example: asset.created }
+        resource_type: { type: string }
+        resource_id: { type: string, nullable: true }
+        details: { type: string, nullable: true, description: JSON 文本 }
+        ip_address: { type: string, nullable: true }
+        created_at: { type: string }
+
+    PlatformStats:
+      type: object
+      properties:
+        tenants: { type: integer }
+        active_tenants: { type: integer }
+        accounts: { type: integer }
+        platform_administrators: { type: integer }
+        assets: { type: integer }
+        trashed_assets: { type: integer }
+        storage_bytes: { type: integer }
+        categories: { type: integer }
+        tags: { type: integer }
+        requests_24h: { type: integer }
+        bytes_in_24h: { type: integer }
+        bytes_out_24h: { type: integer }
+        errors_24h: { type: integer }
+
+    PlatformAccount:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string, nullable: true }
+        display_name: { type: string, nullable: true }
+        role: { type: string, enum: [superadmin, admin, editor, viewer] }
+        status: { type: string, enum: [active, disabled] }
+        tenant_id: { type: string, description: 平台超管是 `*` }
+        last_login_at: { type: string, nullable: true }
+        created_at: { type: string }
+
+    PlatformAuditEntry:
+      type: object
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        user_id: { type: string, nullable: true }
+        username: { type: string, nullable: true }
+        action: { type: string, example: platform.settings.updated }
+        resource_type: { type: string }
+        resource_id: { type: string, nullable: true }
+        details: { type: string, nullable: true }
+        ip_address: { type: string, nullable: true }
+        created_at: { type: string }
+
+    PlatformRequest:
+      type: object
+      description: 请求日志里的一行。
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        user_id: { type: string, nullable: true }
+        username: { type: string, nullable: true }
+        method: { type: string }
+        path: { type: string }
+        route: { type: string, description: 命中的路由样式，比如 `/assets/:id` }
+        status: { type: integer }
+        duration_ms: { type: integer }
+        bytes_in: { type: integer }
+        bytes_out: { type: integer }
+        ip_address: { type: string, nullable: true }
+        created_at: { type: string }
+
+    PlatformTrafficReport:
+      type: object
+      properties:
+        summary:
+          type: object
+          properties:
+            window_hours: { type: integer }
+            requests: { type: integer }
+            bytes_in: { type: integer }
+            bytes_out: { type: integer }
+            errors: { type: integer }
+            server_errors: { type: integer }
+            error_rate: { type: number }
+            avg_duration_ms: { type: number }
+        buckets:
+          type: array
+          items:
+            type: object
+            properties:
+              bucket: { type: string }
+              requests: { type: integer }
+              bytes_in: { type: integer }
+              bytes_out: { type: integer }
+              errors: { type: integer }
+        routes:
+          type: array
+          items:
+            type: object
+            properties:
+              route: { type: string }
+              method: { type: string }
+              requests: { type: integer }
+              bytes_out: { type: integer }
+              avg_duration_ms: { type: number }
+
+    PlatformSettings:
+      type: object
+      properties:
+        access_domain: { type: string, description: 对外地址；空表示按请求推导 }
+        cors_origins:
+          type: array
+          items: { type: string }
+        updated_at: { type: string, nullable: true }
+
+    InstanceSettings:
+      type: object
+      properties:
+        access_domain: { type: string }

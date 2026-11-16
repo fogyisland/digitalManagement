@@ -243,6 +243,76 @@ function parseDirectAppRoutes(source, masked, fileLabel) {
 }
 
 /**
+ * Every JavaScript file under a directory.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function collectJsFiles(dir) {
+  const found = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...collectJsFiles(full));
+    else if (entry.name.endsWith('.js')) found.push(full);
+  }
+  return found;
+}
+
+/**
+ * The paths the server serves itself, outside the API.
+ *
+ * The route table above is the **API** — the operations the specification
+ * describes. These are the pages the instance answers with something other
+ * than JSON: the documentation (`/docs`, `/redoc`), for instance. They are
+ * not API operations, so the specification does not describe them, but they
+ * are real destinations — a link in the interface may point at them.
+ *
+ * A path a router factory already claims is not repeated here: the mount
+ * prefixes carry it. The whole server directory is read, because a page may
+ * be mounted from a library rather than from `server.js` — the documentation
+ * is.
+ *
+ * @param {{serverFile: string, serverDir?: string, mounts?: Array<{prefix: string|null}>}} input
+ * @returns {Array<{path: string, line: number, file: string}>}
+ */
+export function parseServerUiRoutes({ serverFile, serverDir, mounts = [] }) {
+  const claimed = new Set(mounts.map((mount) => mount.prefix).filter(Boolean));
+  const files = serverDir
+    ? collectJsFiles(serverDir).filter((file) => path.resolve(file) !== path.resolve(serverFile))
+    : [];
+  const all = [serverFile, ...files];
+
+  const routes = [];
+  const re = new RegExp(
+    `\\bapp\\s*\\.\\s*(${ROUTE_VERBS.join('|')}|use)\\s*\\(\\s*(['"\`])`,
+    'g',
+  );
+
+  for (const file of all) {
+    const source = fs.readFileSync(file, 'utf8');
+    const masked = maskSource(source);
+    let match;
+    while ((match = re.exec(masked)) !== null) {
+      const quoteIndex = match.index + match[0].length - 1;
+      const literal = readLiteralAt(source, quoteIndex);
+      if (literal === null) continue;
+      const raw = literal.raw.trim();
+      // The API belongs to the route table; the SPA's own entry point belongs
+      // to the router.
+      if (raw === '' || raw === '/' || raw.startsWith('/api')) continue;
+      if (claimed.has(raw)) continue;
+      if (routes.some((route) => route.path === raw)) continue;
+      routes.push({
+        path: raw,
+        line: source.slice(0, match.index).split('\n').length,
+        file: path.basename(file),
+      });
+    }
+  }
+  return routes;
+}
+
+/**
  * Build the full backend route table.
  *
  * @param {{serverFile: string, routesDir: string, repoRoot: string}} input
@@ -251,7 +321,8 @@ function parseDirectAppRoutes(source, masked, fileLabel) {
  *                  fullPath: string, file: string, line: number}>,
  *   problems: string[],
  *   mounts: Array<{prefix: string|null, factories: string[], line: number}>,
- *   routeFiles: string[]
+ *   routeFiles: string[],
+ *   uiRoutes: Array<{path: string, line: number}>,
  * }}
  */
 export function parseBackendRoutes({ serverFile, routesDir, repoRoot }) {
@@ -338,7 +409,17 @@ export function parseBackendRoutes({ serverFile, routesDir, repoRoot }) {
     }
   }
 
-  return { routes, problems, mounts, routeFiles };
+  return {
+    routes,
+    problems,
+    mounts,
+    routeFiles,
+    uiRoutes: parseServerUiRoutes({
+      serverFile,
+      serverDir: path.dirname(serverFile),
+      mounts,
+    }),
+  };
 }
 
 /**

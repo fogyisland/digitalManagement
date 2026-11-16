@@ -42,6 +42,7 @@ const { reloadConfiguration } = require('./lib/reload');
 const { createUploader, uploadErrorHandler, reapExpiredUploadSessions } = require('./lib/upload');
 const { createRequestLogger, pruneRequestLogs } = require('./lib/request-log');
 const { allowedOrigins, refreshSettings } = require('./lib/platform-settings');
+const { mountDocs } = require('./lib/openapi');
 const { asyncHandler } = require('./lib/http');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
@@ -307,6 +308,12 @@ app.use('/api/ingest/v1', createIngestRouter({ db, uploader }));
 // interferes with the admin API's session tokens. An MCP client is configured
 // with a URL, and that URL is the one it expects to find.
 app.use('/mcp', createMcpRouter({ db }));
+
+// --- The documentation --------------------------------------------------------
+// The instance documents itself: `/docs` (Swagger UI), `/redoc` (ReDoc) and
+// `/openapi.json` (the specification itself). They are mounted before the
+// frontend's catch-all, so the SPA never answers them.
+mountDocs(app);
 
 // --- 404 for unknown API ----------------------------------------------------
 app.use('/api', (_req, res) => res.status(404).json({ detail: 'Not found' }));

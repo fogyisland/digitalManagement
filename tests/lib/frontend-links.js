@@ -173,12 +173,31 @@ export function isStaticFile(linkPattern, roots) {
 }
 
 /**
+ * Is the path a page the server serves itself?
+ *
+ * The API route table is not the whole server: the instance also serves the
+ * documentation, and those pages are real destinations even though they are
+ * not API operations.
+ *
+ * @param {string} linkPattern
+ * @param {Array<{path: string}>} uiRoutes
+ * @returns {boolean}
+ */
+export function isServerUiPath(linkPattern, uiRoutes) {
+  return uiRoutes.some((route) => {
+    if (route.path === linkPattern) return true;
+    return linkPattern.startsWith(`${route.path}/`);
+  });
+}
+
+/**
  * The links that lead nowhere.
  *
  * @param {{links: Array<{file: string, line: number, kind: string, raw: string, path: string}>,
  *          spaRoutes: Array<{path: string}>,
  *          backendRoutes: Array<{path: string}>,
  *          mounts: Array<{prefix: string|null}>,
+ *          uiRoutes?: Array<{path: string}>,
  *          staticRoots?: string[]}} input
  * @returns {string[]} one line per dead link, empty when they all lead somewhere
  */
@@ -187,6 +206,7 @@ export function findDeadLinkProblems({
   spaRoutes,
   backendRoutes,
   mounts,
+  uiRoutes = [],
   staticRoots = [],
 }) {
   const problems = [];
@@ -199,6 +219,7 @@ export function findDeadLinkProblems({
       spaPaths.some((route) => patternsMatch(route, link.path)) ||
       serverPaths.some((route) => patternsMatch(route, link.path)) ||
       underMount(link.path, prefixes) ||
+      isServerUiPath(link.path, uiRoutes) ||
       isStaticFile(link.path, staticRoots);
     if (known) continue;
 

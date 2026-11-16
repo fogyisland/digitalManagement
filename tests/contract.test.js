@@ -89,12 +89,14 @@ import {
   FRONTEND_LINK_CASES,
   findFrontendLinkFixtureProblems,
 } from './lib/frontend-link-fixtures.js';
+import { findSpecProblems, readSpec, specOperations } from './lib/openapi-contract.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const BACKEND_SRC = path.join(REPO_ROOT, 'src', 'server', 'server.js');
 const BACKEND_ROUTES = path.join(REPO_ROOT, 'src', 'server', 'routes');
 const SERVER_DIR = path.join(REPO_ROOT, 'src', 'server');
+const SPEC_FILE = path.join(SERVER_DIR, 'openapi.yaml');
 const SRC_DIR = path.join(REPO_ROOT, 'src', 'client');
 const INIT_DIR = path.join(SRC_DIR, 'pages', 'init');
 
@@ -128,7 +130,7 @@ function checkBaseUrl(violations) {
  * @returns {{callSites: number, backendRoutes: number, dynamic: number, forwarded: number}}
  */
 function runStaticLint() {
-  const { routes, problems, mounts } = parseBackendRoutes({
+  const { routes, problems, mounts, uiRoutes } = parseBackendRoutes({
     serverFile: BACKEND_SRC,
     routesDir: BACKEND_ROUTES,
     repoRoot: REPO_ROOT,
@@ -300,6 +302,7 @@ function runStaticLint() {
     spaRoutes,
     backendRoutes: routes,
     mounts,
+    uiRoutes,
     staticRoots: [path.join(REPO_ROOT, 'public'), path.join(REPO_ROOT, 'dist')],
   });
   assert.deepEqual(
@@ -320,6 +323,23 @@ function runStaticLint() {
       console.log(`  - ${entry.file} — ${entry.reason}`);
     }
   }
+
+  // The specification the instance serves has to describe the API the instance
+  // really serves — in both directions. A specification that drifts from the
+  // code is worse than none: it lies with the authority of a machine-readable
+  // document, and the reader who trusts it finds out at runtime.
+  const spec = readSpec(SPEC_FILE);
+  const specProblems = findSpecProblems({ spec, backendRoutes: routes });
+  assert.deepEqual(
+    specProblems,
+    [],
+    `the OpenAPI specification does not match the backend:\n` +
+      specProblems.map((v) => `  - ${v}`).join('\n'),
+  );
+  console.log(
+    `OpenAPI specification OK — ${specOperations(spec).length} operation(s) describe ` +
+      'the backend exactly, none missing and none invented',
+  );
 
   console.log(
     `static route lint OK — ${sites.length} call sites checked against ` +
