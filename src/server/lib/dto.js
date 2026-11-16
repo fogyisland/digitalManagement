@@ -93,6 +93,9 @@ function toAsset(row) {
     model_name: row.model_name ?? null,
     job_id: row.job_id ?? null,
     metadata_json: row.metadata_json ?? null,
+    // Whether a ComfyUI workflow came with the asset. The workflow itself is
+    // fetched on demand — it is a document, not a field of the asset.
+    has_workflow: Boolean(row.has_workflow),
     tag_names: parseTagNames(row.tag_names_csv),
     tenant_id: row.tenant_id ?? null,
     created_at: row.created_at,

@@ -1,11 +1,14 @@
 """The ComfyUI nodes.
 
-Three nodes, each a thin translation between ComfyUI's data and the DAM's
-HTTP contract:
+Two nodes, and they are meant to be wired to each other:
 
-    DAMUpload       a rendered image goes to the DAM; returns the asset id
-    DAMRegisterJob  a job is registered before its output exists
-    DAMLookupJob    the asset a job produced, if there is one
+    DAMNodeAccess   asks the platform where it is, announces this ComfyUI
+                    installation, and hands out the address and the token
+    DAMPush         pushes a rendered image and the workflow that produced it
+
+The second node takes its address and its token from the first one, so the
+workflow carries the connection itself: move the DAM to another address, or
+give it another key, and the change happens in one place.
 
 The one piece of real logic is the tensor conversion: ComfyUI hands a node a
 `[B, H, W, C]` float tensor in the 0..1 range, and the DAM wants a PNG. There
@@ -14,14 +17,22 @@ without dragging a wheel behind it — so the encoder is written out. A PNG is
 a signature, three chunks and a CRC, which is a page of code.
 """
 
+import json
+import platform as host_platform
+import socket
 import struct
+import uuid
 import zlib
 
 from .client import DamError
-from .config import load_config
+from .config import load_config, resolve_endpoint
+from .state import load_state, new_node_key, save_state
 
 #: PNG's magic number — the first eight bytes of every file.
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+#: The version of this node package.
+PACKAGE_VERSION = "2.0.0"
 
 
 def _paeth(left: int, above: int, upper_left: int) -> int:
@@ -40,9 +51,9 @@ def _paeth(left: int, above: int, upper_left: int) -> int:
 def _filter_rows(rgba_rows: bytes, width: int, height: int) -> bytes:
     """Apply the Paeth filter to every row, as the PNG spec lays it out.
 
-    Each row is prefixed with its filter type byte; the filtered bytes are the
-    difference from the prediction, modulo 256. The filter is applied to the
-    byte stream of the row — including the alpha channel — exactly as the
+    Each row is prefixed with its filter type byte; the filtered bytes are
+    the difference from the prediction, modulo 256. The filter is applied to
+    the byte stream of the row — including the alpha channel — exactly as the
     specification describes.
     """
     stride = width * 4
@@ -179,11 +190,166 @@ def _slug(text: str, fallback: str = "image") -> str:
     return cleaned or fallback
 
 
-class DAMUpload:
-    """Publish a rendered image to the DAM."""
+def _machine_name() -> str:
+    """A name for this machine, so an operator can tell two nodes apart."""
+    try:
+        name = socket.gethostname().strip()
+    except OSError:
+        name = ""
+    return name or "comfyui"
+
+
+def _machine_platform() -> str:
+    """The operating system and the machine it runs on."""
+    try:
+        system = host_platform.system()
+        release = host_platform.release()
+        machine = host_platform.machine()
+    except Exception:  # pragma: no cover - platform details are best effort
+        return ""
+    parts = [part for part in (system, release, machine) if part]
+    return " ".join(parts)
+
+
+def _comfyui_version() -> str:
+    """The ComfyUI version this node runs inside, if it can be found.
+
+    The import is guarded on purpose: the package has to import cleanly
+    outside ComfyUI too — that is how it is tested.
+    """
+    try:
+        import comfy  # type: ignore
+    except Exception:
+        return ""
+    version = getattr(comfy, "__version__", None)
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    try:
+        from comfy.cli_args import args  # type: ignore
+
+        value = getattr(args, "version", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        return ""
+    return ""
+
+
+class DAMNodeAccess:
+    """接入平台：问清楚平台在哪儿，并把这台 ComfyUI 登记上去。
+
+    The node answers two questions the second node cannot answer for itself:
+    where the platform is, and what the node may write with. Both come out of
+    the node as strings, so the next node can be wired to them.
+
+    What it remembers between runs is the point: the address and the token
+    are written down once the first time they work, and the node reads them
+    back afterwards. Leaving the inputs empty is then the normal way to use
+    it.
+    """
 
     CATEGORY = "DAM"
-    FUNCTION = "upload"
+    FUNCTION = "access"
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("platform_url", "token", "node_id", "status")
+    OUTPUT_NODE = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {},
+            "optional": {
+                # The address of the platform. Empty means "use the one I
+                # remember", and failing that "use DAM_API_URL".
+                "platform_url": ("STRING", {"default": ""}),
+                # The key that says whose data may be written. Empty means
+                # "use the one I remember", and failing that "use
+                # DAM_API_KEY".
+                "token": ("STRING", {"default": ""}),
+                # The name this node answers to. Empty means the machine's
+                # own name.
+                "node_name": ("STRING", {"default": ""}),
+            },
+        }
+
+    def access(self, platform_url: str = "", token: str = "", node_name: str = ""):
+        """Register this node and hand out the address and the token.
+
+        Returns:
+            `(platform_url, token, node_id, status)` — every string is empty
+            when the node could not connect, and the status says why.
+        """
+        config = load_config()
+        try:
+            state = load_state()
+        except ValueError as error:
+            return ("", "", "", f"状态文件有问题：{error}")
+
+        url, key = resolve_endpoint(config, state, platform_url, token)
+        if not url:
+            return ("", "", "", "缺少平台地址：填入平台网址，或设置 DAM_API_URL")
+        if not key:
+            return ("", "", "", "缺少 Token：填入 API Key，或设置 DAM_API_KEY")
+
+        # The identity has to survive the runs, or every run would be a new
+        # node on the platform's list.
+        node_key = state.node_key or new_node_key()
+        name = str(node_name or "").strip() or _machine_name()
+
+        from .client import DamClient
+
+        try:
+            payload = DamClient(url, key, config.timeout).register_node(
+                node_key=node_key,
+                name=name,
+                version=PACKAGE_VERSION,
+                comfyui_version=_comfyui_version(),
+                platform=_machine_platform(),
+            )
+        except DamError as error:
+            return ("", "", "", f"接入失败：{error}")
+        except ValueError as error:
+            return ("", "", "", f"接入失败：{error}")
+
+        # The platform's own answer wins: it is the address an operator says
+        # this instance answers at. Without one, the address we reached it on
+        # is the next best thing.
+        resolved_url = str(payload.get("platform_url") or "").strip() or url
+        node_id = str(payload.get("node_id") or "").strip()
+
+        try:
+            save_state(
+                state.merged(
+                    platform_url=resolved_url,
+                    token=key,
+                    node_key=node_key,
+                    node_id=node_id,
+                )
+            )
+        except OSError as error:
+            # The registration worked; only the convenience failed. Saying so
+            # is better than pretending the node will remember it next time.
+            return (
+                resolved_url,
+                key,
+                node_id,
+                f"已接入 {resolved_url}，但状态写入失败（下次要再填一次）：{error}",
+            )
+
+        return (resolved_url, key, node_id, f"已接入 {resolved_url}（节点 {name}）")
+
+
+class DAMPush:
+    """推送资产：把图片和工作流一起送进平台。
+
+    The address and the token come from the access node — that is what the
+    wire between them is for. When they are left empty, the node falls back
+    to what it remembered last time, so a workflow that only has this node in
+    it still works after the first run.
+    """
+
+    CATEGORY = "DAM"
+    FUNCTION = "push"
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("asset_id", "status")
     OUTPUT_NODE = False
@@ -193,47 +359,86 @@ class DAMUpload:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "title": ("STRING", {"default": ""}),
-                "job_id": ("STRING", {"default": ""}),
-                "tags": ("STRING", {"default": ""}),
             },
             "optional": {
+                # Wire these to the access node's outputs.
+                "platform_url": ("STRING", {"default": ""}),
+                "token": ("STRING", {"default": ""}),
+                # The ComfyUI workflow that produced the image. It is stored
+                # with the asset and can be downloaded again from the asset's
+                # own page.
+                "workflow_json": ("STRING", {"default": "", "multiline": True}),
+                "job_id": ("STRING", {"default": ""}),
+                "title": ("STRING", {"default": ""}),
+                "tags": ("STRING", {"default": ""}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),
                 "seed": ("INT", {"default": -1, "min": -1}),
             },
         }
 
-    def upload(self, image, title, job_id, tags="", prompt=None, seed=-1):
-        """Render the tensor to a PNG and publish it.
+    def push(
+        self,
+        image,
+        platform_url: str = "",
+        token: str = "",
+        workflow_json: str = "",
+        job_id: str = "",
+        title: str = "",
+        tags: str = "",
+        prompt: str = "",
+        seed: int = -1,
+    ):
+        """Render the tensor to a PNG and push it, with the workflow.
 
         Returns:
-            `(asset_id, status)` — `status` is a human sentence for the
-            ComfyUI output panel, in the same language as the rest of the
-            product.
+            `(asset_id, status)` — `asset_id` is empty when the push failed,
+            and the status says why.
         """
         config = load_config()
-        from .client import DamClient
+        try:
+            state = load_state()
+        except ValueError as error:
+            return ("", f"推送失败：状态文件有问题：{error}")
 
-        client = DamClient(config)
+        url, key = resolve_endpoint(config, state, platform_url, token)
+        if not url:
+            return ("", "推送失败：缺少平台地址，请先跑一次「DAM 接入」")
+        if not key:
+            return ("", "推送失败：缺少 Token，请先跑一次「DAM 接入」")
 
-        resolved_job = str(job_id or "").strip()
-        if not resolved_job:
-            # A workflow that does not supply a job id still produces an
-            # asset; the id only exists to correlate with the generator.
-            resolved_job = f"comfyui-{_slug(str(title or 'image'))}"
+        workflow = str(workflow_json or "").strip()
+        if workflow:
+            # The workflow is stored as the node sent it and handed back as
+            # a file. A broken one would come back as a file that claims to
+            # be JSON and is not — so it is refused here, with a sentence.
+            try:
+                json.loads(workflow)
+            except json.JSONDecodeError as error:
+                return ("", f"推送失败：工作流不是合法 JSON（{error}）")
 
-        fields = {"title": str(title or resolved_job)}
+        # The job id is the correlation with the generator. Left empty, one
+        # is made — a fresh one every run, so two runs of the same workflow
+        # are two records rather than one overwritten record.
+        resolved_job = str(job_id or "").strip() or f"comfyui-{uuid.uuid4().hex[:12]}"
+
+        fields = {"source_tool": "comfyui", "job_id": resolved_job}
+        if title:
+            fields["title"] = str(title)
         if tags:
             fields["tag_names"] = str(tags)
         if prompt:
             fields["prompt"] = str(prompt)
         if seed is not None and int(seed) >= 0:
             fields["seed"] = str(int(seed))
-        fields["source_tool"] = "comfyui"
+        if workflow:
+            fields["workflow_json"] = workflow
 
         content = tensor_to_bytes(image)
+
+        from .client import DamClient
+
         try:
-            asset = client.upload_asset(
+            asset = DamClient(url, key, config.timeout).upload_asset(
                 job_id=resolved_job,
                 filename=f"{_slug(resolved_job)}.png",
                 content=content,
@@ -241,93 +446,30 @@ class DAMUpload:
                 fields=fields,
             )
         except DamError as error:
-            return ("", f"上传失败：{error}")
-        return (asset.id, f"已上传到 DAM（{len(content) // 1024} KB）")
+            return ("", f"推送失败：{error}")
+        except ValueError as error:
+            return ("", f"推送失败：{error}")
 
-
-class DAMRegisterJob:
-    """Register a job in the DAM before its output exists."""
-
-    CATEGORY = "DAM"
-    FUNCTION = "register"
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("job_id", "status")
-    OUTPUT_NODE = False
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "job_id": ("STRING", {"default": ""}),
-            },
-            "optional": {
-                "title": ("STRING", {"default": ""}),
-                "prompt": ("STRING", {"default": "", "multiline": True}),
-            },
-        }
-
-    def register(self, job_id, title="", prompt=""):
-        """Register the job, so a later `DAMUpload` can fill it in.
-
-        Nothing leaves this process: the asset row is created when the upload
-        happens, so the status must not read as "the DAM has it". It names the
-        moment the registration takes effect instead — an operator who reads
-        "已登记" and stops here goes looking for an asset that does not exist.
-        """
-        resolved_job = str(job_id or "").strip()
-        if not resolved_job:
-            return ("", "缺少 job_id")
-        return (resolved_job, "已生成 job 标识，上传时在 DAM 中生效")
-
-
-class DAMLookupJob:
-    """Find the asset a job produced."""
-
-    CATEGORY = "DAM"
-    FUNCTION = "lookup"
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("asset_id", "status")
-    OUTPUT_NODE = False
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"job_id": ("STRING", {"default": ""})}}
-
-    def lookup(self, job_id):
-        """Return the asset id for the job, or a sentence explaining why not."""
-        resolved_job = str(job_id or "").strip()
-        if not resolved_job:
-            return ("", "缺少 job_id")
-        config = load_config()
-        from .client import DamClient
-
-        try:
-            asset = DamClient(config).find_job(resolved_job)
-        except DamError as error:
-            return ("", f"查询失败：{error}")
-        if asset is None:
-            return ("", f"未找到 job {resolved_job} 对应的资产")
-        return (str(asset.get("id", "")), f"找到资产：{asset.get('title', '')}")
+        size = f"{len(content) // 1024} KB"
+        workflow_note = "，含工作流" if workflow else ""
+        return (asset.id, f"已推送到 DAM（{size}{workflow_note}）")
 
 
 NODE_CLASS_MAPPINGS = {
-    "DAMUpload": DAMUpload,
-    "DAMRegisterJob": DAMRegisterJob,
-    "DAMLookupJob": DAMLookupJob,
+    "DAMNodeAccess": DAMNodeAccess,
+    "DAMPush": DAMPush,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "DAMUpload": "DAM 上传",
-    "DAMRegisterJob": "DAM 登记任务",
-    "DAMLookupJob": "DAM 查询任务",
+    "DAMNodeAccess": "DAM 接入",
+    "DAMPush": "DAM 推送",
 }
 
 __all__ = [
     "encode_png",
     "tensor_to_bytes",
-    "DAMUpload",
-    "DAMRegisterJob",
-    "DAMLookupJob",
+    "DAMNodeAccess",
+    "DAMPush",
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
 ]

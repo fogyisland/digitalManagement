@@ -208,6 +208,7 @@ npm run dev:server   # 后端热重启 :8000
 |------|------|------|
 | `/api/v1` | `Authorization: Bearer <JWT>` | 管理 API |
 | `/api/public/v1` | `X-API-Key: dam_xxx` | 投递 API |
+| `/api/ingest/v1` | `X-API-Key: dam_xxx` | 外部接入 API（ComfyUI 节点等外部系统往里推） |
 | `/api/health` | 无 | 健康检查 |
 | `/storage/*` | 无 | 上传文件与缩略图 |
 
@@ -254,6 +255,7 @@ npm run dev:server   # 后端热重启 :8000
 | DELETE | `/api/v1/assets/:id` | 删除（`?permanent=true` 为永久删除） |
 | POST | `/api/v1/assets/:id/restore` | 从回收站复原 |
 | POST | `/api/v1/assets/:id/download` | 下载原文件 |
+| GET | `/api/v1/assets/:id/workflow` | 下载资产的 ComfyUI 工作流（JSON 文件） |
 | POST | `/api/v1/upload/init` | 初始化分片上传 |
 | PUT | `/api/v1/upload/chunk/:session_id` | 上传分片（字段名 `chunk`，query `chunk_index`） |
 | POST | `/api/v1/upload/complete` | 合并分片并生成资产 |
@@ -276,6 +278,7 @@ npm run dev:server   # 后端热重启 :8000
 | GET | `/api/v1/stats` | 统计汇总 |
 | GET | `/api/v1/stats/dashboard` | 仪表盘统计 |
 | GET | `/api/v1/jobs/by-comfyui/:job_id` | 按 ComfyUI 任务号查资产 |
+| GET | `/api/v1/comfy-nodes` | 接入本租户的 ComfyUI 节点 |
 
 > **平台管理员（`role=superadmin`）用 `X-Tenant` 指定这次请求服务的租户。**
 >
@@ -327,6 +330,23 @@ curl -X POST http://localhost:8000/mcp \
 |--------|------|-------------|------|
 | GET | `/api/public/v1/delivery/assets` | `read` | 列出资产 |
 | POST | `/api/public/v1/delivery/upload` | `upload` | 上传文件（multipart，字段名 `files`，最多 20 个） |
+
+### 外部接入 API（ComfyUI 节点用）
+
+> Header：`X-API-Key: dam_xxxxxxxx`。**Key 决定租户**——资产落在 Key 属于哪个租户就落在哪里，请求里没有、也不该有租户参数。
+
+| Method | Path | 所需 Scope | 描述 |
+|--------|------|-------------|------|
+| POST | `/api/ingest/v1/nodes/register` | `upload` | 一台 ComfyUI 登记自己；幂等，重复登记刷新同一行 |
+| POST | `/api/ingest/v1/comfyui/:job_id` | `upload` | 推送产物（multipart，字段名 `files`） |
+| POST | `/api/ingest/v1/assets/:id/metadata` | `write` | 改资产元数据 |
+| POST | `/api/ingest/v1/events` | `write` | 报一个事件（会转投 Webhook） |
+
+`POST /api/ingest/v1/comfyui/:job_id` 还可以带一个 `workflow_json` 字段——那是产生这张图的工作流，原样存进资产，之后在资产详情页可以**下载 JSON**。
+
+`POST /api/ingest/v1/nodes/register` 的响应里带 `platform_url`：平台自己的访问地址（控制台「设置」里填的那个）。节点拿它覆盖自己手里的地址，就不用在节点里填正式网址了。
+
+仓库里带着一套现成的 ComfyUI 节点包，在 [`comfyui-node/`](comfyui-node/)：两个节点——**DAM 接入**（问清楚平台在哪儿并登记自己）和 **DAM 推送**（把图片和工作流一起推过去），输出接输入即可。它的 README 写了安装与配置。
 
 ### 调用示例（curl）
 

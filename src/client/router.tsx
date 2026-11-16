@@ -15,6 +15,7 @@ const Jobs = lazy(() => import('@/pages/Jobs'));
 const Organize = lazy(() => import('@/pages/Organize'));
 const Audit = lazy(() => import('@/pages/Audit'));
 const Integrations = lazy(() => import('@/pages/Integrations'));
+const ComfyNodes = lazy(() => import('@/pages/ComfyNodes'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const Users = lazy(() => import('@/pages/Users'));
 const Mcp = lazy(() => import('@/pages/Mcp'));
@@ -84,6 +85,9 @@ export const router = createBrowserRouter([
       // own actions live one layer up, in the platform console.
       { path: 'audit', element: lazyPage(Audit) },
       { path: 'integrations', element: lazyPage(Integrations) },
+      // The ComfyUI installations that push assets into this tenant. They
+      // register themselves; this page is the read side of that.
+      { path: 'comfy-nodes', element: lazyPage(ComfyNodes) },
       { path: 'settings', element: lazyPage(Settings) },
       { element: <AdminOnly />, children: [{ path: 'users', element: lazyPage(Users) }] },
       // The tenant list belongs to the platform administrator alone, and it

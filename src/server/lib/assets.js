@@ -250,12 +250,20 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
     model_name = null,
     job_id = null,
     metadata = null,
+    workflow_json = null,
     title = null,
     description = null,
     category_id = null,
     tag_names = null,
   } = extra || {};
   const metadataJson = metadata !== null && metadata !== undefined ? JSON.stringify(metadata) : null;
+  // The workflow arrives as text and is stored as text. It is a document, not
+  // a structure the database has to understand, and it is written as it
+  // arrived — what comes back out is what the transport delivered, byte for
+  // byte. (A multipart client normalises the line breaks in a field value;
+  // that happens on the way in, not here.)
+  const workflowText =
+    workflow_json !== null && workflow_json !== undefined ? String(workflow_json) : null;
 
   // The category has to be one of this tenant's — see `resolveCategoryId`.
   const safeCategoryId = await resolveCategoryId(db, effectiveTenantId, category_id);
@@ -264,8 +272,8 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
     .prepare(
       `INSERT INTO assets (id, tenant_id, title, description, filename, original_name, mime_type, file_size, file_hash, asset_type,
        category_id, width, height, duration, storage_path, thumbnail_path, uploaded_by, source, status,
-       source_tool, prompt, seed, model_name, job_id, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       source_tool, prompt, seed, model_name, job_id, metadata_json, workflow_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
     id,
@@ -293,6 +301,7 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
     model_name,
     job_id,
     metadataJson,
+    workflowText,
   );
 
   if (tag_names) await attachTags(db, effectiveTenantId, id, tag_names);

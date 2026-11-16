@@ -90,6 +90,8 @@ export interface Asset {
   job_id: string | null
   /** 原始元数据的 JSON 字符串（未解析）。 */
   metadata_json: string | null
+  /** 是否带有 ComfyUI 工作流。工作流本身是一份文档，按需下载，不随列表返回。 */
+  has_workflow: boolean
   /** 资产绑定的标签名数组。 */
   tag_names: string[]
   created_at: string
@@ -676,6 +678,34 @@ export interface DashboardData {
   }
   upload_trend: { date: string; count: number }[]
   recent_assets: Asset[]
+}
+
+/* --------------------------------------------------------------------------
+   ComfyUI 节点 — 镜像 toComfyNode()
+   -------------------------------------------------------------------------- */
+
+/**
+ * 一台向本平台推送资产的 ComfyUI 安装。
+ *
+ * 节点自己登记、自己续期：平台不发放节点，它只是被节点认领的一行记录。
+ */
+export interface ComfyNode {
+  id: string
+  /** 节点自报的唯一标识，同一台 ComfyUI 永远是同一个。 */
+  node_key: string
+  name: string
+  /** 节点包自身的版本号。 */
+  version: string | null
+  /** 节点所跑的 ComfyUI 版本号。 */
+  comfyui_version: string | null
+  /** 机器与操作系统。 */
+  platform: string | null
+  /** 在线与否：按最后一次开口的时间算，不是一列写死的状态。 */
+  status: 'online' | 'offline'
+  /** 最后一次开口的时间。 */
+  last_seen_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 /* --------------------------------------------------------------------------

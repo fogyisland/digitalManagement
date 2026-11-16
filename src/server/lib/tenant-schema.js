@@ -50,6 +50,7 @@ const TENANT_SCOPED_TABLES = [
   'upload_sessions',
   'token_registry',
   'revoked_tokens',
+  'comfy_nodes',
 ];
 
 /**

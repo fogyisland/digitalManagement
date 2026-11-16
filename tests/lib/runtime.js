@@ -420,7 +420,7 @@ export const TINY_PNG = Buffer.from([
  * @returns {Promise<Record<string, any>>}
  */
 export async function loadFrontendApis(srcDir) {
-  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform, audit, settings] =
+  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform, audit, settings, comfyNodes] =
     await Promise.all([
       importFrontendModule(srcDir, 'api/client.ts'),
       importFrontendModule(srcDir, 'api/auth.ts'),
@@ -436,6 +436,7 @@ export async function loadFrontendApis(srcDir) {
       importFrontendModule(srcDir, 'api/platform.ts'),
       importFrontendModule(srcDir, 'api/audit.ts'),
       importFrontendModule(srcDir, 'api/settings.ts'),
+      importFrontendModule(srcDir, 'api/comfyNodes.ts'),
     ]);
 
   return {
@@ -456,6 +457,8 @@ export async function loadFrontendApis(srcDir) {
     auditApi: audit.auditApi,
     // The instance's own settings — the address it answers at.
     settingsApi: settings.settingsApi,
+    // The ComfyUI installations that push assets into this tenant.
+    comfyNodesApi: comfyNodes.comfyNodesApi,
     // The tenant context store — the piece the UI picks a tenant through.
     tenantStore: tenantStore.useTenantStore,
     // The import / job helpers live outside the `assetsApi` object — they are

@@ -67,6 +67,7 @@ export const BUSINESS_TABLES = [
   'asset_tags',
   'manifest_writes',
   'request_logs',
+  'comfy_nodes',
 ];
 
 /**

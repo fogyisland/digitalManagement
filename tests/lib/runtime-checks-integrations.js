@@ -318,6 +318,156 @@ export const integrationChecks = [
   },
 
   {
+    name: 'a node announces itself, and the platform answers with the address it lives at',
+    async run(ctx) {
+      const uploaderKey = await ctx.apiKeysApi.create({
+        name: 'contract-node-uploader',
+        scopes: ['read', 'upload'],
+      });
+      const nodeKey = 'contract-node-1';
+      const body = {
+        node_key: nodeKey,
+        name: 'Contract Node',
+        version: '2.0.0',
+        comfyui_version: '0.3.40',
+        platform: 'Windows 11 AMD64',
+      };
+
+      const first = await fetch(`${ctx.origin}/api/ingest/v1/nodes/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': uploaderKey.key },
+        body: JSON.stringify(body),
+      });
+      assert.equal(first.status, 200, `the node registration must answer 200, got ${first.status}`);
+      const payload = await first.json();
+      assert.ok(payload.node_id, 'the registration must answer the row it wrote');
+      assert.equal(payload.node_key, nodeKey);
+      assert.ok(payload.platform_url, 'the registration must answer the address the platform lives at');
+      assert.equal(payload.status, 'online', 'a node that just spoke is online');
+
+      // The registration is idempotent: the same node announcing itself again
+      // refreshes its row rather than adding a second one.
+      const again = await fetch(`${ctx.origin}/api/ingest/v1/nodes/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': uploaderKey.key },
+        body: JSON.stringify(body),
+      });
+      assert.equal(again.status, 200);
+      assert.equal(
+        (await again.json()).node_id,
+        payload.node_id,
+        'the same node must land on the same row',
+      );
+
+      const anonymous = await rawRequest(ctx.origin, 'POST', '/api/ingest/v1/nodes/register', {
+        body: body,
+      });
+      assert.equal(anonymous.status, 401, 'the registration must require a key');
+
+      const nameless = await rawRequest(ctx.origin, 'POST', '/api/ingest/v1/nodes/register', {
+        headers: { 'x-api-key': uploaderKey.key },
+        body: { name: 'no key of its own' },
+      });
+      assert.equal(nameless.status, 400, 'a node without a node_key must be refused');
+
+      ctx.state.comfyNode = payload;
+    },
+  },
+
+  {
+    name: 'the tenant sees the nodes that push into it, and only those',
+    async run(ctx) {
+      const nodes = await ctx.comfyNodesApi.list();
+      const mine = nodes.find((node) => node.node_key === ctx.state.comfyNode.node_key);
+      assert.ok(mine, 'the node that just announced itself must show up in the list');
+      assert.equal(mine.name, 'Contract Node');
+      assert.equal(mine.version, '2.0.0');
+      assert.equal(mine.comfyui_version, '0.3.40');
+      assert.equal(mine.status, 'online');
+      assert.ok(mine.last_seen_at, 'the list must say when the node last spoke');
+    },
+  },
+
+  {
+    name: 'the workflow travels with the asset and comes back as a file',
+    async run(ctx) {
+      const uploaderKey = await ctx.apiKeysApi.create({
+        name: 'contract-workflow-uploader',
+        scopes: ['read', 'upload'],
+      });
+      const workflow = JSON.stringify(
+        { '1': { class_type: 'KSampler', inputs: { seed: 42 } } },
+        null,
+        2,
+      );
+      const jobId = 'contract-workflow-job-1';
+      const form = new FormData();
+      form.append('files', new File([uniqueBytes('contract-workflow', 512)], 'contract.png', {
+        type: 'image/png',
+      }));
+      form.append('title', 'Contract Workflow');
+      form.append('workflow_json', workflow);
+      const uploaded = await fetch(`${ctx.origin}/api/ingest/v1/comfyui/${jobId}`, {
+        method: 'POST',
+        headers: { 'x-api-key': uploaderKey.key },
+        body: form,
+      });
+      assert.equal(uploaded.status, 201, `the ComfyUI ingest must answer 201, got ${uploaded.status}`);
+      const asset = (await uploaded.json()).items[0];
+      assert.equal(asset.has_workflow, true, 'the asset must say that it carries a workflow');
+
+      // The asset the interface reads must say the same.
+      const detail = await ctx.assetsApi.get(asset.id);
+      assert.equal(detail.has_workflow, true);
+
+      // The workflow itself is handed over as the body of the response: it is
+      // a document that came with the asset, not a file on disk.
+      const download = await rawRequest(ctx.origin, 'GET', `/api/v1/assets/${asset.id}/workflow`, {
+        headers: { Authorization: `Bearer ${ctx.client.getToken()}` },
+      });
+      assert.equal(download.status, 200, `the workflow download must answer 200, got ${download.status}`);
+      const received = typeof download.body === 'string' ? JSON.parse(download.body) : download.body;
+      assert.deepEqual(
+        received,
+        JSON.parse(workflow),
+        'the workflow must come back as it went in',
+      );
+      assert.match(
+        String(download.headers['content-disposition'] || ''),
+        /attachment/,
+        'the workflow must be handed over as a file',
+      );
+    },
+  },
+
+  {
+    name: 'an asset without a workflow says so, and there is nothing to download',
+    async run(ctx) {
+      const uploaderKey = await ctx.apiKeysApi.create({
+        name: 'contract-no-workflow-uploader',
+        scopes: ['read', 'upload'],
+      });
+      const form = new FormData();
+      form.append('files', new File([uniqueBytes('contract-no-workflow', 512)], 'plain.png', {
+        type: 'image/png',
+      }));
+      const uploaded = await fetch(`${ctx.origin}/api/ingest/v1/comfyui/contract-no-workflow-job`, {
+        method: 'POST',
+        headers: { 'x-api-key': uploaderKey.key },
+        body: form,
+      });
+      assert.equal(uploaded.status, 201);
+      const asset = (await uploaded.json()).items[0];
+      assert.equal(asset.has_workflow, false, 'an asset without a workflow must say so');
+
+      const download = await rawRequest(ctx.origin, 'GET', `/api/v1/assets/${asset.id}/workflow`, {
+        headers: { Authorization: `Bearer ${ctx.client.getToken()}` },
+      });
+      assert.equal(download.status, 404, 'there is no workflow to download');
+    },
+  },
+
+  {
     name: 'the webhook endpoints validate the events and the URL, and disable on delete',
     async run(ctx) {
       const created = await ctx.webhooksApi.create({

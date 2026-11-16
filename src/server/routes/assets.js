@@ -15,6 +15,7 @@
  *   DELETE /assets/:id                -> 204   (soft delete; ?permanent=true erases)
  *   POST   /assets/:id/restore        -> Asset
  *   POST   /assets/:id/download       -> {download_url, filename, size, mime_type}
+ *   GET    /assets/:id/workflow       -> the ComfyUI workflow, as a file
  *   POST   /assets/import-url         {url, title?, source_tool?, ...} -> Asset
  *   POST   /assets/from-comfyui/:job_id {url?, title?, ...} -> Asset
  *
@@ -47,7 +48,7 @@ const {
   processUpload,
 } = require('../lib/assets');
 const { fetchRemoteFile } = require('../lib/net');
-const { safeParse, parseBoolean } = require('../lib/util');
+const { safeParse, parseBoolean, slugify } = require('../lib/util');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -75,6 +76,24 @@ function uploadExtras(body) {
     category_id: body.category_id || null,
     tag_names: body.tag_names || null,
   };
+}
+
+/**
+ * Build a `Content-Disposition` header for a file name.
+ *
+ * A header value is bytes, not text: Node refuses to write a non-ASCII
+ * character into one, and a Chinese asset title makes for a non-ASCII file
+ * name. The header therefore carries two names — an ASCII one for the
+ * clients that read only the plain parameter, and the UTF-8 one
+ * (RFC 5987) for the ones that read the real thing.
+ *
+ * @param {string} filename
+ * @returns {string}
+ */
+function contentDisposition(filename) {
+  const name = String(filename || 'download');
+  const ascii = name.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '') || 'download';
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 /**
@@ -354,6 +373,44 @@ function createAssetsRouter({ db, uploader }) {
       size: asset.file_size,
       mime_type: asset.mime_type,
     });
+  }));
+
+  // The ComfyUI workflow that produced the asset, as a file.
+  //
+  // The workflow lives in the database rather than on disk — it is a document
+  // that came with the asset, not a file that was uploaded — so it is handed
+  // over here as the document it is. It is served with the same tenant scope
+  // as the asset: the workflow is the asset's own history, and a caller who
+  // may not see the asset may not see how it was made.
+  router.get('/assets/:id/workflow', authRequired(db), asyncHandler(async (req, res) => {
+    const asset = await findAssetById(db, req.tenantScope, req.params.id);
+    if (!asset) return res.status(404).json({ detail: 'Not found' });
+
+    // The asset's own tenant is the condition, not the caller's scope: a
+    // platform administrator who is looking at another tenant's asset reads
+    // that tenant's workflow, and nobody else's.
+    const row = await db
+      .prepare('SELECT workflow_json FROM assets WHERE id = ? AND tenant_id = ?')
+      .get(String(asset.id), String(asset.tenant_id));
+    const workflow = row && row.workflow_json ? String(row.workflow_json) : null;
+    if (!workflow) {
+      return res.status(404).json({ detail: 'This asset has no workflow' });
+    }
+
+    // The bytes are the node's own. If they are not JSON, saying they are
+    // would be a lie — the file is handed over as it came.
+    let isJson = false;
+    try {
+      JSON.parse(workflow);
+      isJson = true;
+    } catch {
+      isJson = false;
+    }
+    const filename = `${slugify(asset.title || asset.original_name || asset.id) || asset.id}.comfyui.json`;
+    res.setHeader('Content-Type', isJson ? 'application/json; charset=utf-8' : 'application/octet-stream');
+    res.setHeader('Content-Disposition', contentDisposition(filename));
+    res.setHeader('Content-Length', String(Buffer.byteLength(workflow, 'utf8')));
+    return res.send(workflow);
   }));
 
   return router;

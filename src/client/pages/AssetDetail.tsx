@@ -10,10 +10,12 @@ import {
   ArrowLeftOutlined,
   CopyOutlined,
   EditOutlined,
+  FileTextOutlined,
   LinkOutlined,
 } from '@ant-design/icons';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { apiClient } from '@/api/client';
+import { downloadAssetWorkflow } from '@/api/assets';
 import { useApi } from '@/api/hooks';
 import {
   FormModal,
@@ -69,6 +71,7 @@ export default function AssetDetail(): JSX.Element {
   const canWrite = useAuthStore((s) => s.canWrite());
   const [editOpen, setEditOpen] = useState<boolean>(false);
   const [downloading, setDownloading] = useState<boolean>(false);
+  const [downloadingWorkflow, setDownloadingWorkflow] = useState<boolean>(false);
   const [form] = Form.useForm<EditFormValues>();
 
   // Path is null until the router hands us an id — useApi treats null
@@ -124,6 +127,25 @@ export default function AssetDetail(): JSX.Element {
       message.error(describeError(e, '下载失败'));
     } finally {
       setDownloading(false);
+    }
+  };
+
+  /**
+   * Download the ComfyUI workflow that produced this asset.
+   *
+   * The workflow is a document that came with the asset, not a file on disk,
+   * so it is fetched through the session and handed to the browser as a blob.
+   */
+  const onDownloadWorkflow = async (): Promise<void> => {
+    if (!asset || downloadingWorkflow) return;
+    setDownloadingWorkflow(true);
+    try {
+      const filename = await downloadAssetWorkflow(asset.id);
+      message.success(`已下载 ${filename}`);
+    } catch (e: unknown) {
+      message.error(describeError(e, '工作流下载失败'));
+    } finally {
+      setDownloadingWorkflow(false);
     }
   };
 
@@ -207,6 +229,18 @@ export default function AssetDetail(): JSX.Element {
               <Button loading={downloading} onClick={() => void onDownload()}>
                 下载
               </Button>
+              {/* The workflow is only there when the asset came with one —
+                  a button that always sits there and always fails is worse
+                  than no button. */}
+              {asset?.has_workflow && (
+                <Button
+                  icon={<FileTextOutlined />}
+                  loading={downloadingWorkflow}
+                  onClick={() => void onDownloadWorkflow()}
+                >
+                  下载 JSON
+                </Button>
+              )}
               {canWrite && (
                 <Button icon={<EditOutlined />} onClick={openEdit}>
                   编辑

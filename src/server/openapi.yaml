@@ -1298,6 +1298,51 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/assets/{id}/workflow:
+    get:
+      tags: [集成]
+      summary: 下载资产的 ComfyUI 工作流
+      description: |
+        返回生成这个资产的工作流原文，作为文件下载。
+
+        工作流是随资产一起送来的文档，不是磁盘上的文件，所以它没有签名链接：
+        它就在这次响应里。工作流本身可能几十 KB，列表接口不携带它，只用
+        `has_workflow` 说明它存不存在。
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 工作流文件
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/comfy-nodes:
+    get:
+      tags: [集成]
+      summary: 列出接入本租户的 ComfyUI
+      description: |
+        一台 ComfyUI 装了节点包之后会自己登记在这里，登记一次就是一行，
+        之后每次跑都只是刷新它。
+
+        「在线」是按最后一次开口的时间算出来的，不是写死的标记：超过
+        15 分钟没开口就算离线。
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 节点列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ComfyNode' }
+
   /api/v1/upload/init:
     post:
       tags: [资产]
@@ -1858,7 +1903,11 @@ paths:
     post:
       tags: [外部接入]
       summary: 接入一个 ComfyUI 任务
-      description: ComfyUI 那边跑完了，从这里报过来。
+      description: |
+        ComfyUI 那边跑完了，从这里报过来。
+
+        图片走 multipart 的 `files` 字段；`workflow_json` 是随这张图一起
+        送来的工作流原文，原样存进资产，之后可以在资产详情页下载。
       security: [{ apiKeyAuth: [] }]
       parameters:
         - name: job_id
@@ -1867,6 +1916,22 @@ paths:
           schema: { type: string }
       requestBody:
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                title: { type: string }
+                prompt: { type: string }
+                seed: { type: integer }
+                model_name: { type: string }
+                tag_names: { type: string, description: 逗号分隔的标签名 }
+                workflow_json: { type: string, description: 工作流 JSON 原文 }
           application/json:
             schema:
               type: object
@@ -1883,6 +1948,50 @@ paths:
               schema: { $ref: '#/components/schemas/Asset' }
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/ingest/v1/nodes/register:
+    post:
+      tags: [外部接入]
+      summary: 一台 ComfyUI 登记自己
+      description: |
+        节点第一次跑「DAM 接入」时调用它，之后每次跑都再调用一次——登记是
+        幂等的，同一台 ComfyUI 永远落在同一行上。
+
+        平台不发放节点，也不换发 Token：调用方带来的 Key 就是它自己的
+        Token，租户也由这个 Key 决定。
+
+        响应里带回平台自己的访问地址（平台控制台「设置」里填的那个）——
+        这是节点自己不可能知道的一件事。
+      security: [{ apiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node_key]
+              properties:
+                node_key: { type: string, description: 节点自报的唯一标识 }
+                name: { type: string }
+                version: { type: string }
+                comfyui_version: { type: string }
+                platform: { type: string }
+      responses:
+        '200':
+          description: 登记好了
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node_id: { type: string }
+                  node_key: { type: string }
+                  name: { type: string }
+                  platform_url: { type: string, description: 平台自己的访问地址 }
+                  status: { type: string, enum: [online, offline] }
+                  last_seen_at: { type: string, nullable: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
 
   /api/ingest/v1/events:
     post:
@@ -2149,10 +2258,27 @@ components:
         model_name: { type: string, nullable: true }
         job_id: { type: string, nullable: true }
         metadata_json: { type: string, nullable: true, description: JSON 文本 }
+        has_workflow: { type: boolean, description: 是否带有 ComfyUI 工作流（工作流按需下载） }
         tag_names:
           type: array
           items: { type: string }
         tenant_id: { type: string, nullable: true }
+        created_at: { type: string }
+        updated_at: { type: string }
+
+    ComfyNode:
+      type: object
+      description: |
+        一台向本平台推送资产的 ComfyUI 安装。节点自己登记，平台不发放。
+      properties:
+        id: { type: string }
+        node_key: { type: string, description: 节点自报的唯一标识 }
+        name: { type: string }
+        version: { type: string, nullable: true, description: 节点包自身的版本 }
+        comfyui_version: { type: string, nullable: true, description: 所跑的 ComfyUI 版本 }
+        platform: { type: string, nullable: true, description: 机器与操作系统 }
+        status: { type: string, enum: [online, offline], description: 按最后一次开口的时间算出来的 }
+        last_seen_at: { type: string, nullable: true }
         created_at: { type: string }
         updated_at: { type: string }
 

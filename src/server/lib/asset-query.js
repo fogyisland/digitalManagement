@@ -26,6 +26,10 @@ const ASSET_COLUMNS = `
   a.duration, a.storage_path, a.thumbnail_path, a.status, a.deleted_at,
   a.uploaded_by, a.source, a.source_tool, a.prompt, a.seed, a.model_name,
   a.job_id, a.metadata_json, a.created_at, a.updated_at,
+  -- The workflow itself is a document that can run to tens of kilobytes, so a
+  -- listing does not carry it. What a listing needs is the fact that there is
+  -- one, and that is a single bit.
+  (a.workflow_json IS NOT NULL) AS has_workflow,
   (SELECT GROUP_CONCAT(t.name, ',')
      FROM asset_tags at
      JOIN tags t ON t.id = at.tag_id

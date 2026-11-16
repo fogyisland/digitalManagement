@@ -15,6 +15,7 @@ import {
   ApiOutlined,
   AppstoreOutlined,
   BankOutlined,
+  CloudServerOutlined,
   ClusterOutlined,
   DashboardOutlined,
   HistoryOutlined,
@@ -72,6 +73,7 @@ const NAV_GROUPS: NavGroup[] = [
       { key: 'organize', path: '/organize', label: '分类与标签', icon: <ClusterOutlined /> },
       { key: 'audit', path: '/audit', label: '操作日志', icon: <HistoryOutlined /> },
       { key: 'integrations', path: '/integrations', label: '集成', icon: <KeyOutlined /> },
+      { key: 'comfy-nodes', path: '/comfy-nodes', label: 'ComfyUI 节点', icon: <CloudServerOutlined /> },
     ],
   },
   {

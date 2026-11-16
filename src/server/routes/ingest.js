@@ -19,6 +19,7 @@
  *   POST /comfyui/:job_id     (scope upload) multipart `files` — the ComfyUI door
  *   POST /assets/:id/metadata (scope write)  {title?, description?, tags?, category_id?, status?}
  *   POST /events              (scope write)  {event, payload?}
+ *   POST /nodes/register      (scope upload) {node_key, name?, ...} — a node says hello
  */
 
 const express = require('express');
@@ -26,6 +27,8 @@ const { getConfig } = require('../config');
 const { apiKeyRequired } = require('../lib/auth');
 const { toAsset } = require('../lib/dto');
 const { findAssetById, processUpload, attachTags } = require('../lib/assets');
+const { registerNode } = require('../lib/comfy-nodes');
+const { currentSettings } = require('../lib/platform-settings');
 const { fetchRemoteFile } = require('../lib/net');
 const { safeParse } = require('../lib/util');
 const { asyncHandler } = require('../lib/http');
@@ -33,6 +36,25 @@ const { nanoid } = require('nanoid');
 
 /** The statuses an ingest caller may set. */
 const INGEST_STATUSES = ['ready', 'processing', 'failed'];
+
+/**
+ * The address this instance is reached at, when the platform has not been
+ * told one.
+ *
+ * The node asks the instance where it lives, so it needs an answer even on an
+ * installation whose access domain was never set. The address the request
+ * arrived on is the best guess available — it is where the node just reached
+ * us, so it is reachable from there.
+ *
+ * @param {import('express').Request} req
+ * @returns {string}
+ */
+function requestOrigin(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const proto = forwardedProto || req.protocol || 'http';
+  const host = String(req.headers.host || '').trim();
+  return host ? `${proto}://${host}` : '';
+}
 
 /**
  * Build the `extra` payload `processUpload` takes from a multipart body.
@@ -53,6 +75,10 @@ function uploadExtras(body) {
     model_name: body.model_name || null,
     job_id: body.job_id || null,
     metadata: rawMetadata ? safeParse(String(rawMetadata)) : null,
+    // The ComfyUI workflow that produced the asset. It is stored as it
+    // arrived: the node's own document, byte for byte, so that what comes
+    // back out is what the transport delivered.
+    workflow_json: body.workflow_json ? String(body.workflow_json) : null,
     title: body.title || null,
     description: body.description || null,
     category_id: body.category_id || null,
@@ -178,6 +204,49 @@ function createIngestRouter({ db, uploader }) {
       // exists for; the admin path emits `asset.updated`.
       await require('../lib/assets').emitAssetEvent(db, 'asset.metadata_updated', updated);
       return res.json(toAsset(updated));
+    }),
+  );
+
+  // --- nodes ----------------------------------------------------------------
+  //
+  // A ComfyUI installation says hello here, and keeps saying hello: the
+  // registration is idempotent, so a node that announces itself on every run
+  // refreshes one row instead of piling up copies of itself.
+  //
+  // The answer carries the address this instance is reached at, because the
+  // node asked for it — that is the one thing a node cannot know on its own.
+  router.post(
+    '/nodes/register',
+    apiKeyRequired(db, 'upload'),
+    asyncHandler(async (req, res) => {
+      const body = req.body || {};
+      const nodeKey = String(body.node_key || '').trim();
+      if (!nodeKey) return res.status(400).json({ detail: 'node_key required' });
+
+      const node = await registerNode(db, {
+        tenantId: req.tenantScope.tenantId,
+        nodeKey,
+        name: body.name,
+        version: body.version,
+        comfyuiVersion: body.comfyui_version,
+        platform: body.platform,
+      });
+
+      // The platform's own answer wins: it is the address an operator says
+      // this instance answers at. When nobody has said one, the address the
+      // request arrived on is the next best thing — it is where the node just
+      // reached us, so it is reachable from there.
+      const settings = currentSettings();
+      const platformUrl = settings.access_domain || requestOrigin(req);
+
+      return res.json({
+        node_id: node.id,
+        node_key: node.node_key,
+        name: node.name,
+        platform_url: platformUrl,
+        status: node.status,
+        last_seen_at: node.last_seen_at,
+      });
     }),
   );
 

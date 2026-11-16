@@ -72,20 +72,15 @@ class ClientContractTest(unittest.TestCase):
         CaptureHandler.requests.clear()
         CaptureHandler.response_status = 201
         CaptureHandler.response_body = {"items": [{"id": "asset-1"}], "count": 1}
-        os.environ["DAM_API_URL"] = self.base_url
-        os.environ["DAM_API_KEY"] = "dam_test_key"
-        os.environ.pop("DAM_TENANT", None)
+
+    def client(self):
+        from dam_node.client import DamClient
+
+        return DamClient(self.base_url, "dam_test_key")
 
     def test_upload_asset_posts_multipart_to_the_comfyui_endpoint(self):
         """The ingest contract: multipart, field `files`, path .../comfyui/{job}."""
-        from dam_node.config import load_config
-        from dam_node.client import DamClient
-
-        config = load_config()
-        self.assertEqual(config.api_url, self.base_url)
-        self.assertEqual(config.api_key, "dam_test_key")
-
-        client = DamClient(config)
+        client = self.client()
         result = client.upload_asset(
             job_id="job-42",
             filename="output.png",
@@ -116,18 +111,67 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(result.id, "asset-1")
         self.assertEqual(result.raw["id"], "asset-1")
 
+    def test_the_workflow_travels_with_the_asset(self):
+        """The workflow is the asset's own history — it rides along in the
+        same multipart body, as the field the platform reads."""
+        client = self.client()
+        workflow = json.dumps({"1": {"class_type": "KSampler"}}, ensure_ascii=False)
+        client.upload_asset(
+            job_id="job-43",
+            filename="output.png",
+            content=b"png-bytes",
+            content_type="image/png",
+            fields={"workflow_json": workflow, "source_tool": "comfyui"},
+        )
+
+        body = CaptureHandler.requests[0]["body"]
+        self.assertIn(b'name="workflow_json"', body, "the workflow must be its own field")
+        self.assertIn(b"KSampler", body, "the workflow must arrive verbatim")
+        self.assertIn(b'name="source_tool"', body)
+
+    def test_register_node_posts_json_to_the_register_endpoint(self):
+        """The node says hello with JSON, and gets the address back."""
+        CaptureHandler.response_status = 200
+        CaptureHandler.response_body = {
+            "node_id": "node-7",
+            "node_key": "abc123",
+            "name": "studio",
+            "platform_url": "https://dam.example.com",
+        }
+
+        payload = self.client().register_node(
+            node_key="abc123",
+            name="studio",
+            version="2.0.0",
+            comfyui_version="0.3.40",
+            platform="Windows 11 AMD64",
+        )
+
+        request = CaptureHandler.requests[0]
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(request["path"], "/api/ingest/v1/nodes/register")
+        self.assertEqual(request["headers"].get("x-api-key"), "dam_test_key")
+        self.assertIn("application/json", request["headers"].get("content-type", ""))
+
+        sent = json.loads(request["body"].decode("utf-8"))
+        self.assertEqual(sent["node_key"], "abc123")
+        self.assertEqual(sent["name"], "studio")
+        self.assertEqual(sent["version"], "2.0.0")
+        self.assertEqual(sent["comfyui_version"], "0.3.40")
+
+        self.assertEqual(payload["node_id"], "node-7")
+        self.assertEqual(payload["platform_url"], "https://dam.example.com")
+
     def test_upload_asset_reports_the_backend_error(self):
         """A refused upload raises with the backend's own message."""
-        from dam_node.config import load_config
-        from dam_node.client import DamClient, DamError
+        from dam_node.client import DamError
 
         CaptureHandler.response_status = 403
         CaptureHandler.response_body = {"detail": "Missing scope: upload"}
 
-        client = DamClient(load_config())
         with self.assertRaises(DamError) as caught:
-            client.upload_asset(
-                job_id="job-43",
+            self.client().upload_asset(
+                job_id="job-44",
                 filename="x.png",
                 content=b"x",
                 content_type="image/png",
@@ -135,40 +179,13 @@ class ClientContractTest(unittest.TestCase):
         self.assertEqual(caught.exception.status, 403)
         self.assertIn("Missing scope: upload", str(caught.exception))
 
-    def test_lookup_job_returns_none_when_the_job_is_unknown(self):
-        """`GET /jobs/by-comfyui/{job}` answers 404 for a job with no asset."""
-        from dam_node.config import load_config
-        from dam_node.client import DamClient
+    def test_a_client_without_an_address_refuses_before_it_dials(self):
+        """The failure is a sentence about the node, not a connection error."""
+        from dam_node.client import DamClient, DamError
 
-        CaptureHandler.response_status = 404
-        CaptureHandler.response_body = {"detail": "Not found"}
-
-        client = DamClient(load_config())
-        self.assertIsNone(client.find_job("job-unknown"))
-
-    def test_config_falls_back_to_the_json_file(self):
-        """Without the environment, the JSON file is the configuration."""
-        import tempfile
-
-        from dam_node.config import load_config
-
-        for key in ("DAM_API_URL", "DAM_API_KEY", "DAM_TENANT"):
-            os.environ.pop(key, None)
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "dam_config.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "api_url": "http://127.0.0.1:9999",
-                        "api_key": "dam_from_file",
-                        "tenant": "team-a",
-                    },
-                    handle,
-                )
-            config = load_config(path)
-        self.assertEqual(config.api_url, "http://127.0.0.1:9999")
-        self.assertEqual(config.api_key, "dam_from_file")
-        self.assertEqual(config.tenant, "team-a")
+        with self.assertRaises(DamError) as caught:
+            DamClient("", "dam_test_key").register_node(node_key="abc")
+        self.assertIn("no DAM address", str(caught.exception))
 
 
 if __name__ == "__main__":

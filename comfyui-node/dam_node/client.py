@@ -5,16 +5,14 @@ droppable into a ComfyUI installation without touching its environment, and
 ComfyUI installations are exactly the kind of environment where a `pip
 install requests` is a support ticket.
 
-The client speaks the documented ingest contract and nothing else. Two
-endpoints matter to a node:
+The client speaks two documented endpoints and nothing else:
 
-    POST {api_url}/api/ingest/v1/comfyui/{job_id}   multipart, field `files`
-    GET  {api_url}/api/v1/jobs/by-comfyui/{job_id}  look the job up again
+    POST {api_url}/api/ingest/v1/nodes/register      the node says hello
+    POST {api_url}/api/ingest/v1/comfyui/{job_id}    the node pushes an asset
 
-The second one authenticates with a bearer token, not an API key — it is the
-admin API — so the client sends the key as a bearer token there only, and
-treats a 401 as "I cannot look this up", which is what a node on a render farm
-usually gets.
+Both authenticate with the same key, in the same header (`X-API-Key`): the
+key *is* the tenant the data lands in, so there is no tenant parameter
+anywhere in the protocol.
 """
 
 import json
@@ -25,8 +23,6 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
-
-from .config import DamConfig
 
 #: The multipart field name the DAM's ingest endpoint expects.
 FILE_FIELD = "files"
@@ -91,8 +87,10 @@ def _encode_multipart(
 class DamClient:
     """A minimal HTTP client for one DAM installation."""
 
-    def __init__(self, config: DamConfig):
-        self.config = config
+    def __init__(self, api_url: str, api_key: str, timeout: float = 30.0):
+        self.api_url = str(api_url or "").rstrip("/")
+        self.api_key = str(api_key or "")
+        self.timeout = timeout
 
     # -- internals ---------------------------------------------------------
 
@@ -103,27 +101,29 @@ class DamClient:
         *,
         body: Optional[bytes] = None,
         content_type: Optional[str] = None,
-        bearer: bool = False,
     ) -> Tuple[int, Any]:
         """Send one request and return `(status, parsed_body)`.
 
         Raises:
             DamError: for a transport failure or any non-2xx answer.
         """
-        url = f"{self.config.api_url}{path}"
-        headers = {"Accept": "application/json"}
+        if not self.api_url:
+            raise DamError("no DAM address is configured")
+        if not self.api_key:
+            raise DamError("no DAM key is configured")
+        url = f"{self.api_url}{path}"
+        headers = {
+            "Accept": "application/json",
+            # The key is the credential: it says which tenant the data lands
+            # in, so it travels in the header and never in the body.
+            "X-API-Key": self.api_key,
+        }
         if content_type:
             headers["Content-Type"] = content_type
-        if bearer:
-            # The admin API speaks bearer tokens; the ingest API speaks API
-            # keys. This is how the same key serves both.
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        else:
-            headers["X-API-Key"] = self.config.api_key
 
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
                 payload = json.loads(raw.decode("utf-8")) if raw else None
                 return response.status, payload
@@ -141,6 +141,46 @@ class DamClient:
             raise DamError(f"{method} {path} could not reach the DAM: {error.reason}") from error
 
     # -- the contract ------------------------------------------------------
+
+    def register_node(
+        self,
+        *,
+        node_key: str,
+        name: Optional[str] = None,
+        version: Optional[str] = None,
+        comfyui_version: Optional[str] = None,
+        platform: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Announce this ComfyUI installation to the platform.
+
+        The registration is idempotent on the platform side: the same
+        `node_key` always lands on the same row, so a node that announces
+        itself on every run refreshes one row instead of piling up copies of
+        itself.
+
+        Returns:
+            The platform's answer — it carries the address the platform says
+            it is reached at, which is the one thing the node cannot know.
+        """
+        if not node_key:
+            raise ValueError("node_key must not be empty")
+        body = json.dumps(
+            {
+                "node_key": node_key,
+                "name": name or None,
+                "version": version or None,
+                "comfyui_version": comfyui_version or None,
+                "platform": platform or None,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        _, payload = self._request(
+            "POST",
+            "/api/ingest/v1/nodes/register",
+            body=body,
+            content_type="application/json; charset=utf-8",
+        )
+        return payload if isinstance(payload, dict) else {}
 
     def upload_asset(
         self,
@@ -161,7 +201,7 @@ class DamClient:
             filename: the name the DAM records (`output.png`).
             content: the file bytes — a PNG, never a tensor.
             content_type: defaults to a guess from the filename.
-            fields: extra form fields (`title`, `prompt`, `seed`, ...).
+            fields: extra form fields (`title`, `workflow_json`, `prompt`, ...).
 
         Returns:
             The first asset the DAM created or found.
@@ -197,21 +237,3 @@ class DamClient:
             tenant_id=asset.get("tenant_id"),
             raw=asset,
         )
-
-    def find_job(self, job_id: str) -> Optional[Mapping[str, Any]]:
-        """Look up the asset a job produced, or `None` when there is none.
-
-        The admin API answers 404 for an unknown job; that is a normal answer
-        for a node that registered a job and has not uploaded yet, so it
-        becomes `None` instead of an exception.
-        """
-        quoted_job = urllib.parse.quote(job_id, safe="")
-        try:
-            _, payload = self._request(
-                "GET", f"/api/v1/jobs/by-comfyui/{quoted_job}", bearer=True
-            )
-        except DamError as error:
-            if error.status == 404:
-                return None
-            raise
-        return payload if isinstance(payload, dict) else None

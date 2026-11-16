@@ -62,6 +62,7 @@ const createApiKeysRouter = require('./routes/apikeys');
 const createWebhooksRouter = require('./routes/webhooks');
 const createStatsRouter = require('./routes/stats');
 const createJobsRouter = require('./routes/jobs');
+const createComfyNodesRouter = require('./routes/comfy-nodes');
 const createInitRouter = require('./routes/init');
 const createIngestRouter = require('./routes/ingest');
 const createPublicRouter = require('./routes/public');
@@ -289,6 +290,9 @@ app.use(
   createWebhooksRouter({ db }),
   createStatsRouter({ db }),
   createJobsRouter({ db }),
+  // The ComfyUI installations that push assets into this tenant. They
+  // register themselves through the ingest door; this is the read side.
+  createComfyNodesRouter({ db }),
   // The manifest index is the library's own listing. It used to be a static
   // file under the storage root, which enumerated every tenant's assets to
   // anybody; it is served here, to an authenticated caller, scoped to their

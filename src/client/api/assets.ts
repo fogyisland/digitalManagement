@@ -326,3 +326,79 @@ export async function registerAssetByComfyJob(
   )
   return r.data
 }
+
+/**
+ * Pull the file name out of a `Content-Disposition` header.
+ *
+ * The backend writes `attachment; filename="xxx.comfyui.json"`. The quotes
+ * are optional in the header, and a name that is not quoted runs up to the
+ * semicolon — both shapes are read here so the browser is never handed an
+ * empty file name.
+ */
+function filenameFromDisposition(header: unknown): string | null {
+  if (typeof header !== 'string') return null;
+  const quoted = /filename="([^"]+)"/i.exec(header);
+  if (quoted?.[1]) return quoted[1];
+  const bare = /filename=([^;]+)/i.exec(header);
+  const value = bare?.[1]?.trim();
+  return value ? value : null;
+}
+
+/**
+ * `GET /assets/:id/workflow` — download the ComfyUI workflow of an asset.
+ *
+ * The workflow is not a file that was uploaded: it is a document that came
+ * with the asset, and the backend hands it over as the body of a response.
+ * A plain link cannot be used, because the route needs the session token —
+ * so the body is fetched with the shared client and the browser is handed a
+ * blob to save.
+ *
+ * @param id the asset id
+ * @returns the file name the browser saved it under
+ */
+export async function downloadAssetWorkflow(id: string): Promise<string> {
+  try {
+    const response = await apiClient.get<Blob>(`/assets/${id}/workflow`, {
+      responseType: 'blob',
+    })
+    const filename = filenameFromDisposition(response.headers['content-disposition'])
+      ?? `${id}.comfyui.json`
+    const url = URL.createObjectURL(response.data)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    URL.revokeObjectURL(url)
+    return filename
+  } catch (e: unknown) {
+    // With `responseType: 'blob'` the error body is a blob too, so the
+    // backend's own wording is not readable until it is decoded. Without
+    // this the message would be axios' "Request failed with status code
+    // 404" instead of "This asset has no workflow".
+    const detail = await blobDetail(e)
+    throw detail ? new Error(detail) : e
+  }
+}
+
+/**
+ * Read the `detail` out of a blob-shaped error body.
+ *
+ * @param e the caught value
+ * @returns the backend's message, or null when there is none
+ */
+async function blobDetail(e: unknown): Promise<string | null> {
+  const response = (e as { response?: { data?: unknown } })?.response
+  const data = response?.data
+  if (!(data instanceof Blob)) return null
+  try {
+    const text = await data.text()
+    const parsed = JSON.parse(text) as { detail?: unknown }
+    return typeof parsed.detail === 'string' && parsed.detail.trim()
+      ? parsed.detail
+      : null
+  } catch {
+    return null
+  }
+}

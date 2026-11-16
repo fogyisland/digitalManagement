@@ -53,6 +53,12 @@ const ASSETS_COLUMN_DEFS = [
   'model_name VARCHAR(191)',
   'job_id VARCHAR(64)',
   'metadata_json TEXT',
+  // The ComfyUI workflow that produced the asset. It is a document of its
+  // own — a graph, often tens of kilobytes — so it gets its own column
+  // instead of being folded into `metadata_json`, which is the free-form
+  // text a person types. MEDIUMTEXT, not TEXT: a workflow with several
+  // nodes and their parameters outgrows the 64 KB TEXT limit.
+  'workflow_json MEDIUMTEXT',
   'deleted_at DATETIME',
 ];
 
@@ -177,6 +183,7 @@ const BASE_SCHEMA_SQL = [
   model_name VARCHAR(191),
   job_id VARCHAR(64),
   metadata_json TEXT,
+  workflow_json MEDIUMTEXT,
   deleted_at DATETIME,
   created_at ${TIMESTAMP},
   updated_at ${TIMESTAMP} ON UPDATE CURRENT_TIMESTAMP
@@ -188,6 +195,30 @@ const BASE_SCHEMA_SQL = [
   tag_id ${ID} NOT NULL,
   PRIMARY KEY (tenant_id, asset_id, tag_id),
   KEY idx_asset_tags_tag (tag_id)
+) ENGINE=InnoDB ${CHARSET}`,
+
+  // The ComfyUI installations that talk to this instance.
+  //
+  // A node announces itself once and then keeps announcing itself: the row
+  // is keyed by the node's own key, so the same ComfyUI box is one row that
+  // gets newer, not a growing list of copies. The tenant is the one the
+  // announcing API key belongs to — the node never names it.
+  //
+  // There is no `status` column: whether a node is online is a question about
+  // how long ago it last spoke, and the answer to that question changes with
+  // the clock, not with the row. It is computed when the node is read.
+  `CREATE TABLE IF NOT EXISTS comfy_nodes (
+  id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
+  node_key VARCHAR(64) NOT NULL,
+  name VARCHAR(191) NOT NULL,
+  version VARCHAR(64),
+  comfyui_version VARCHAR(64),
+  platform VARCHAR(191),
+  last_seen_at DATETIME,
+  created_at ${TIMESTAMP},
+  updated_at ${TIMESTAMP} ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY ${tenantUniqueKeyName('comfy_nodes', 'node_key')} (tenant_id, node_key)
 ) ENGINE=InnoDB ${CHARSET}`,
 
   `CREATE TABLE IF NOT EXISTS api_keys (
