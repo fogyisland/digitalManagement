@@ -19,6 +19,7 @@ const { nanoid } = require('nanoid');
 const { authRequired } = require('../lib/auth');
 const { toApiKey } = require('../lib/dto');
 const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
+const { auditAction } = require('../lib/audit');
 const { asyncHandler } = require('../lib/http');
 const { toMysqlDateTime } = require('../lib/util');
 
@@ -117,6 +118,12 @@ function createApiKeysRouter({ db }) {
         );
 
       // The raw key is returned exactly once — it is never stored in clear.
+      await auditAction(db, req, {
+        action: 'apikey.created',
+        resourceType: 'api_key',
+        resourceId: id,
+        details: { name: String(name), scopes: effectiveScopes.join(',') },
+      });
       return res.status(201).json({
         id,
         name: String(name),
@@ -178,6 +185,12 @@ function createApiKeysRouter({ db }) {
       const row = await db
         .prepare('SELECT * FROM api_keys WHERE id = ? AND tenant_id = ?')
         .get(key.id, tenantId);
+      await auditAction(db, req, {
+        action: 'apikey.updated',
+        resourceType: 'api_key',
+        resourceId: key.id,
+        details: { name: row ? row.name : key.name, scopes: nextScopes },
+      });
       return res.json(toApiKey(row));
     }),
   );
@@ -197,6 +210,11 @@ function createApiKeysRouter({ db }) {
       await db
         .prepare('UPDATE api_keys SET is_active = 0 WHERE id = ? AND tenant_id = ?')
         .run(key.id, tenantId);
+      await auditAction(db, req, {
+        action: 'apikey.deleted',
+        resourceType: 'api_key',
+        resourceId: key.id,
+      });
       return res.status(204).end();
     }),
   );

@@ -40,6 +40,7 @@ const { authRequired } = require('../lib/auth');
 const { toWebhook } = require('../lib/dto');
 const { WEBHOOK_EVENTS } = require('../lib/webhook');
 const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
+const { auditAction } = require('../lib/audit');
 const { isPrivateHost, privateTargetsAllowed } = require('../lib/net');
 const { asyncHandler } = require('../lib/http');
 
@@ -161,6 +162,12 @@ function createWebhooksRouter({ db }) {
         secret,
         normalized.events.join(','),
       );
+    await auditAction(db, req, {
+      action: 'webhook.created',
+      resourceType: 'webhook',
+      resourceId: id,
+      details: { name: String(name).trim(), url, events: normalized.events.join(',') },
+    });
     return res.status(201).json({
       id,
       name: String(name).trim(),
@@ -232,6 +239,12 @@ function createWebhooksRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM webhook_endpoints WHERE id = ? AND tenant_id = ?')
       .get(endpoint.id, tenantId);
+    await auditAction(db, req, {
+      action: 'webhook.updated',
+      resourceType: 'webhook',
+      resourceId: endpoint.id,
+      details: { name: nextName, url: nextUrl, events: nextEvents },
+    });
     return res.json(toWebhook(row));
   }));
 
@@ -249,6 +262,11 @@ function createWebhooksRouter({ db }) {
     await db
       .prepare('UPDATE webhook_endpoints SET is_active = 0 WHERE id = ? AND tenant_id = ?')
       .run(endpoint.id, tenantId);
+    await auditAction(db, req, {
+      action: 'webhook.deleted',
+      resourceType: 'webhook',
+      resourceId: endpoint.id,
+    });
     return res.status(204).end();
   }));
 

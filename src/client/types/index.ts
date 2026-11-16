@@ -321,6 +321,29 @@ export interface PlatformAuditListResponse {
   items: PlatformAuditEntry[]
 }
 
+/** 租户里有人改过的一件事。 */
+export interface AuditEntry {
+  id: string
+  /** 这件事属于哪个租户；平台层自己的动作记在 `*`。 */
+  tenant_id: string
+  user_id: string | null
+  /** 做事的人的用户名。 */
+  username: string | null
+  /** 动作名，比如 `asset.created`。 */
+  action: string
+  resource_type: string
+  resource_id: string | null
+  /** JSON 文本，形状随 action 而定。 */
+  details: string | null
+  ip_address: string | null
+  created_at: string
+}
+
+/** `GET /audit` 的响应。 */
+export interface AuditListResponse {
+  items: AuditEntry[]
+}
+
 /** 一次 API 调用——流量日志里的一行。 */
 export interface PlatformRequest {
   id: string

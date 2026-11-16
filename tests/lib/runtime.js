@@ -414,7 +414,7 @@ export const TINY_PNG = Buffer.from([
  * @returns {Promise<Record<string, any>>}
  */
 export async function loadFrontendApis(srcDir) {
-  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform] =
+  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform, audit] =
     await Promise.all([
       importFrontendModule(srcDir, 'api/client.ts'),
       importFrontendModule(srcDir, 'api/auth.ts'),
@@ -428,6 +428,7 @@ export async function loadFrontendApis(srcDir) {
       importFrontendModule(srcDir, 'stores/tenantStore.ts'),
       importFrontendModule(srcDir, 'api/mcp.ts'),
       importFrontendModule(srcDir, 'api/platform.ts'),
+      importFrontendModule(srcDir, 'api/audit.ts'),
     ]);
 
   return {
@@ -444,6 +445,8 @@ export async function loadFrontendApis(srcDir) {
     mcpApi: mcp.mcpApi,
     // The platform layer — the desk one layer above the tenants.
     platformApi: platform.platformApi,
+    // The tenant's own trail — what its people changed.
+    auditApi: audit.auditApi,
     // The tenant context store — the piece the UI picks a tenant through.
     tenantStore: tenantStore.useTenantStore,
     // The import / job helpers live outside the `assetsApi` object — they are

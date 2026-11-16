@@ -37,7 +37,9 @@ function createMcpTokensRouter({ db }) {
     authRequired(db),
     asyncHandler(async (req, res) => {
       const isAdmin = req.user.role === 'admin' || req.user.role === SUPERADMIN_ROLE;
-      const rows = await listMcpTokens(db, req.user, isAdmin);
+      // The scope decides how far the list reaches — a platform administrator
+      // who named a tenant sees that tenant's tokens, not every tenant's.
+      const rows = await listMcpTokens(db, req.user, req.tenantScope, isAdmin);
       return res.json({ items: rows.map(toMcpToken) });
     }),
   );
@@ -60,10 +62,15 @@ function createMcpTokensRouter({ db }) {
     '/mcp/tokens/:id',
     authRequired(db),
     asyncHandler(async (req, res) => {
-      const revoked = await revokeMcpToken(db, req.params.id, req.user.tenant_id, {
-        // A platform administrator may cut off any token on the platform; the
-        // rest may only cut off their own tenant's.
-        crossTenant: req.user.role === SUPERADMIN_ROLE,
+      const revoked = await revokeMcpToken(db, req.params.id, {
+        // The scope decides how far the revocation reaches, and the role
+        // decides whose credential it may be: a platform administrator may
+        // cut off any token of the tenant the request speaks for, an
+        // administrator any token of their own tenant, and everybody else
+        // only their own.
+        scope: req.tenantScope,
+        userId: req.user.id,
+        isAdmin: req.user.role === 'admin' || req.user.role === SUPERADMIN_ROLE,
       });
       if (!revoked) return res.status(404).json({ detail: 'Not found' });
       return res.status(204).end();

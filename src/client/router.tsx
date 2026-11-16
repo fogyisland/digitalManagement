@@ -13,6 +13,7 @@ const AssetDetail = lazy(() => import('@/pages/AssetDetail'));
 const Import = lazy(() => import('@/pages/Import'));
 const Jobs = lazy(() => import('@/pages/Jobs'));
 const Organize = lazy(() => import('@/pages/Organize'));
+const Audit = lazy(() => import('@/pages/Audit'));
 const Integrations = lazy(() => import('@/pages/Integrations'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const Users = lazy(() => import('@/pages/Users'));
@@ -79,6 +80,9 @@ export const router = createBrowserRouter([
       { path: 'assets/upload', element: <Navigate to="/import" replace /> },
       { path: 'jobs', element: lazyPage(Jobs) },
       { path: 'organize', element: lazyPage(Organize) },
+      // The tenant's own trail: what its people changed. The platform layer's
+      // own actions live one layer up, in the platform console.
+      { path: 'audit', element: lazyPage(Audit) },
       { path: 'integrations', element: lazyPage(Integrations) },
       { path: 'settings', element: lazyPage(Settings) },
       { element: <AdminOnly />, children: [{ path: 'users', element: lazyPage(Users) }] },

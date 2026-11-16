@@ -21,6 +21,7 @@ const { adminRequired, revokeUserSessions } = require('../lib/auth');
 const { toUser, toPage } = require('../lib/dto');
 const { parsePositiveInt } = require('../lib/util');
 const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
+const { auditAction } = require('../lib/audit');
 const { asyncHandler } = require('../lib/http');
 
 const ROLES = ['admin', 'editor', 'viewer'];
@@ -125,6 +126,12 @@ function createUsersRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
       .get(id, tenantId);
+    await auditAction(db, req, {
+      action: 'user.created',
+      resourceType: 'user',
+      resourceId: id,
+      details: { username: String(username), role: safeRole },
+    });
     return res.status(201).json(toUser(row));
   }));
 
@@ -188,6 +195,12 @@ function createUsersRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM users WHERE id = ? AND tenant_id = ?')
       .get(target.id, tenantId);
+    await auditAction(db, req, {
+      action: 'user.updated',
+      resourceType: 'user',
+      resourceId: target.id,
+      details: { username: target.username, role: nextRole, status: nextIsActive ? 'active' : 'disabled' },
+    });
     return res.json(toUser(row));
   }));
 
@@ -218,6 +231,12 @@ function createUsersRouter({ db }) {
       }
     }
     await db.prepare('DELETE FROM users WHERE id = ? AND tenant_id = ?').run(target.id, tenantId);
+    await auditAction(db, req, {
+      action: 'user.deleted',
+      resourceType: 'user',
+      resourceId: target.id,
+      details: { username: target.username, role: target.role },
+    });
     return res.status(204).end();
   }));
 
@@ -252,6 +271,12 @@ function createUsersRouter({ db }) {
     // administrator who resets it may be a platform administrator whose
     // scope names every tenant and therefore none of them.
     await revokeUserSessions(db, target.id, target.tenant_id);
+    await auditAction(db, req, {
+      action: 'user.password_reset',
+      resourceType: 'user',
+      resourceId: target.id,
+      details: { username: target.username },
+    });
     return res.status(204).end();
   }));
 

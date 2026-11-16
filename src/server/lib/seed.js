@@ -25,6 +25,15 @@ const { getConfig } = require('../config');
 const { DEFAULT_TENANT_ID } = require('./tenant-schema');
 
 /**
+ * The password the seeded administrator gets.
+ *
+ * It lives here rather than being written out at every place that mentions
+ * it, because the startup banner has to quote exactly the password the seed
+ * used. Two copies of a default are two chances to print one that is wrong.
+ */
+const DEFAULT_ADMIN_PASSWORD = 'Admin@123456';
+
+/**
  * Seed the minimum data a fresh installation needs to be usable.
  *
  * @param {object} db
@@ -34,7 +43,7 @@ const { DEFAULT_TENANT_ID } = require('./tenant-schema');
  *   them itself so it can wait for them instead of letting them finish in
  *   the background. `tenantId` names the tenant the seed data belongs to;
  *   it defaults to the tenant an upgraded installation lands in.
- * @returns {Promise<void>}
+ * @returns {Promise<{tenantId: string, admin: {created: boolean, username: string, password: string|null}}>}
  */
 async function seedDatabase(db, storageDir, options = {}) {
   const tenantId = options.tenantId || (await resolveSeedTenant(db));
@@ -54,7 +63,7 @@ async function seedDatabase(db, storageDir, options = {}) {
   // Every block below is scoped to the tenant, and writes the tenant
   // explicitly. A row that relies on the column's `DEFAULT` would have its
   // owner decided by the DDL rather than by the seed.
-  await seedAdmin(db, tenantId);
+  const admin = await seedAdmin(db, tenantId);
   await seedCatalogue(db, tenantId);
 
   const assetCount = await db
@@ -65,6 +74,8 @@ async function seedDatabase(db, storageDir, options = {}) {
       console.warn('[seed] sample assets failed:', error.message);
     });
   }
+
+  return { tenantId, admin };
 }
 
 /**
@@ -87,15 +98,23 @@ async function resolveSeedTenant(db) {
 /**
  * Create the default administrator if the tenant has none.
  *
+ * The outcome comes back to the caller because the startup banner has to
+ * tell the operator which accounts really exist. A tenant that already had
+ * users skips the seed, and then there is no `admin` account and no default
+ * password to advertise — printing one anyway sends people to a door that
+ * does not open.
+ *
  * @param {object} db
  * @param {string} tenantId
- * @returns {Promise<void>}
+ * @returns {Promise<{created: boolean, username: string, password: string|null}>}
  */
 async function seedAdmin(db, tenantId) {
   const adminCount = await db
     .prepare('SELECT COUNT(*) AS c FROM users WHERE tenant_id = ?')
     .get([tenantId]);
-  if (adminCount.c > 0) return;
+  if (adminCount.c > 0) {
+    return { created: false, username: 'admin', password: null };
+  }
   await db
     .prepare(
       'INSERT INTO users (id, tenant_id, username, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)',
@@ -105,10 +124,11 @@ async function seedAdmin(db, tenantId) {
       tenantId,
       'admin',
       'admin@dam.local',
-      bcrypt.hashSync('Admin@123456', 10),
+      bcrypt.hashSync(DEFAULT_ADMIN_PASSWORD, 10),
       'admin',
     ]);
-  console.log('[seed] default admin: admin / Admin@123456');
+  console.log(`[seed] default admin: admin / ${DEFAULT_ADMIN_PASSWORD}`);
+  return { created: true, username: 'admin', password: DEFAULT_ADMIN_PASSWORD };
 }
 
 /**
@@ -272,4 +292,4 @@ async function seedSampleAssets(db, storageDir, tenantId = DEFAULT_TENANT_ID) {
   }
 }
 
-module.exports = { seedDatabase, seedSampleAssets, SAMPLE_DEFS };
+module.exports = { seedDatabase, seedSampleAssets, SAMPLE_DEFS, DEFAULT_ADMIN_PASSWORD };

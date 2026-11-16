@@ -36,7 +36,7 @@ const {
   softDeleteAsset,
   permanentlyDeleteAsset,
 } = require('./assets');
-const { isAllTenants } = require('./tenant');
+const { isAllTenants, resolveWriteTenant } = require('./tenant');
 const { fetchRemoteFile } = require('./net');
 
 /**
@@ -288,6 +288,11 @@ function createMcpServer(db, principal) {
             file = await fetchRemoteFile(args.url, getConfig().maxFileSize);
             if (args.filename) file.originalname = args.filename;
           }
+          // A write lands in one concrete tenant. A platform administrator's
+          // token reaches every tenant until the request narrows it with
+          // `X-Tenant`, and a write that names no tenant would leave an
+          // orphan row that no tenant administrator can read or delete.
+          const tenantId = await resolveWriteTenant(db, scope);
           const result = await processUpload({
             db,
             storageDir: getConfig().storageDir,
@@ -302,7 +307,7 @@ function createMcpServer(db, principal) {
               category_id: args.category_id || null,
               tag_names: args.tag_names || null,
             },
-            tenantId: scope.tenantId,
+            tenantId,
           });
           return jsonResult({ duplicate: result.duplicate, asset: toAsset(result.asset) });
         } catch (error) {

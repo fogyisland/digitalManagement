@@ -21,6 +21,7 @@ const { authRequired } = require('../lib/auth');
 const { toTag } = require('../lib/dto');
 const { slugify } = require('../lib/util');
 const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
+const { auditAction } = require('../lib/audit');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -57,6 +58,12 @@ function createTagsRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM tags WHERE id = ? AND tenant_id = ?')
       .get(id, tenantId);
+    await auditAction(db, req, {
+      action: 'tag.created',
+      resourceType: 'tag',
+      resourceId: id,
+      details: { name: String(name) },
+    });
     return res.status(201).json(toTag(row));
   }));
 
@@ -87,6 +94,12 @@ function createTagsRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM tags WHERE id = ? AND tenant_id = ?')
       .get(tag.id, tenantId);
+    await auditAction(db, req, {
+      action: 'tag.updated',
+      resourceType: 'tag',
+      resourceId: tag.id,
+      details: { name: row ? row.name : tag.name },
+    });
     return res.json(toTag(row));
   }));
 
@@ -103,6 +116,12 @@ function createTagsRouter({ db }) {
       .prepare('DELETE FROM asset_tags WHERE tenant_id = ? AND tag_id = ?')
       .run(tenantId, tag.id);
     await db.prepare('DELETE FROM tags WHERE id = ? AND tenant_id = ?').run(tag.id, tenantId);
+    await auditAction(db, req, {
+      action: 'tag.deleted',
+      resourceType: 'tag',
+      resourceId: tag.id,
+      details: { name: tag.name },
+    });
     return res.status(204).end();
   }));
 

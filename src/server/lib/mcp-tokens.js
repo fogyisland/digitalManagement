@@ -24,7 +24,7 @@
 
 const crypto = require('crypto');
 const { nanoid } = require('nanoid');
-const { resolveTenantFromUser, resolveScope } = require('./tenant');
+const { resolveTenantFromUser, resolveScope, isAllTenants } = require('./tenant');
 
 /** The scopes a token may carry. */
 const MCP_SCOPES = ['read', 'write', 'delete'];
@@ -125,16 +125,27 @@ async function issueMcpToken(db, user, input = {}) {
 }
 
 /**
- * The token rows of one account.
+ * The token rows one caller may see.
+ *
+ * The scope decides how far the list reaches, exactly as it decides how far
+ * every other read reaches:
+ *
+ *   - a platform administrator who named no tenant sees the whole platform
+ *   - a platform administrator who named one sees that tenant's tokens
+ *   - an administrator sees their own tenant's tokens — who else holds a
+ *     credential is worth knowing
+ *   - everybody else sees their own
  *
  * @param {object} db
  * @param {object} user
+ * @param {{tenantId: string, isSuperadmin: boolean}} scope
  * @param {boolean} includeTenant when true, every account of the tenant is
  *   listed — an administrator sees who else holds a credential
  * @returns {Promise<object[]>}
  */
-async function listMcpTokens(db, user, includeTenant) {
-  if (includeTenant && user.role === 'superadmin') {
+async function listMcpTokens(db, user, scope, includeTenant) {
+  const tenantId = scope.tenantId;
+  if (isAllTenants(scope)) {
     // tenant-lint: allow a platform administrator reads across every tenant
     return db
       .prepare(
@@ -149,14 +160,14 @@ async function listMcpTokens(db, user, includeTenant) {
         `SELECT id, tenant_id, user_id, name, token_prefix, scopes, is_active, last_used_at, created_at
            FROM mcp_tokens WHERE tenant_id = ? ORDER BY created_at DESC`,
       )
-      .all(user.tenant_id);
+      .all(tenantId);
   }
   return db
     .prepare(
       `SELECT id, tenant_id, user_id, name, token_prefix, scopes, is_active, last_used_at, created_at
          FROM mcp_tokens WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC`,
     )
-    .all(user.tenant_id, user.id);
+    .all(tenantId, user.id);
 }
 
 /**
@@ -165,22 +176,37 @@ async function listMcpTokens(db, user, includeTenant) {
  * The row is kept and switched off rather than deleted, so the audit trail
  * still shows that the credential existed.
  *
+ * Who may cut off which credential:
+ *
+ *   - a platform administrator who named no tenant may cut off any token on
+ *     the platform
+ *   - an administrator may cut off any token of the tenant the request speaks
+ *     for — including their own
+ *   - everybody else may cut off their own token and nothing else
+ *
  * @param {object} db
  * @param {string} id
- * @param {string} tenantId
- * @param {{crossTenant?: boolean}} options `crossTenant` lets a platform
- *   administrator revoke a token that belongs to another tenant
+ * @param {{scope: {tenantId: string, isSuperadmin: boolean}, userId: string, isAdmin: boolean}} options
  * @returns {Promise<boolean>} whether a row was switched off
  */
-async function revokeMcpToken(db, id, tenantId, options = {}) {
-  if (options.crossTenant) {
+async function revokeMcpToken(db, id, options = {}) {
+  const { scope, userId, isAdmin } = options;
+  if (isAllTenants(scope)) {
     // tenant-lint: allow a platform administrator revokes any tenant's token
     const result = await db.prepare('UPDATE mcp_tokens SET is_active = 0 WHERE id = ?').run(String(id));
     return result.changes > 0;
   }
+  if (isAdmin) {
+    const result = await db
+      .prepare('UPDATE mcp_tokens SET is_active = 0 WHERE id = ? AND tenant_id = ? AND is_active = 1')
+      .run(String(id), scope.tenantId);
+    return result.changes > 0;
+  }
   const result = await db
-    .prepare('UPDATE mcp_tokens SET is_active = 0 WHERE id = ? AND tenant_id = ? AND is_active = 1')
-    .run(String(id), tenantId);
+    .prepare(
+      'UPDATE mcp_tokens SET is_active = 0 WHERE id = ? AND tenant_id = ? AND user_id = ? AND is_active = 1',
+    )
+    .run(String(id), scope.tenantId, userId);
   return result.changes > 0;
 }
 

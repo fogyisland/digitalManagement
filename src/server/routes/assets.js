@@ -35,6 +35,7 @@ const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
 const { authRequired } = require('../lib/auth');
 const { resolveWriteTenant } = require('../lib/tenant');
+const { auditAction } = require('../lib/audit');
 const { toAsset, storageUrl } = require('../lib/dto');
 const {
   listAssets,
@@ -117,6 +118,12 @@ function createAssetsRouter({ db, uploader }) {
         });
         results.push(result.asset);
       }
+      await auditAction(db, req, {
+        action: 'asset.created',
+        resourceType: 'asset',
+        resourceId: results.length === 1 ? results[0].id : null,
+        details: { count: results.length, titles: results.map((asset) => asset.title).slice(0, 10) },
+      });
       return res.status(201).json({ items: results.map(toAsset), count: results.length });
     }),
   );
@@ -147,6 +154,12 @@ function createAssetsRouter({ db, uploader }) {
         source_tool: body.source_tool || 'import-url',
       },
       tenantId: await resolveWriteTenant(db, req.tenantScope),
+    });
+    await auditAction(db, req, {
+      action: 'asset.created',
+      resourceType: 'asset',
+      resourceId: result.asset.id,
+      details: { title: result.asset.title, source: 'import-url', url: body.url },
     });
     return res.status(201).json(toAsset(result.asset));
   }));
@@ -191,6 +204,12 @@ function createAssetsRouter({ db, uploader }) {
         extra: { ...uploadExtras(body), job_id: jobId, source_tool: body.source_tool || 'comfyui' },
         tenantId,
       });
+      await auditAction(db, req, {
+        action: 'asset.created',
+        resourceType: 'asset',
+        resourceId: result.asset.id,
+        details: { title: result.asset.title, source: 'comfyui', job_id: jobId },
+      });
       return res.status(201).json(toAsset(result.asset));
     }
 
@@ -203,6 +222,12 @@ function createAssetsRouter({ db, uploader }) {
       seed: body.seed,
       model_name: body.model_name || null,
       metadata: body.metadata ? safeParse(body.metadata) : null,
+    });
+    await auditAction(db, req, {
+      action: 'asset.created',
+      resourceType: 'asset',
+      resourceId: asset.id,
+      details: { title: asset.title, source: 'comfyui', job_id: jobId, placeholder: true },
     });
     return res.status(201).json(toAsset(asset));
   }));
@@ -273,6 +298,12 @@ function createAssetsRouter({ db, uploader }) {
     // The change itself lives in the library, so this route and the MCP tool
     // change an asset the same way.
     const updated = await updateAsset(db, req.tenantScope, asset, req.body || {});
+    await auditAction(db, req, {
+      action: 'asset.updated',
+      resourceType: 'asset',
+      resourceId: asset.id,
+      details: { title: updated.title },
+    });
     return res.json(toAsset(updated));
   }));
 
@@ -284,6 +315,12 @@ function createAssetsRouter({ db, uploader }) {
     } else {
       await softDeleteAsset(db, req.tenantScope, asset);
     }
+    await auditAction(db, req, {
+      action: 'asset.deleted',
+      resourceType: 'asset',
+      resourceId: asset.id,
+      details: { title: asset.title, permanent: parseBoolean(req.query.permanent) },
+    });
     return res.status(204).end();
   }));
 
@@ -294,6 +331,12 @@ function createAssetsRouter({ db, uploader }) {
       return res.status(400).json({ detail: 'Asset is not in the trash' });
     }
     const restored = await restoreAsset(db, req.tenantScope, asset);
+    await auditAction(db, req, {
+      action: 'asset.restored',
+      resourceType: 'asset',
+      resourceId: asset.id,
+      details: { title: restored.title },
+    });
     return res.json(toAsset(restored));
   }));
 

@@ -233,7 +233,6 @@ export default function Login(): JSX.Element {
           form={form}
           layout="vertical"
           onFinish={(v) => void onFinish(v)}
-          initialValues={{ username: 'admin' }}
           size="large"
         >
           <Form.Item
@@ -341,7 +340,7 @@ export default function Login(): JSX.Element {
             fontFamily: tokens.font.mono,
           }}
         >
-          <div>默认管理员：admin / Admin@123456</div>
+          <div>账号由管理员创建 · 默认账号凭据见服务启动日志</div>
           <div style={{ marginTop: tokens.space[1] }}>首次使用后请立即修改密码</div>
         </div>
       </div>

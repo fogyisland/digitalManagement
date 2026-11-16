@@ -257,6 +257,9 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
   } = extra || {};
   const metadataJson = metadata !== null && metadata !== undefined ? JSON.stringify(metadata) : null;
 
+  // The category has to be one of this tenant's — see `resolveCategoryId`.
+  const safeCategoryId = await resolveCategoryId(db, effectiveTenantId, category_id);
+
   await db
     .prepare(
       `INSERT INTO assets (id, tenant_id, title, description, filename, original_name, mime_type, file_size, file_hash, asset_type,
@@ -275,7 +278,7 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
     file.size,
     hash,
     assetType,
-    category_id,
+    safeCategoryId,
     width,
     height,
     duration,
@@ -311,6 +314,28 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
 }
 
 /**
+ * The category an asset belongs to, if it is one of this tenant's.
+ *
+ * A category id that names another tenant's category would be a dangling
+ * reference: the asset would point at a category its own tenant cannot see,
+ * and the other tenant's delete would not clean the reference up. So the id is
+ * checked against the tenant the asset belongs to, and an id that is not one
+ * of its own is dropped rather than written.
+ *
+ * @param {object} db
+ * @param {string} tenantId the tenant the asset belongs to
+ * @param {unknown} categoryId the id that was asked for
+ * @returns {Promise<string|null>}
+ */
+async function resolveCategoryId(db, tenantId, categoryId) {
+  if (categoryId === undefined || categoryId === null || categoryId === '') return null;
+  const row = await db
+    .prepare('SELECT id FROM categories WHERE id = ? AND tenant_id = ?')
+    .get(String(categoryId), tenantId);
+  return row ? row.id : null;
+}
+
+/**
  * Move an asset to the trash. The row and its files stay on disk so the
  * asset can be restored.
  *
@@ -319,20 +344,16 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
  * @returns {Promise<any>} the updated asset row
  */
 async function softDeleteAsset(db, scope, asset) {
-  if (isAllTenants(scope)) {
-    // tenant-lint: allow a superadmin acts across every tenant
-    await db
-      .prepare(
-        "UPDATE assets SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = ?",
-      )
-      .run(asset.id);
-  } else {
-    await db
-      .prepare(
-        "UPDATE assets SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = ? AND tenant_id = ?",
-      )
-      .run(asset.id, scope.tenantId);
-  }
+  // The row was read through the tenant scope, so the update is conditioned on
+  // the asset's **own** tenant: a write lands in the tenant the asset belongs
+  // to — not in the wildcard, and not in a tenant the caller chose. A platform
+  // administrator who reaches this far has reached one specific asset, and
+  // that asset's tenant is where the change belongs.
+  await db
+    .prepare(
+      "UPDATE assets SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = ? AND tenant_id = ?",
+    )
+    .run(asset.id, asset.tenant_id);
   const updated = await findAssetById(db, scope, asset.id);
   await emitAssetEvent(db, 'asset.deleted', updated);
   return updated;
@@ -346,20 +367,12 @@ async function softDeleteAsset(db, scope, asset) {
  * @returns {Promise<any>} the updated asset row
  */
 async function restoreAsset(db, scope, asset) {
-  if (isAllTenants(scope)) {
-    // tenant-lint: allow a superadmin acts across every tenant
-    await db
-      .prepare(
-        "UPDATE assets SET status = 'ready', deleted_at = NULL, updated_at = NOW() WHERE id = ?",
-      )
-      .run(asset.id);
-  } else {
-    await db
-      .prepare(
-        "UPDATE assets SET status = 'ready', deleted_at = NULL, updated_at = NOW() WHERE id = ? AND tenant_id = ?",
-      )
-      .run(asset.id, scope.tenantId);
-  }
+  // Conditioned on the asset's own tenant, like the delete above.
+  await db
+    .prepare(
+      "UPDATE assets SET status = 'ready', deleted_at = NULL, updated_at = NOW() WHERE id = ? AND tenant_id = ?",
+    )
+    .run(asset.id, asset.tenant_id);
   const updated = await findAssetById(db, scope, asset.id);
   await emitAssetEvent(db, 'asset.restored', updated);
   return updated;
@@ -381,14 +394,10 @@ async function permanentlyDeleteAsset(db, storageDir, scope, asset) {
     console.warn('[delete] file removal failed:', e.message);
   }
   await detachAllTags(db, asset.id);
-  if (isAllTenants(scope)) {
-    // tenant-lint: allow a superadmin acts across every tenant
-    await db.prepare('DELETE FROM assets WHERE id = ?').run(asset.id);
-  } else {
-    await db
-      .prepare('DELETE FROM assets WHERE id = ? AND tenant_id = ?')
-      .run(asset.id, scope.tenantId);
-  }
+  // Conditioned on the asset's own tenant, like the delete above.
+  await db
+    .prepare('DELETE FROM assets WHERE id = ? AND tenant_id = ?')
+    .run(asset.id, asset.tenant_id);
   // Send the event with the snapshot we read BEFORE the delete — downstream
   // consumers may want the metadata of what was removed.
   await emitAssetEvent(db, 'asset.deleted', asset);
@@ -427,7 +436,13 @@ async function updateAsset(db, scope, asset, body) {
     .run(
       title || null,
       description !== undefined ? description : asset.description,
-      category_id !== undefined ? category_id : asset.category_id,
+      // The category has to be one of this asset's tenant — see
+      // `resolveCategoryId`.
+      await resolveCategoryId(
+        db,
+        asset.tenant_id,
+        category_id !== undefined ? category_id : asset.category_id,
+      ),
       status || null,
       asset.id,
       asset.tenant_id,
@@ -457,4 +472,5 @@ module.exports = {
   softDeleteAsset,
   restoreAsset,
   permanentlyDeleteAsset,
+  resolveCategoryId,
 };

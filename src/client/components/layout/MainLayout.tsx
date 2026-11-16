@@ -17,6 +17,7 @@ import {
   BankOutlined,
   ClusterOutlined,
   DashboardOutlined,
+  HistoryOutlined,
   ImportOutlined,
   KeyOutlined,
   LogoutOutlined,
@@ -69,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: '管理',
     entries: [
       { key: 'organize', path: '/organize', label: '分类与标签', icon: <ClusterOutlined /> },
+      { key: 'audit', path: '/audit', label: '操作日志', icon: <HistoryOutlined /> },
       { key: 'integrations', path: '/integrations', label: '集成', icon: <KeyOutlined /> },
     ],
   },
@@ -438,10 +440,26 @@ export default function MainLayout(): JSX.Element {
                   ),
                 };
               })}
-              style={{ lineHeight: `${TOPBAR_HEIGHT}px`, minWidth: 0 }}
+              style={{ lineHeight: `${TOPBAR_HEIGHT}px`, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}
             />
           </div>
-          <Space size="middle">
+          {/* The right-hand side of the bar is allowed to shrink. In a narrow
+              window the search box, the account name and the breadcrumb do
+              not fit side by side, and a bar that does not fit makes the
+              whole page scroll sideways — which is how a long account name
+              ended up broken across two lines. The search gives up its width
+              first and the account name truncates; the bar never widens the
+              page. */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: tokens.space[4],
+              minWidth: 0,
+              flex: '0 1 auto',
+              overflow: 'hidden',
+            }}
+          >
             <Input.Search
               placeholder="搜索资产、标签…"
               allowClear
@@ -449,12 +467,14 @@ export default function MainLayout(): JSX.Element {
               onSearch={onSearch}
               style={{
                 width: 240,
+                minWidth: 0,
+                flexShrink: 1,
                 background: tokens.color.bgAlt,
                 borderColor: tokens.color.border,
               }}
             />
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-              <Space style={{ cursor: 'pointer' }}>
+              <Space style={{ cursor: 'pointer', minWidth: 0 }}>
                 <Avatar
                   size="small"
                   style={{
@@ -465,10 +485,21 @@ export default function MainLayout(): JSX.Element {
                 >
                   {(user?.display_name?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase()}
                 </Avatar>
-                <span style={{ color: tokens.color.text }}>{displayName}</span>
+                <span
+                  style={{
+                    color: tokens.color.text,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    minWidth: 0,
+                    maxWidth: 140,
+                  }}
+                >
+                  {displayName}
+                </span>
               </Space>
             </Dropdown>
-          </Space>
+          </div>
         </Header>
         <Content
           className="dam-content"

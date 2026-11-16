@@ -256,6 +256,37 @@ export const tenantChecks = [
   },
 
   {
+    name: "a tenant's trail records what its people changed, and only its own",
+    async run(ctx) {
+      // A write, made through the tenant's own API module.
+      const created = await ctx.categoriesApi.create({ name: 'contract-audited-category' });
+
+      const trail = await ctx.auditApi.list(200);
+      assert.ok(Array.isArray(trail.items), 'the trail must answer with an items array');
+
+      const entry = trail.items.find((item) => item.resource_id === created.id);
+      assert.ok(entry, 'the trail must record the category that was just created');
+      assert.equal(entry.action, 'category.created', 'the trail must name what was done');
+      assert.equal(entry.username, ADMIN_USERNAME, 'the trail must name who did it');
+      assert.equal(
+        entry.tenant_id,
+        trail.items[0].tenant_id,
+        'every entry in a tenant\'s trail belongs to that tenant',
+      );
+
+      // The trail follows the scope: the write the platform administrator made
+      // in another tenant is not in this tenant's trail.
+      assert.ok(
+        !trail.items.some((item) => String(item.details || '').includes('contract-acme-category')),
+        "another tenant's changes must not appear in this tenant's trail",
+      );
+
+      // Clean up after itself.
+      await ctx.categoriesApi.remove(created.id);
+    },
+  },
+
+  {
     name: 'an account issues an MCP token and the token speaks to the endpoint',
     async run(ctx) {
       const issued = await ctx.mcpApi.create({ name: 'Contract MCP' });

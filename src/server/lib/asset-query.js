@@ -80,7 +80,18 @@ function buildAssetWhere(scope, query) {
   const where = [];
   const params = [];
 
-  if (scope && scope.tenantId && scope.tenantId !== '*') {
+  // A listing without a scope is a listing of everything, which is never what
+  // a caller meant. The scope is the only thing that says whose assets these
+  // are, so a missing one is refused rather than read as "all of them" — the
+  // same answer `findAssetById` gives.
+  if (!scope || !scope.tenantId) {
+    throw Object.assign(new Error('An asset read cannot run without a tenant scope'), {
+      status: 403,
+      code: 'NO_TENANT_SCOPE',
+    });
+  }
+
+  if (scope.tenantId !== '*') {
     where.push('a.tenant_id = ?');
     params.push(scope.tenantId);
   }

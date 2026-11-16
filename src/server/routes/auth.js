@@ -196,6 +196,14 @@ function createAuthRouter({ db }) {
       .get(payload.sub, payload.tid);
     if (!user) return res.status(401).json({ detail: 'User not found' });
     if (!user.is_active) return res.status(403).json({ detail: 'User is disabled' });
+    // A suspended tenant stops at the door, and the refresh door is a door
+    // too: a tenant the platform administrator has suspended must not be able
+    // to mint fresh credentials, or the suspension would end the moment the
+    // access token expired — and a re-enabled tenant would find its old
+    // sessions alive again.
+    const tenant = await resolveTenantFromUser(db, user);
+    if (!tenant) return res.status(403).json({ detail: 'Tenant not found' });
+    if (tenant.status !== 'active') return res.status(403).json({ detail: 'Tenant is suspended' });
 
     // Rotate: the presented refresh token is burned and a new pair is issued.
     await revokeToken(db, payload.jti, expiresAtOf(getConfig().refreshTokenTtl), payload.tid);

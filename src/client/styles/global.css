@@ -225,6 +225,12 @@ body {
   .dam-content {
     margin: var(--dam-space-3) !important;
     padding: var(--dam-space-4) !important;
+    /* The content column is `width: 100%` so that a wide screen centres it
+       with auto margins. A fixed margin on top of a full width pushes the
+       column past the right edge and the whole page scrolls sideways — twelve
+       pixels, exactly the gutter. Letting the column stretch instead keeps
+       the gutter and keeps the page still. */
+    width: auto !important;
   }
 }
 

@@ -16,6 +16,7 @@ const { authRequired } = require('../lib/auth');
 const { toCategory } = require('../lib/dto');
 const { slugify, parsePositiveInt } = require('../lib/util');
 const { isAllTenants, resolveWriteTenant } = require('../lib/tenant');
+const { auditAction } = require('../lib/audit');
 const { asyncHandler } = require('../lib/http');
 
 /**
@@ -84,6 +85,12 @@ function createCategoriesRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
       .get(id, tenantId);
+    await auditAction(db, req, {
+      action: 'category.created',
+      resourceType: 'category',
+      resourceId: id,
+      details: { name: String(name) },
+    });
     return res.status(201).json(toCategory(row));
   }));
 
@@ -114,6 +121,12 @@ function createCategoriesRouter({ db }) {
     const row = await db
       .prepare('SELECT * FROM categories WHERE id = ? AND tenant_id = ?')
       .get(category.id, tenantId);
+    await auditAction(db, req, {
+      action: 'category.updated',
+      resourceType: 'category',
+      resourceId: category.id,
+      details: { name: row ? row.name : category.name },
+    });
     return res.json(toCategory(row));
   }));
 
@@ -137,6 +150,12 @@ function createCategoriesRouter({ db }) {
     await db
       .prepare('DELETE FROM categories WHERE id = ? AND tenant_id = ?')
       .run(category.id, tenantId);
+    await auditAction(db, req, {
+      action: 'category.deleted',
+      resourceType: 'category',
+      resourceId: category.id,
+      details: { name: category.name },
+    });
     return res.status(204).end();
   }));
 

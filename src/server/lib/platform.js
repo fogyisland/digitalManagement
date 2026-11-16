@@ -15,6 +15,7 @@
 
 const { nanoid } = require('nanoid');
 const { ALL_TENANTS, SUPERADMIN_ROLE, loadTenant } = require('./tenant');
+const { writeAudit: writeSharedAudit, listAudit: listSharedAudit } = require('./audit');
 
 /** The roles an account may hold inside one tenant. */
 const TENANT_ROLES = ['admin', 'editor', 'viewer'];
@@ -240,57 +241,17 @@ async function updateAccount(db, userId, change = {}) {
  * @returns {Promise<void>}
  */
 async function writeAudit(db, entry) {
-  await db
-    .prepare(
-      `INSERT INTO audit_logs (id, tenant_id, user_id, action, resource_type, resource_id, details, ip_address, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-    )
-    .run(
-      nanoid(),
-      ALL_TENANTS,
-      entry.userId || null,
-      String(entry.action),
-      String(entry.resourceType),
-      entry.resourceId ? String(entry.resourceId) : null,
-      entry.details ? JSON.stringify(entry.details) : null,
-      entry.ip ? String(entry.ip) : null,
-    );
+  await writeSharedAudit(db, { tenantId: ALL_TENANTS, ...entry });
 }
 
 /**
  * The platform's recent actions.
  *
- * @param {object} db
  * @param {{limit?: number}} options
  * @returns {Promise<object[]>}
  */
 async function listAudit(db, options = {}) {
-  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 500);
-
-  // tenant-lint: allow the audit trail is the platform's own, across tenants
-  const rows = await db
-    .prepare(
-      `SELECT a.id, a.tenant_id, a.user_id, a.action, a.resource_type, a.resource_id,
-              a.details, a.ip_address, a.created_at, u.username
-         FROM audit_logs a
-         LEFT JOIN users u ON u.id = a.user_id
-        ORDER BY a.created_at DESC
-        LIMIT ?`,
-    )
-    .all(limit);
-
-  return rows.map((row) => ({
-    id: row.id,
-    tenant_id: row.tenant_id,
-    user_id: row.user_id,
-    username: row.username,
-    action: row.action,
-    resource_type: row.resource_type,
-    resource_id: row.resource_id,
-    details: row.details,
-    ip_address: row.ip_address,
-    created_at: row.created_at,
-  }));
+  return listSharedAudit(db, { tenantId: ALL_TENANTS, ...options });
 }
 
 module.exports = {

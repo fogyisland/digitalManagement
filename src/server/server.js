@@ -45,6 +45,7 @@ const { asyncHandler } = require('./lib/http');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
 const createAuthRouter = require('./routes/auth');
+const createAuditRouter = require('./routes/audit');
 const createUsersRouter = require('./routes/users');
 const createTenantsRouter = require('./routes/tenants');
 const createPlatformRouter = require('./routes/platform');
@@ -102,6 +103,10 @@ const initToken = resolveInitToken();
 // way instead of failing on every call.
 let requestLogReady = false;
 
+// What the seed did on this boot. The startup banner quotes it: only a seed
+// that actually created the administrator knows its password.
+let seededAdmin = null;
+
 const ready = (async () => {
   if (!isConfigured) {
     // Nothing to prepare: the schema does not exist yet, and creating one
@@ -115,7 +120,7 @@ const ready = (async () => {
   }
   await ensureDatabase(config);
   await initSchema(db);
-  await seedDatabase(db, config.storageDir);
+  seededAdmin = (await seedDatabase(db, config.storageDir)).admin;
   // The manifest index is written on every boot, not only when the process
   // is started as the entry point: the backend is also embedded (the test
   // suite boots this module directly), and a missing index makes
@@ -236,6 +241,10 @@ app.use(
 app.use(
   '/api/v1',
   createAuthRouter({ db }),
+  // The audit trail of the tenant this request speaks for. It sits beside the
+  // admin API because it is the tenant's own record of what its people
+  // changed — the platform layer has its own, one layer up.
+  createAuditRouter({ db }),
   createUsersRouter({ db }),
   // The tenant registry. Only a platform administrator may read it — it is
   // the list they pick from when they choose which tenant to act in, and
@@ -329,6 +338,53 @@ app.use((err, _req, res, _next) => {
 // The server starts listening only once the database is reachable and the
 // schema exists — a request that arrives earlier would hit a table that is
 // not there yet.
+
+/**
+ * The accounts that can open a door on this instance.
+ *
+ * The banner used to advertise `admin / Admin@123456` on every boot. That
+ * password only exists when the seed created the account itself: an instance
+ * that came through the setup wizard, or one whose tenant already had users,
+ * has a different administrator and a password nobody here knows. Printing
+ * the default anyway sends the operator to a door that does not open.
+ *
+ * @param {object} db
+ * @returns {Promise<Array<{tenant_id: string, username: string, role: string}>>}
+ */
+async function listLoginAccounts(db) {
+  return db
+    .prepare(
+      `SELECT tenant_id, username, role FROM users
+       WHERE is_active = 1
+       ORDER BY tenant_id, username`,
+    )
+    .all();
+}
+
+/**
+ * Print the accounts that exist, and the password only when it is known.
+ *
+ * @param {Array<{tenant_id: string, username: string, role: string}>} accounts
+ * @param {{created: boolean, username: string, password: string|null}|null} seeded
+ */
+function printAccounts(accounts, seeded) {
+  if (!accounts.length) {
+    console.log('  Accounts: none yet — finish the setup wizard to create one');
+    return;
+  }
+  console.log('  Accounts:');
+  for (const account of accounts) {
+    console.log(
+      `    tenant=${account.tenant_id.padEnd(12)}${account.username.padEnd(16)}${account.role}`,
+    );
+  }
+  if (seeded && seeded.created) {
+    console.log(`  New administrator: ${seeded.username} / ${seeded.password}`);
+  } else if (seeded) {
+    console.log('  (this boot did not create an administrator — no default password to show)');
+  }
+}
+
 if (require.main === module) {
   (async () => {
     try {
@@ -338,13 +394,15 @@ if (require.main === module) {
       process.exit(1);
     }
 
+    const accounts = await listLoginAccounts(db);
     app.listen(config.port, config.host, () => {
       console.log(`\nDAM backend listening on http://localhost:${config.port}`);
       console.log(`  Database: ${config.dbUser}@${config.dbHost}:${config.dbPort}/${config.dbName}`);
       console.log('  API:    /api/v1/* (admin JWT)');
       console.log('  Public: /api/public/v1/* (API Key)');
       console.log('  Files:  /storage/*  (signed URLs)');
-      console.log('  Admin:  admin / Admin@123456\n');
+      printAccounts(accounts, seededAdmin);
+      console.log('');
       if (config.usesDefaultSecret) {
         // The signing key the project ships with is public. An instance that
         // still uses it signs tokens anybody can forge, so it is worth a
