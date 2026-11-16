@@ -12,6 +12,7 @@
  *   /api/health, /api/health/ready  — liveness / readiness probes
  *   /api/v1/*                       — admin API, JWT bearer tokens
  *   /api/public/v1/*                — delivery API, API keys
+ *   /mcp                            — MCP (AI clients), per-account tokens
  *   /storage/*                      — the stored files (signed URLs)
  *   /*                              — frontend build output (static)
  */
@@ -45,6 +46,9 @@ const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manif
 const createAuthRouter = require('./routes/auth');
 const createUsersRouter = require('./routes/users');
 const createTenantsRouter = require('./routes/tenants');
+const createPlatformRouter = require('./routes/platform');
+const createMcpTokensRouter = require('./routes/mcp-tokens');
+const createMcpRouter = require('./routes/mcp');
 const createTagsRouter = require('./routes/tags');
 const createCategoriesRouter = require('./routes/categories');
 const createAssetsRouter = require('./routes/assets');
@@ -194,8 +198,14 @@ app.use(
   createAuthRouter({ db }),
   createUsersRouter({ db }),
   // The tenant registry. Only a platform administrator may read it — it is
-  // the list they pick from when they choose which tenant to act in.
+  // the list they pick from when they choose which tenant to act in, and
+  // they are the ones who decide how many tenants there are.
   createTenantsRouter({ db }),
+  // The platform layer: what the platform holds, who holds an account on it,
+  // and what the platform layer did. One layer above the tenants.
+  createPlatformRouter({ db }),
+  // The MCP tokens: one per account per client.
+  createMcpTokensRouter({ db }),
   createTagsRouter({ db }),
   createCategoriesRouter({ db }),
   createAssetsRouter({ db, uploader }),
@@ -216,6 +226,13 @@ app.use('/api/public/v1', createPublicRouter({ db, uploader }));
 
 // --- Ingest API (external systems, API key) ---------------------------------
 app.use('/api/ingest/v1', createIngestRouter({ db, uploader }));
+
+// --- MCP (AI clients) -------------------------------------------------------
+// The MCP endpoint lives outside `/api/v1`: it carries its own credential — a
+// per-account MCP token — and speaks its own protocol, so it neither uses nor
+// interferes with the admin API's session tokens. An MCP client is configured
+// with a URL, and that URL is the one it expects to find.
+app.use('/mcp', createMcpRouter({ db }));
 
 // --- 404 for unknown API ----------------------------------------------------
 app.use('/api', (_req, res) => res.status(404).json({ detail: 'Not found' }));

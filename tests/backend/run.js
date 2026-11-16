@@ -27,6 +27,9 @@ const SUITES = [
   // The platform administrator's write path: a write has to name a concrete
   // tenant, and the `X-Tenant` header is not a way out of one.
   'superadmin.probe.js',
+  // The MCP endpoint: the tool set follows the account's role, and the data
+  // follows the account's tenant.
+  'mcp.probe.js',
 ];
 
 /**

@@ -212,11 +212,142 @@ export interface Tenant {
   slug: string
   status: string
   created_at: string
+  /** 租户里有多少资产 —— 停用或删除之前，平台管理员先看这个。 */
+  asset_count: number
+  /** 租户里有多少账号。 */
+  user_count: number
 }
 
 /** `GET /tenants` 的响应。 */
 export interface TenantListResponse {
   items: Tenant[]
+}
+
+/** 新建 / 修改租户时提交的东西。 */
+export interface TenantInput {
+  name: string
+  slug?: string
+  id?: string
+  status?: 'active' | 'suspended'
+}
+
+/**
+ * 登录页能看到的租户。
+ *
+ * 这是**公开**目录：还没有会话的人也要能选一个租户登录，所以它只有 id、
+ * 名称和状态——租户里的资产、账号、计数，在登录之前不关别人的事。
+ */
+export interface TenantDirectoryEntry {
+  id: string
+  name: string
+  status: string
+}
+
+/** `GET /auth/tenants` 的响应。 */
+export interface TenantDirectoryResponse {
+  items: TenantDirectoryEntry[]
+}
+
+/* --------------------------------------------------------------------------
+   Platform — 平台层：在所有租户之上的那一层
+   -------------------------------------------------------------------------- */
+
+/** 平台的总账：跨租户算出来的一次。 */
+export interface PlatformStats {
+  /** 租户总数。 */
+  tenants: number
+  /** 其中还开着的租户数。 */
+  active_tenants: number
+  /** 全平台的账号数。 */
+  accounts: number
+  /** 能进平台门的账号数。 */
+  platform_administrators: number
+  /** 全平台的资产数（不含回收站）。 */
+  assets: number
+  /** 回收站里的资产数。 */
+  trashed_assets: number
+  /** 全平台占用的存储字节数。 */
+  storage_bytes: number
+  categories: number
+  tags: number
+}
+
+/** 平台层看到的账号——跨租户。 */
+export interface PlatformAccount {
+  id: string
+  username: string
+  email: string | null
+  display_name: string | null
+  role: UserRole
+  status: UserStatus
+  /** 账号所属的租户；平台超管是 `*`。 */
+  tenant_id: string
+  last_login_at: string | null
+  created_at: string
+}
+
+/** `GET /platform/accounts` 的响应。 */
+export interface PlatformAccountListResponse {
+  items: PlatformAccount[]
+  total: number
+}
+
+/** 平台层做过的一件事。 */
+export interface PlatformAuditEntry {
+  id: string
+  tenant_id: string
+  user_id: string | null
+  /** 做事的人的用户名。 */
+  username: string | null
+  action: string
+  resource_type: string
+  resource_id: string | null
+  /** JSON 文本，形状随 action 而定。 */
+  details: string | null
+  ip_address: string | null
+  created_at: string
+}
+
+/** `GET /platform/audit` 的响应。 */
+export interface PlatformAuditListResponse {
+  items: PlatformAuditEntry[]
+}
+
+/* --------------------------------------------------------------------------
+   MCP — 每个账户的 AI 接入凭证
+   -------------------------------------------------------------------------- */
+
+/** MCP 令牌能做的事。角色决定上限，令牌只能更少。 */
+export type McpScope = 'read' | 'write' | 'delete'
+
+/**
+ * 一个 MCP 令牌。
+ *
+ * 令牌属于一个账户，代表那个账户说话：它的租户和角色就是账户的租户和
+ * 角色。清单里只有前缀 —— 明文只在签发的那一次出现。
+ */
+export interface McpToken {
+  id: string
+  name: string
+  token_prefix: string
+  token_masked: string
+  scopes: McpScope[]
+  is_active: boolean
+  last_used_at: string | null
+  created_at: string
+  user_id: string | null
+  tenant_id: string | null
+}
+
+/** 签发时的那一次回答：带着明文令牌。 */
+export interface McpTokenCreated extends McpToken {
+  token: string
+  warning: string
+}
+
+/** `GET /mcp/tokens` 的响应。 */
+export interface McpTokenListResponse {
+  items: McpToken[]
 }
 
 /* --------------------------------------------------------------------------

@@ -148,6 +148,35 @@ function toApiKey(row) {
 }
 
 /**
+ * Serialize an `mcp_tokens` row into the canonical shape.
+ *
+ * The token itself is never in this shape: the row holds only its hash and
+ * the prefix the interface shows. The clear token travels once, in the
+ * response that issues it.
+ *
+ * @param {Record<string, any>|null|undefined} row
+ * @returns {import('../../frontend/src/types/index').McpToken|null}
+ */
+function toMcpToken(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    token_prefix: row.token_prefix,
+    token_masked: `${row.token_prefix}********************`,
+    scopes: String(row.scopes || '')
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter((scope) => scope.length > 0),
+    is_active: !!row.is_active,
+    last_used_at: row.last_used_at ?? null,
+    created_at: row.created_at,
+    user_id: row.user_id ?? null,
+    tenant_id: row.tenant_id ?? null,
+  };
+}
+
+/**
  * @param {Record<string, any>|null|undefined} row
  * @returns {import('../../frontend/src/types/index').Tag|null}
  */
@@ -198,6 +227,10 @@ function toTenant(row) {
     slug: row.slug,
     status: row.status,
     created_at: row.created_at,
+    // How much the tenant holds — what the platform administrator looks at
+    // before they suspend or remove it.
+    asset_count: Number(row.asset_count || 0),
+    user_count: Number(row.user_count || 0),
   };
 }
 
@@ -272,6 +305,7 @@ module.exports = {
   toTag,
   toCategory,
   toTenant,
+  toMcpToken,
   toWebhook,
   toPage,
 };

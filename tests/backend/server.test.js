@@ -922,6 +922,35 @@ async function phaseTenantIsolation() {
   }
 
   /**
+   * Sign in through the platform door and return the access token.
+   *
+   * The tenant door refuses a platform administrator — a session that says
+   * "tenant" while the account may read every tenant is a session that lies —
+   * so an account that holds the platform role has to come through the other
+   * door.
+   *
+   * @param {string} username
+   * @param {string} password
+   * @returns {Promise<string>}
+   */
+  async function platformTokenFor(username, password) {
+    const res = await request({
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/v1/auth/platform-login',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    assert.strictEqual(
+      res.status,
+      200,
+      `platform-login(${username}) expected 200, got ${res.status}: ${res.raw}`,
+    );
+    return JSON.parse(res.raw).access_token;
+  }
+
+  /**
    * Upload one PNG for the credential's tenant.
    *
    * @param {string} token
@@ -992,7 +1021,7 @@ async function phaseTenantIsolation() {
 
     const aliceToken = await tokenFor('alice', 'Alice@123456');
     const bobToken = await tokenFor('bob', 'Bob@123456');
-    const rootToken = await tokenFor('root', 'Root@123456');
+    const rootToken = await platformTokenFor('root', 'Root@123456');
 
     // Each tenant owns a tag and a category, so the superadmin's view of
     // those resources can be checked — not only its view of the assets.

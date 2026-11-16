@@ -58,6 +58,7 @@ export const BUSINESS_TABLES = [
   'assets',
   'users',
   'api_keys',
+  'mcp_tokens',
   'categories',
   'tags',
   'webhook_endpoints',

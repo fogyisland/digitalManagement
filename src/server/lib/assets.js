@@ -394,6 +394,55 @@ async function permanentlyDeleteAsset(db, storageDir, scope, asset) {
   await emitAssetEvent(db, 'asset.deleted', asset);
 }
 
+/**
+ * Change an asset's metadata.
+ *
+ * The HTTP route and the MCP tool both change an asset, and they must change
+ * it the same way — so the change lives here rather than in either caller.
+ *
+ * The row was read through the tenant scope, so the update is conditioned on
+ * the asset's **own** tenant: a caller can never reach another tenant's asset
+ * even if it guessed an id.
+ *
+ * @param {object} db
+ * @param {{tenantId: string, isSuperadmin: boolean}} scope
+ * @param {any} asset the asset row, already read through the scope
+ * @param {{title?: string, description?: string, category_id?: string, tag_names?: string, status?: string}} body
+ * @returns {Promise<any>} the updated asset row
+ */
+async function updateAsset(db, scope, asset, body) {
+  const { title, description, category_id, tag_names, status } = body || {};
+  if (
+    status !== undefined &&
+    status !== null &&
+    !['ready', 'processing', 'failed'].includes(String(status))
+  ) {
+    throw Object.assign(new Error(`Unsupported status: ${status}`), { status: 400 });
+  }
+  await db
+    .prepare(
+      `UPDATE assets SET title = COALESCE(?, title), description = ?, category_id = ?, status = COALESCE(?, status),
+       updated_at = NOW() WHERE id = ? AND tenant_id = ?`,
+    )
+    .run(
+      title || null,
+      description !== undefined ? description : asset.description,
+      category_id !== undefined ? category_id : asset.category_id,
+      status || null,
+      asset.id,
+      asset.tenant_id,
+    );
+  if (tag_names !== undefined && tag_names !== null) {
+    // The tags land in the asset's own tenant — the row was read through the
+    // scope above, so this is the tenant the asset belongs to and not the one
+    // the request happens to speak for.
+    await attachTags(db, asset.tenant_id, asset.id, tag_names);
+  }
+  const updated = await findAssetById(db, scope, asset.id);
+  await emitAssetEvent(db, 'asset.updated', updated);
+  return updated;
+}
+
 module.exports = {
   // The read half, re-exported so every caller keeps requiring this module
   // and nothing but the file layout changed.
@@ -404,6 +453,7 @@ module.exports = {
   parseWebhookEvents,
   endpointSubscribesTo,
   processUpload,
+  updateAsset,
   softDeleteAsset,
   restoreAsset,
   permanentlyDeleteAsset,

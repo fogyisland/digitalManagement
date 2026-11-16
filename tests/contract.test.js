@@ -78,6 +78,8 @@ import {
   INIT_TOKEN_STORAGE_CASES,
   findInitTokenStorageFixtureProblems,
 } from './lib/init-token-storage-fixtures.js';
+import { findSpaRouteCollisions, parseSpaRoutes } from './lib/spa-routes.js';
+import { SPA_ROUTE_CASES, findSpaRouteFixtureProblems } from './lib/spa-route-fixtures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -117,7 +119,7 @@ function checkBaseUrl(violations) {
  * @returns {{callSites: number, backendRoutes: number, dynamic: number, forwarded: number}}
  */
 function runStaticLint() {
-  const { routes, problems } = parseBackendRoutes({
+  const { routes, problems, mounts } = parseBackendRoutes({
     serverFile: BACKEND_SRC,
     routesDir: BACKEND_ROUTES,
     repoRoot: REPO_ROOT,
@@ -237,6 +239,34 @@ function runStaticLint() {
   console.log(
     `init-token storage OK — the wizard keeps X-Init-Token in memory ` +
       `(${INIT_TOKEN_STORAGE_CASES.length} fixtures)`,
+  );
+
+  // A page and a mounted router cannot share a path. The server answers the
+  // path it owns first, so the page works on the click and 404s (or 405s, or
+  // answers JSON) on the reload — a page nobody can bookmark or share.
+  const spaFixtureProblems = findSpaRouteFixtureProblems();
+  assert.deepEqual(
+    spaFixtureProblems,
+    [],
+    `the SPA route rule mis-read a fixture:\n` +
+      spaFixtureProblems.map((v) => `  - ${v}`).join('\n'),
+  );
+  const routerFile = path.join(SRC_DIR, 'router.tsx');
+  const spaRoutes = parseSpaRoutes({ routerFile });
+  const collisions = findSpaRouteCollisions({
+    spaRoutes,
+    mounts,
+    routerLabel: 'src/client/router.tsx',
+  });
+  assert.deepEqual(
+    collisions,
+    [],
+    `SPA route lint failed (a page may not live on a path the server mounts):\n` +
+      collisions.map((v) => `  - ${v}`).join('\n'),
+  );
+  console.log(
+    `SPA route lint OK — ${spaRoutes.length} page paths, none on a mounted path ` +
+      `(${SPA_ROUTE_CASES.length} fixtures)`,
   );
 
   console.log(

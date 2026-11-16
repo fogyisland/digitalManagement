@@ -12,7 +12,9 @@ import {
   type MenuProps,
 } from 'antd';
 import {
+  ApiOutlined,
   AppstoreOutlined,
+  BankOutlined,
   ClusterOutlined,
   DashboardOutlined,
   ImportOutlined,
@@ -87,6 +89,21 @@ const ADMIN_ENTRY: NavEntry = {
 };
 
 /**
+ * The tenant list is the platform administrator's: it decides how many
+ * tenants there are and what they are called.
+ *
+ * It lives on the platform layer — one level above the tenants — so the entry
+ * leaves the app and opens the platform console. That is the point of the
+ * layer: the platform administrator acts *on* the tenants, not inside one.
+ */
+const TENANT_ENTRY: NavEntry = {
+  key: 'tenants',
+  path: '/platform',
+  label: '租户管理',
+  icon: <BankOutlined />,
+};
+
+/**
  * Match the current pathname against nav entries. Library detail
  * (`/library/:id`) should highlight the Library entry, not fall through.
  */
@@ -104,10 +121,13 @@ function matchNavPath(pathname: string): { selectedKey: string; parentKey: strin
   if (pathname === ADMIN_ENTRY.path || pathname.startsWith(`${ADMIN_ENTRY.path}/`)) {
     return { selectedKey: ADMIN_ENTRY.key, parentKey: 'admin' };
   }
+  if (pathname === TENANT_ENTRY.path || pathname.startsWith(`${TENANT_ENTRY.path}/`)) {
+    return { selectedKey: TENANT_ENTRY.key, parentKey: 'admin' };
+  }
   return { selectedKey: '', parentKey: null };
 }
 
-function buildMenuItems(isAdmin: boolean): MenuProps['items'] {
+function buildMenuItems(isAdmin: boolean, isSuperadmin: boolean): MenuProps['items'] {
   const items: NonNullable<MenuProps['items']> = [];
   NAV_GROUPS.forEach((group, index) => {
     if (index > 0) {
@@ -132,6 +152,10 @@ function buildMenuItems(isAdmin: boolean): MenuProps['items'] {
       label: '系统',
       children: [
         { key: ADMIN_ENTRY.key, icon: ADMIN_ENTRY.icon, label: ADMIN_ENTRY.label },
+        // Only the platform administrator manages the tenants themselves.
+        ...(isSuperadmin
+          ? [{ key: TENANT_ENTRY.key, icon: TENANT_ENTRY.icon, label: TENANT_ENTRY.label }]
+          : []),
       ],
     });
   }
@@ -145,6 +169,7 @@ function findEntryByKey(key: string): { path: string; label: string } | null {
     }
   }
   if (key === ADMIN_ENTRY.key) return { path: ADMIN_ENTRY.path, label: ADMIN_ENTRY.label };
+  if (key === TENANT_ENTRY.key) return { path: TENANT_ENTRY.path, label: TENANT_ENTRY.label };
   return null;
 }
 
@@ -182,6 +207,10 @@ function buildBreadcrumb(pathname: string): { label: string; path: string }[] {
     trail.push({ label: ADMIN_ENTRY.label, path: ADMIN_ENTRY.path });
     return trail;
   }
+  if (root === TENANT_ENTRY.path) {
+    trail.push({ label: TENANT_ENTRY.label, path: TENANT_ENTRY.path });
+    return trail;
+  }
 
   // Unknown route (the 404 catch-all) — say so instead of echoing the path.
   trail.push({ label: '页面不存在', path: pathname });
@@ -213,7 +242,7 @@ export default function MainLayout(): JSX.Element {
     [location.pathname],
   );
 
-  const menuItems = useMemo(() => buildMenuItems(isAdmin), [isAdmin]);
+  const menuItems = useMemo(() => buildMenuItems(isAdmin, isSuperadmin), [isAdmin, isSuperadmin]);
   const breadcrumbItems = useMemo(
     () => buildBreadcrumb(location.pathname),
     [location.pathname],
@@ -261,6 +290,14 @@ export default function MainLayout(): JSX.Element {
       icon: <SettingOutlined />,
       label: '偏好设置',
       onClick: () => navigate('/settings'),
+    },
+    // The MCP tokens belong to the account itself, so every account gets the
+    // entry — it is the account's own credential to manage.
+    {
+      key: 'mcp',
+      icon: <ApiOutlined />,
+      label: 'MCP 接入',
+      onClick: () => navigate('/mcp-access'),
     },
     // The user table is admin-only — offering the entry to a regular user
     // sent them to a route that bounced straight back to the dashboard.

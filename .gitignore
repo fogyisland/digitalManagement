@@ -52,6 +52,12 @@ tsconfig*.tsbuildinfo
 vite.config.js
 vite.config.d.ts
 
+# One-off local scratch: throw-away UI instances and the probe scripts that
+# drive them. They live in the working tree only.
+storage/ui-probe*/
+.probe-*
+.fix-*.js
+
 # Virtual environments (not used by this project, kept out of the repo)
 venv/
 .venv/

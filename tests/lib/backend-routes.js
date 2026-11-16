@@ -69,6 +69,13 @@ export const NON_API_MOUNTS = [
       "the stored files are served as bytes, not as JSON — the frontend puts " +
       "the URL straight into an `<img src>`, which cannot live under `/api`",
   },
+  {
+    prefix: '/mcp',
+    reason:
+      'the MCP endpoint speaks JSON-RPC, not the REST API — an MCP client is ' +
+      'configured with a URL and expects to find it where the protocol says, ' +
+      'and it carries its own per-account credential',
+  },
 ];
 
 /**

@@ -1,39 +1,93 @@
 /**
- * Login — Task 18.
+ * Login — the tenant door.
  *
- * Single-column centered form (420 px) on the dark amber background.
- * Uses design tokens only — no legacy classes (`login-card`, etc.).
- * The primary button inherits the amber accent through `damTheme.token`.
+ * The login page belongs to a tenant: you name the tenant you are signing
+ * into, and the credentials have to belong to it. The tenant list is the
+ * public directory (`GET /auth/tenants`) — there is no session yet, so the
+ * directory carries nothing but names.
+ *
+ * The platform sits one layer above every tenant, and it has its own door:
+ * the link at the bottom of this page. A platform administrator signs in
+ * there, and lands on the platform console rather than inside a tenant.
+ *
+ * Design tokens only — no legacy classes, no raw colours.
  */
-import { useState } from 'react';
-import { App, Button, Form, Input, Typography } from 'antd';
-import { LockOutlined, UserOutlined } from '@ant-design/icons';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { App, Button, Form, Input, Select, Typography } from 'antd';
+import {
+  ArrowRightOutlined,
+  BankOutlined,
+  LockOutlined,
+  ReloadOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { authApi } from '@/api/auth';
 import { useAuthStore } from '@/stores/authStore';
+import { useTenantStore } from '@/stores/tenantStore';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/errors';
+import type { TenantDirectoryEntry } from '@/types';
 
 const { Text, Title } = Typography;
 
 interface LoginValues {
+  tenant: string;
   username: string;
   password: string;
 }
 
 export default function Login(): JSX.Element {
   const [loading, setLoading] = useState(false);
+  const [directory, setDirectory] = useState<TenantDirectoryEntry[]>([]);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
+  const [directoryLoading, setDirectoryLoading] = useState(true);
   const [form] = Form.useForm<LoginValues>();
   const navigate = useNavigate();
   const location = useLocation();
   const setAuth = useAuthStore((s) => s.setAuth);
   const { message } = App.useApp();
 
+  const loadDirectory = useCallback(async (): Promise<void> => {
+    setDirectoryLoading(true);
+    try {
+      const response = await authApi.tenants();
+      setDirectory(response.items);
+      setDirectoryError(null);
+    } catch (e: unknown) {
+      setDirectory([]);
+      setDirectoryError(describeError(e, '无法读取租户列表'));
+    } finally {
+      setDirectoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDirectory();
+  }, [loadDirectory]);
+
+  const tenantOptions = useMemo(
+    () =>
+      directory.map((tenant) => ({
+        value: tenant.id,
+        label: tenant.name,
+        disabled: tenant.status !== 'active',
+        tenant,
+      })),
+    [directory],
+  );
+
   const onFinish = async (values: LoginValues): Promise<void> => {
     setLoading(true);
     try {
-      const resp = await authApi.login(values.username, values.password);
+      const resp = await authApi.login(values.username, values.password, values.tenant);
       setAuth(resp.user, resp.access_token, resp.refresh_token);
+      // A platform administrator may open any tenant; the scope of the
+      // session is narrowed to the one they picked. Everybody else belongs to
+      // a single tenant, and their session is already scoped to it.
+      if (resp.user.role === 'superadmin' && values.tenant) {
+        useTenantStore.getState().setTenantId(values.tenant);
+      }
       message.success(`欢迎回来，${resp.user.display_name || resp.user.username}`);
       const state = (location.state as { from?: string } | null);
       const from = state?.from || '/';
@@ -42,7 +96,12 @@ export default function Login(): JSX.Element {
       // The shared response interceptor only rotates tokens and redirects on a
       // 401 — it never raises a toast — so the failure has to be reported here
       // or the operator sees nothing at all.
-      message.error(describeError(e, '登录失败'));
+      const status = (e as { response?: { status?: number } } | null)?.response?.status;
+      message.error(
+        status === 403
+          ? '这个账号是平台管理员，请用页面底部的「平台管理登录」进入'
+          : describeError(e, '登录失败'),
+      );
     } finally {
       setLoading(false);
     }
@@ -53,14 +112,28 @@ export default function Login(): JSX.Element {
       style={{
         minHeight: '100vh',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: tokens.space[5],
         background: tokens.color.bg,
         padding: tokens.space[5],
+        boxSizing: 'border-box',
       }}
     >
       <div
+        aria-hidden
         style={{
+          position: 'fixed',
+          inset: 0,
+          pointerEvents: 'none',
+          background: `radial-gradient(58% 42% at 50% 0%, ${tokens.color.accentSoft}, transparent 72%)`,
+        }}
+      />
+
+      <div
+        style={{
+          position: 'relative',
           width: 420,
           maxWidth: '100%',
           background: tokens.color.panel,
@@ -108,11 +181,56 @@ export default function Login(): JSX.Element {
             >
               数字资产管理系统
             </Title>
-            <Text style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+            <Text style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>
               Digital Asset Management
             </Text>
           </div>
         </div>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: tokens.space[2],
+            marginBottom: tokens.space[4],
+            color: tokens.color.textMuted,
+            fontSize: tokens.fontSize.xs,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+          }}
+        >
+          <BankOutlined style={{ color: tokens.color.accent }} />
+          租户登录
+        </div>
+
+        {directoryError && (
+          <div
+            role="alert"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: tokens.space[3],
+              marginBottom: tokens.space[4],
+              padding: `${tokens.space[2]} ${tokens.space[3]}`,
+              borderRadius: tokens.radius.md,
+              border: `1px solid ${tokens.color.border}`,
+              background: tokens.color.dangerFaint,
+              color: tokens.color.text,
+              fontSize: tokens.fontSize.sm,
+            }}
+          >
+            <span>{directoryError}</span>
+            <Button
+              size="small"
+              type="text"
+              icon={<ReloadOutlined />}
+              onClick={() => void loadDirectory()}
+            >
+              重试
+            </Button>
+          </div>
+        )}
 
         <Form<LoginValues>
           form={form}
@@ -122,8 +240,62 @@ export default function Login(): JSX.Element {
           size="large"
         >
           <Form.Item
+            name="tenant"
+            label={
+              <span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>
+                租户
+              </span>
+            }
+            extra={
+              <span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.xs }}>
+                你要进入哪个租户 · 平台管理员请用页面底部的「平台管理登录」
+              </span>
+            }
+            rules={
+              directoryError
+                ? []
+                : [{ required: true, message: '请选择要登录的租户' }]
+            }
+          >
+            <Select
+              placeholder={directoryLoading ? '正在读取租户…' : '选择要登录的租户'}
+              showSearch
+              optionFilterProp="label"
+              loading={directoryLoading}
+              disabled={directoryError !== null}
+              options={tenantOptions}
+              suffixIcon={<BankOutlined style={{ color: tokens.color.textMuted }} />}
+              optionRender={(option) => (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: tokens.space[3],
+                  }}
+                >
+                  <span>{option.data.tenant.name}</span>
+                  <span
+                    style={{
+                      fontFamily: tokens.font.mono,
+                      fontSize: tokens.fontSize.xs,
+                      color: tokens.color.textMuted,
+                    }}
+                  >
+                    {option.data.tenant.id}
+                  </span>
+                </div>
+              )}
+            />
+          </Form.Item>
+
+          <Form.Item
             name="username"
-            label={<span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>用户名</span>}
+            label={
+              <span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>
+                用户名
+              </span>
+            }
             rules={[{ required: true, message: '请输入用户名' }]}
           >
             <Input
@@ -135,7 +307,11 @@ export default function Login(): JSX.Element {
           </Form.Item>
           <Form.Item
             name="password"
-            label={<span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>密码</span>}
+            label={
+              <span style={{ color: tokens.color.textMuted, fontSize: tokens.fontSize.sm }}>
+                密码
+              </span>
+            }
             rules={[{ required: true, message: '请输入密码' }]}
           >
             <Input.Password
@@ -170,6 +346,28 @@ export default function Login(): JSX.Element {
         >
           <div>默认管理员：admin / Admin@123456</div>
           <div style={{ marginTop: tokens.space[1] }}>首次使用后请立即修改密码</div>
+        </div>
+      </div>
+
+      <div style={{ position: 'relative', textAlign: 'center' }}>
+        <Link
+          to="/platform/login"
+          style={{
+            color: tokens.color.accent,
+            fontSize: tokens.fontSize.base,
+            fontWeight: tokens.fontWeight.medium,
+          }}
+        >
+          平台管理登录 <ArrowRightOutlined />
+        </Link>
+        <div
+          style={{
+            marginTop: tokens.space[1],
+            color: tokens.color.textMuted,
+            fontSize: tokens.fontSize.xs,
+          }}
+        >
+          平台管理员从这里进入平台层
         </div>
       </div>
     </div>

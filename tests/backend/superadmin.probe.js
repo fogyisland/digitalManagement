@@ -97,6 +97,36 @@ async function tenantOfRow(table, id) {
 }
 
 /**
+ * Is there a row with this id?
+ *
+ * The `tenants` table has no `tenant_id` column of its own, so the lookup is
+ * a plain existence check.
+ *
+ * @param {string} table
+ * @param {string} id
+ * @returns {Promise<boolean>}
+ */
+async function rowExists(table, id) {
+  const mysql = require('mysql2/promise');
+  const connection = await mysql.createConnection({
+    host: DB_HOST,
+    port: DB_PORT,
+    user: DB_USER,
+    password: DB_PASSWORD,
+    database: SCHEMA,
+  });
+  try {
+    const [rows] = await connection.query(
+      `SELECT id FROM \`${table}\` WHERE id = ?`,
+      [id],
+    );
+    return rows.length > 0;
+  } finally {
+    await connection.end();
+  }
+}
+
+/**
  * @returns {Promise<number>}
  */
 async function freePort() {
@@ -247,7 +277,20 @@ async function main() {
     );
     await db.end();
 
-    const login = await call('/api/v1/auth/login', {
+    // The platform administrator has its own door: the tenant door refuses
+    // it, so the probe goes through the platform one.
+    const tenantDoor = await call('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'root', password: 'Probe@123456' }),
+    });
+    assert.equal(
+      tenantDoor.status,
+      403,
+      `the tenant door must refuse a platform administrator: ${JSON.stringify(tenantDoor.body)}`,
+    );
+
+    const login = await call('/api/v1/auth/platform-login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'root', password: 'Probe@123456' }),
@@ -620,6 +663,148 @@ async function main() {
       'the manifest must follow the same narrowing as every other read',
     );
 
+    // --- the tenant management ---------------------------------------------
+    // The platform administrator is the one who decides how many tenants there
+    // are and what they are called. The tenant admin is not: they manage the
+    // contents of their own tenant, not the tenant list.
+    const tenantAdminCreate = await call('/api/v1/tenants', {
+      method: 'POST',
+      headers: { ...json, authorization: `Bearer ${ownerLogin.body.access_token}` },
+      body: JSON.stringify({ name: 'a tenant made by a tenant admin' }),
+    });
+    assert.equal(
+      tenantAdminCreate.status,
+      403,
+      'a tenant admin must not create a tenant',
+    );
+
+    const createdTenant = await call('/api/v1/tenants', {
+      method: 'POST',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: 'Acme Corp', slug: 'acme' }),
+    });
+    assert.equal(
+      createdTenant.status,
+      201,
+      `the platform administrator must be able to create a tenant: ${JSON.stringify(createdTenant.body)}`,
+    );
+    assert.equal(
+      createdTenant.body && createdTenant.body.slug,
+      'acme',
+      'the tenant must carry the slug it was given',
+    );
+    assert.equal(
+      typeof (createdTenant.body || {}).asset_count,
+      'number',
+      'the tenant must carry its asset count as a number',
+    );
+    assert.equal(
+      (createdTenant.body || {}).asset_count,
+      0,
+      'a new tenant holds nothing yet',
+    );
+
+    // The same slug cannot be taken twice.
+    const duplicate = await call('/api/v1/tenants', {
+      method: 'POST',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: 'Acme Again', slug: 'acme' }),
+    });
+    assert.equal(duplicate.status, 409, 'a slug that is taken must be refused');
+    assert.equal(
+      duplicate.body && duplicate.body.code,
+      'TENANT_EXISTS',
+      `the refusal must name itself: ${JSON.stringify(duplicate.body)}`,
+    );
+
+    // A tenant without a name is not a tenant.
+    const nameless = await call('/api/v1/tenants', {
+      method: 'POST',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: '   ' }),
+    });
+    assert.equal(nameless.status, 400, 'a tenant without a name must be refused');
+
+    // A Chinese name produces a Chinese slug — which no HTTP header can carry
+    // — so the id is generated instead. The tenant is still addressable.
+    const chinese = await call('/api/v1/tenants', {
+      method: 'POST',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: '视觉工作室' }),
+    });
+    assert.equal(chinese.status, 201, 'a Chinese tenant name must be accepted');
+    assert.match(
+      chinese.body && chinese.body.id,
+      /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+      'the id of a tenant must always be usable in a header',
+    );
+
+    // A tenant can be renamed and suspended.
+    const suspended = await call(`/api/v1/tenants/${createdTenant.body.id}`, {
+      method: 'PUT',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: 'Acme Corporation', status: 'suspended' }),
+    });
+    assert.equal(suspended.status, 200, 'a tenant must be updatable');
+    assert.equal(suspended.body && suspended.body.name, 'Acme Corporation');
+    assert.equal(suspended.body && suspended.body.status, 'suspended');
+
+    // A suspended tenant's accounts stop working at once.
+    const doomed = await call('/api/v1/tenants', {
+      method: 'POST',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ name: 'Doomed Inc', slug: 'doomed' }),
+    });
+    assert.equal(doomed.status, 201);
+    const doomedUser = await call('/api/v1/users', {
+      method: 'POST',
+      headers: { ...json, ...auth, 'x-tenant': doomed.body.id },
+      body: JSON.stringify({ username: 'doomed-owner', password: 'Probe@123456', role: 'viewer' }),
+    });
+    assert.equal(doomedUser.status, 201, 'the tenant must be able to hold an account');
+    await call(`/api/v1/tenants/${doomed.body.id}`, {
+      method: 'PUT',
+      headers: { ...json, ...auth },
+      body: JSON.stringify({ status: 'suspended' }),
+    });
+    const doomedLogin = await call('/api/v1/auth/login', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({ username: 'doomed-owner', password: 'Probe@123456' }),
+    });
+    assert.equal(
+      doomedLogin.status,
+      403,
+      'a suspended tenant must not let its accounts in',
+    );
+
+    // The destructive one: a tenant and everything inside it.
+    const removedTenant = await call(`/api/v1/tenants/${doomed.body.id}`, {
+      method: 'DELETE',
+      headers: { ...json, ...auth },
+    });
+    assert.equal(
+      removedTenant.status,
+      200,
+      `a tenant must be removable: ${JSON.stringify(removedTenant.body)}`,
+    );
+    assert.equal(
+      await tenantOfRow('users', doomedUser.body.id),
+      null,
+      "the tenant's accounts must go with it",
+    );
+    assert.equal(
+      await rowExists('tenants', doomed.body.id),
+      false,
+      'the tenant itself must be gone',
+    );
+
+    const missing = await call('/api/v1/tenants/no-such-tenant', {
+      method: 'DELETE',
+      headers: { ...json, ...auth },
+    });
+    assert.equal(missing.status, 404, 'a tenant that does not exist cannot be removed');
+
     console.log('\n--- the superadmin write path ---');
     console.log('  a write that names no tenant is refused       OK');
     console.log('  a write into a tenant that does not exist     OK');
@@ -636,6 +821,16 @@ async function main() {
     console.log('  a narrowed update cannot reach another tenant OK');
     console.log('  a delete in a named tenant lands              OK');
     console.log('  the manifest follows the same narrowing       OK');
+    console.log('\n--- the tenant management ---');
+    console.log('  a tenant admin cannot create a tenant        OK');
+    console.log('  a tenant is created with a slug and a name    OK');
+    console.log('  a slug that is taken is refused by name       OK');
+    console.log('  a tenant without a name is refused            OK');
+    console.log('  the id of a tenant is always header-safe      OK');
+    console.log('  a tenant can be renamed and suspended         OK');
+    console.log('  a suspended tenant locks its accounts out    OK');
+    console.log('  a tenant is removed with everything in it     OK');
+    console.log('  a tenant that does not exist cannot be gone   OK');
     console.log('superadmin probe OK');
   } finally {
     if (child) {

@@ -42,6 +42,7 @@ const TENANT_SCOPED_TABLES = [
   'categories',
   'tags',
   'api_keys',
+  'mcp_tokens',
   'audit_logs',
   'webhook_endpoints',
   'webhook_logs',

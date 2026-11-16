@@ -4,32 +4,30 @@
  * The tenant command.
  *
  * A tenant is the boundary every row of the library belongs to. The setup
- * wizard creates the first one, and the seed creates the default one — but
- * an installation that hosts more than one tenant has no way to add another:
- * there is no API for it, deliberately, because creating a tenant is the
- * platform administrator's call and the platform administrator is granted at
- * the console.
+ * wizard creates the first one, and the seed creates the default one. The
+ * platform administrator creates the rest — from the tenant management page,
+ * or from this command when the instance is not reachable from a browser.
  *
  *   npm run tenant:create -- --name "Acme Corp"
  *   npm run tenant:create -- --name "Acme Corp" --slug acme --id acme
  *
+ * The command and the API share one rule set (`lib/tenant-registry.js`), so a
+ * tenant made here is exactly as valid as a tenant made in the interface.
+ *
  * The id is what a request names in the `X-Tenant` header, so give it one
  * that reads well: `--id acme` makes `X-Tenant: acme` work, and so does the
- * slug or the name.
+ * slug or the name. When no id is given, it follows the slug — unless the
+ * slug is not ASCII, which no header can carry, and then one is generated.
  */
 
 const path = require('path');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '..', '.env') });
 
-const { nanoid } = require('nanoid');
 const { getConfig } = require('../config');
 const { connect } = require('../lib/db');
 const { initSchema } = require('../lib/schema');
-const { slugify } = require('../lib/util');
-
-/** The longest id and slug the `tenants` table accepts. */
-const MAX_KEY_LENGTH = 64;
+const { createTenant } = require('../lib/tenant-registry');
 
 /**
  * Parse `--key value` and `--flag` arguments.
@@ -71,19 +69,9 @@ async function main() {
     return;
   }
 
-  const slug = String(values.slug || slugify(name)).trim();
-  const id = String(values.id || slug).trim();
-
-  if (!slug || slug.length > MAX_KEY_LENGTH) {
-    console.error(`[tenant] the slug must be between 1 and ${MAX_KEY_LENGTH} characters`);
-    process.exitCode = 1;
-    return;
-  }
-  if (!id || id.length > MAX_KEY_LENGTH) {
-    console.error(`[tenant] the id must be between 1 and ${MAX_KEY_LENGTH} characters`);
-    process.exitCode = 1;
-    return;
-  }
+  // The rules — what a slug may hold, when an id is generated, when a name is
+  // too long — live in the registry, because the API enforces the same ones.
+  const status = flags.has('suspended') ? 'suspended' : 'active';
 
   console.log(`[tenant] database: ${config.dbUser}@${config.dbHost}:${config.dbPort}/${config.dbName}`);
 
@@ -91,28 +79,19 @@ async function main() {
   try {
     await initSchema(db);
 
-    const existing = await db
-      .prepare('SELECT id, name, slug, status FROM tenants WHERE id = ? OR slug = ?')
-      .all([id, slug]);
+    const created = await createTenant(db, {
+      name,
+      slug: values.slug,
+      id: values.id,
+      status,
+    });
 
-    if (existing.length > 0) {
-      const row = existing[0];
-      console.error(
-        `[tenant] a tenant with the id "${row.id}" (slug "${row.slug}") already exists — ` +
-          'nothing was changed',
-      );
-      process.exitCode = 1;
-      return;
-    }
-
-    const status = flags.has('suspended') ? 'suspended' : 'active';
-    await db
-      .prepare('INSERT INTO tenants (id, name, slug, status) VALUES (?, ?, ?, ?)')
-      .run([id, name, slug, status]);
-
-    console.log(`[tenant] "${name}" created — id "${id}", slug "${slug}", status ${status}`);
+    console.log(
+      `[tenant] "${created.name}" created — id "${created.id}", slug "${created.slug}", ` +
+        `status ${created.status}`,
+    );
     console.log('[tenant] a platform administrator may now act in it with:');
-    console.log(`[tenant]   X-Tenant: ${id}`);
+    console.log(`[tenant]   X-Tenant: ${created.id}`);
   } finally {
     await db.pool.end();
   }

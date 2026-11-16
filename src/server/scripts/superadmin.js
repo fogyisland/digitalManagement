@@ -177,7 +177,7 @@ async function main() {
       console.log(`[superadmin] password: ${password}`);
       console.log('[superadmin] it is printed once and only its hash is stored — save it now');
     }
-    console.log('[superadmin] sign in at /login, then pick the tenant to act in');
+    console.log('[superadmin] sign in at /platform/login — the platform door');
   } finally {
     await db.pool.end();
   }

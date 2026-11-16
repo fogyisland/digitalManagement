@@ -6,13 +6,16 @@
  * sends the wrong path, the wrong field name or the wrong verb, the check
  * fails here — not in the browser.
  *
- * The checks live in four files, one per area of the system:
+ * The checks live in seven files, one per area of the system:
  *
  *   - `runtime-checks-identity.js`     — login, tokens, list envelopes, catalogue
+ *   - `runtime-checks-tenants.js`      — the tenant registry, the two doors
+ *   - `runtime-checks-platform.js`     — the layer above the tenants
  *   - `runtime-checks-assets.js`       — the asset lifecycle, including the
  *                                        three deletion states
  *   - `runtime-checks-integrations.js` — API keys, delivery, chunked upload,
  *                                        import-by-URL, ComfyUI, webhooks
+ *   - `runtime-checks-init.js`         — the first-boot wizard
  *   - `runtime-checks-session.js`      — token rotation and logout
  *
  * They run in that order and share one context: later checks depend on the
@@ -30,6 +33,7 @@ import { assetChecks } from './runtime-checks-assets.js';
 import { identityChecks } from './runtime-checks-identity.js';
 import { initChecks } from './runtime-checks-init.js';
 import { integrationChecks } from './runtime-checks-integrations.js';
+import { platformChecks } from './runtime-checks-platform.js';
 import { sessionChecks } from './runtime-checks-session.js';
 import { tenantChecks } from './runtime-checks-tenants.js';
 
@@ -45,6 +49,7 @@ import { tenantChecks } from './runtime-checks-tenants.js';
  * @property {any} categoriesApi
  * @property {any} apiKeysApi
  * @property {any} webhooksApi
+ * @property {any} platformApi the platform layer's own API
  * @property {any} initSteps the wizard's step module
  * @property {(form: {url: string, title?: string}) => Promise<any>} importUrlByUrl
  * @property {(jobId: string) => Promise<any|null>} lookupComfyUiJob
@@ -66,10 +71,15 @@ import { tenantChecks } from './runtime-checks-tenants.js';
  * kept out of the registry), and they give the session back before they
  * finish — the rest of the suite runs as the seeded administrator, which is
  * what it has always assumed.
+ *
+ * The platform checks follow the tenant ones for the same reason, and for one
+ * more: the platform administrator they sign in as is the account the tenant
+ * checks created.
  */
 export const runtimeChecks = [
   ...identityChecks,
   ...tenantChecks,
+  ...platformChecks,
   ...assetChecks,
   ...integrationChecks,
   ...initChecks,

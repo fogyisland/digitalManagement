@@ -39,12 +39,11 @@ const { toAsset, storageUrl } = require('../lib/dto');
 const {
   listAssets,
   findAssetById,
-  attachTags,
+  updateAsset,
   softDeleteAsset,
   restoreAsset,
   permanentlyDeleteAsset,
   processUpload,
-  emitAssetEvent,
 } = require('../lib/assets');
 const { fetchRemoteFile } = require('../lib/net');
 const { safeParse, parseBoolean } = require('../lib/util');
@@ -271,34 +270,9 @@ function createAssetsRouter({ db, uploader }) {
   router.put('/assets/:id', authRequired(db), asyncHandler(async (req, res) => {
     const asset = await findAssetById(db, req.tenantScope, req.params.id);
     if (!asset) return res.status(404).json({ detail: 'Not found' });
-    const { title, description, category_id, tag_names, status } = req.body || {};
-    if (status !== undefined && status !== null && !['ready', 'processing', 'failed'].includes(String(status))) {
-      return res.status(400).json({ detail: `Unsupported status: ${status}` });
-    }
-    // The row was read through the tenant scope above, so its own tenant is
-    // the condition — the update can never reach another tenant's asset even
-    // if an id were guessed.
-    await db
-      .prepare(
-        `UPDATE assets SET title = COALESCE(?, title), description = ?, category_id = ?, status = COALESCE(?, status),
-         updated_at = NOW() WHERE id = ? AND tenant_id = ?`,
-      )
-      .run(
-        title || null,
-        description !== undefined ? description : asset.description,
-        category_id !== undefined ? category_id : asset.category_id,
-        status || null,
-        asset.id,
-        asset.tenant_id,
-      );
-    if (tag_names !== undefined && tag_names !== null) {
-      // The tags land in the asset's own tenant — the row was read through
-      // the scope above, so this is the tenant the asset belongs to and not
-      // the one the request happens to speak for.
-      await attachTags(db, asset.tenant_id, asset.id, tag_names);
-    }
-    const updated = await findAssetById(db, req.tenantScope, asset.id);
-    await emitAssetEvent(db, 'asset.updated', updated);
+    // The change itself lives in the library, so this route and the MCP tool
+    // change an asset the same way.
+    const updated = await updateAsset(db, req.tenantScope, asset, req.body || {});
     return res.json(toAsset(updated));
   }));
 

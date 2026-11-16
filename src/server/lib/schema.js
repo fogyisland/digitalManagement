@@ -181,6 +181,24 @@ const BASE_SCHEMA_SQL = [
   UNIQUE KEY ${tenantUniqueKeyName('api_keys', 'key_hash')} (tenant_id, key_hash)
 ) ENGINE=InnoDB ${CHARSET}`,
 
+  // The MCP tokens: one row per account per client. An MCP token speaks for
+  // the account that issued it, so it carries that account's tenant — a
+  // credential that could name its own tenant would be able to name somebody
+  // else's.
+  `CREATE TABLE IF NOT EXISTS mcp_tokens (
+  id ${ID} NOT NULL PRIMARY KEY,
+  ${TENANT_ID_COLUMN},
+  user_id ${ID} NOT NULL,
+  name VARCHAR(191) NOT NULL,
+  token_prefix VARCHAR(32) NOT NULL,
+  token_hash VARCHAR(191) NOT NULL,
+  scopes VARCHAR(255) NOT NULL DEFAULT 'read',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  last_used_at DATETIME,
+  created_at ${TIMESTAMP},
+  UNIQUE KEY ${tenantUniqueKeyName('mcp_tokens', 'token_hash')} (tenant_id, token_hash)
+) ENGINE=InnoDB ${CHARSET}`,
+
   `CREATE TABLE IF NOT EXISTS audit_logs (
   id ${ID} NOT NULL PRIMARY KEY,
   ${TENANT_ID_COLUMN},

@@ -5,6 +5,8 @@ import MainLayout from '@/components/layout/MainLayout';
 import { useAuthStore } from '@/stores/authStore';
 
 const Login = lazy(() => import('@/pages/Login'));
+const PlatformLogin = lazy(() => import('@/pages/PlatformLogin'));
+const Platform = lazy(() => import('@/pages/Platform'));
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const Library = lazy(() => import('@/pages/Library'));
 const AssetDetail = lazy(() => import('@/pages/AssetDetail'));
@@ -14,6 +16,7 @@ const Organize = lazy(() => import('@/pages/Organize'));
 const Integrations = lazy(() => import('@/pages/Integrations'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const Users = lazy(() => import('@/pages/Users'));
+const Mcp = lazy(() => import('@/pages/Mcp'));
 const NotFound = lazy(() => import('@/pages/NotFound'));
 const InitWizard = lazy(() => import('@/pages/init/InitWizard'));
 
@@ -33,6 +36,19 @@ function AdminOnly() {
   return <Outlet />;
 }
 
+/**
+ * The tenant list is the platform administrator's alone.
+ *
+ * A tenant administrator manages the contents of their own tenant; how many
+ * tenants there are and what they are called is the platform's business.
+ */
+function SuperadminOnly() {
+  const user = useAuthStore((s) => s.user);
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== 'superadmin') return <Navigate to="/" replace />;
+  return <Outlet />;
+}
+
 function PageLoader() {
   return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 320 }}><Spin size="large" tip="加载中…" /></div>;
 }
@@ -42,8 +58,18 @@ export const router = createBrowserRouter([
   // The setup wizard lives outside the auth guard on purpose: it is what
   // creates the first credential, so there is nobody to authenticate yet.
   { path: '/init', element: lazyPage(InitWizard) },
+  // The tenant door — the login page names the tenant it signs into.
   { path: '/login', element: lazyPage(Login) },
+  // The platform door — one layer above every tenant, for platform
+  // administrators only. It lives outside the guard for the same reason the
+  // wizard does: it is what establishes who the caller is.
+  { path: '/platform/login', element: lazyPage(PlatformLogin) },
   { element: <Protected />, children: [
+    // The platform console is a layer of its own: it has no tenant of its own,
+    // so it does not live under the app's layout.
+    { element: <SuperadminOnly />, children: [
+      { path: 'platform', element: lazyPage(Platform) },
+    ] },
     { element: <MainLayout />, children: [
       { index: true, element: lazyPage(Dashboard) },
       { path: 'library', element: lazyPage(Library) },
@@ -56,6 +82,18 @@ export const router = createBrowserRouter([
       { path: 'integrations', element: lazyPage(Integrations) },
       { path: 'settings', element: lazyPage(Settings) },
       { element: <AdminOnly />, children: [{ path: 'users', element: lazyPage(Users) }] },
+      // The tenant list belongs to the platform administrator alone, and it
+      // lives on the platform layer — so an old link to it lands there.
+      { element: <SuperadminOnly />, children: [
+        { path: 'tenants', element: <Navigate to="/platform" replace /> },
+      ] },
+      // The MCP tokens belong to the account itself — every account has one.
+      //
+      // The page lives at `/mcp-access`, not at `/mcp`: the MCP protocol's own
+      // endpoint is mounted at `/mcp` and answers every request under that
+      // prefix, so a page there would be a 405 on reload. The machine endpoint
+      // keeps the short path — that is the URL an AI client is configured with.
+      { path: 'mcp-access', element: lazyPage(Mcp) },
       { path: '*', element: lazyPage(NotFound) },
     ] },
   ] },

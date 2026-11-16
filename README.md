@@ -92,12 +92,47 @@ npm start
 
 ### 多租户与平台管理员
 
-一个租户是库里所有数据归属的边界。初始化向导会建好第一个租户，之后的租户在控制台建：
+一个租户是库里所有数据归属的边界。**租户管理员管自己租户里的内容**（资产、分类、标签、用户、密钥），**平台管理员管租户本身**。
+
+#### 两扇门
+
+平台层比租户层**高一层**，所以登录有两条路：
+
+| | 入口 | 谁进得来 | 进去之后 |
+|---|---|---|---|
+| **租户门** | `/login`（首页） | 该租户的账号 | 落在那个租户里，只管那个租户 |
+| **平台门** | `/platform/login`（登录页底部那个链接） | 只有平台管理员 | 落在平台层：管租户、签发自己的 MCP 令牌 |
+
+登录页先选租户再登凭据——租户清单是公开的（`GET /api/v1/auth/tenants`），只有 id、名称和状态，租户里有什么在登录之前不关别人的事。选中的租户就是这次会话的范围：顶部的租户选择器会跟着它走。
+
+平台门对租户管理员是**拒绝**（403），不是跳转——租户管理员没有资格进自己租户之上那一层。平台门的会话不带租户范围，它就是平台自己的范围。
+
+#### 平台层做什么
+
+平台管理员在平台控制台（`/platform`，侧边栏「系统 → 租户管理」进去）里。平台层自己是一个**独立外壳**：不套应用的主界面，也没有租户作用域，它回答的是「整个平台现在是什么样」。控制台有五个页签：
+
+| 页签 | 做什么 |
+|---|---|
+| **总览** | 跨租户统计：租户数、账号数、资产数、存储占用、分类/标签数 |
+| **租户** | 新建租户、改名改 slug、停用、删除 |
+| **账号** | 跨租户的账号目录；搜索、按角色/状态筛；改角色、改归属租户、启停 |
+| **审计** | 平台层做过的动作流水：谁、何时、对谁、做了什么 |
+| **MCP 令牌** | 签发 / 吊销平台层自己的 MCP 令牌 |
+
+- **停用**是开关：该租户的所有账号**立刻无法登录**，数据留着，随时可以启用。
+- **删除**不可逆：租户和它里面的资产、账号、分类、标签、密钥、文件一起消失。界面要求先输入租户 id 确认。
+- **改角色 / 改归属**会结束该账号的现有会话：令牌里带着签发时的角色和租户，一个活得比角色还久的令牌，是平台收不回来的凭证。降级时必须**显式**指定回到哪个租户——平台不记忆它原来在哪。
+- 平台层的动作落审计，租户 id 记成通配 `*`，所以删掉租户之后，「它被删了」这条记录还在。
+  > 审计流水目前只覆盖**平台层**的动作（租户增删改、账号改角色/归属）。资产、分类、标签这些管理 API 的写操作还没落审计——这是既有偏差，不是这一层的行为。
+
+命令行做的是同一套事（规则同源，不存在「界面能建、命令行不能建」）：
 
 ```bash
 # 建一个租户（--id 是请求里 X-Tenant 用的那个名字）
 npm run tenant:create -- --name "Acme Corp" --slug acme --id acme
 ```
+
+租户 **id 必须是 ASCII**：请求头 `X-Tenant` 只能是字节串，所以租户名是中文时 id 会自动生成一个能用的。
 
 **平台管理员**（`role=superadmin`）的账号不属于任何租户：它默认能读整个平台，并可以用 `X-Tenant` 头把请求收窄到任意一个租户。这个角色没有对应的 API——能读所有租户的角色是一道安全边界，给它一个发放入口就是提权后门——所以它在控制台发：
 
@@ -109,7 +144,7 @@ npm run superadmin -- --username root
 npm run superadmin -- --username alice --promote
 ```
 
-拿到账号后登录，右上角会出现租户选择器：选中哪个租户，接下来的读写就都在那个租户里。
+拿到账号后从平台门登录，右上角的「进入资产库」把你带回应用；应用里的租户选择器决定接下来在哪个租户里行事。
 
 ### 方式三：Docker Compose
 
@@ -146,7 +181,9 @@ npm run dev:server   # 后端热重启 :8000
 
 | Method | Path | 描述 |
 |--------|------|------|
-| POST | `/api/v1/auth/login` | 登录，返回 access + refresh token |
+| POST | `/api/v1/auth/login` | 租户登录，返回 access + refresh token（可带 `tenant` 指定租户） |
+| POST | `/api/v1/auth/platform-login` | 平台登录（**仅平台管理员**，否则 403） |
+| GET | `/api/v1/auth/tenants` | 公开租户清单（id / 名称 / 状态），登录页用 |
 | POST | `/api/v1/auth/refresh` | 轮换令牌（旧 refresh 立即作废） |
 | POST | `/api/v1/auth/logout` | 注销，吊销 access token 与会话 |
 | GET | `/api/v1/auth/me` | 当前用户 |
@@ -157,6 +194,16 @@ npm run dev:server   # 后端热重启 :8000
 | DELETE | `/api/v1/users/:id` | 删除用户 |
 | POST | `/api/v1/users/:id/reset-password` | 重置密码 |
 | GET | `/api/v1/tenants` | 租户列表（**仅平台管理员**） |
+| POST | `/api/v1/tenants` | 新建租户（仅平台管理员） |
+| PUT | `/api/v1/tenants/:id` | 改名 / 改 slug / 停用（仅平台管理员） |
+| DELETE | `/api/v1/tenants/:id` | 删除租户及其全部内容（仅平台管理员） |
+| GET | `/api/v1/platform/stats` | 平台统计：租户 / 账号 / 资产 / 存储（仅平台管理员） |
+| GET | `/api/v1/platform/accounts` | 跨租户账号目录（`keyword` / `role` / `status`，仅平台管理员） |
+| PUT | `/api/v1/platform/accounts/:id` | 改角色 / 改归属租户 / 启停（仅平台管理员；会结束该账号会话） |
+| GET | `/api/v1/platform/audit` | 平台层动作审计流水（仅平台管理员） |
+| GET | `/api/v1/mcp/tokens` | MCP 令牌列表（自己的；管理员看本租户全部） |
+| POST | `/api/v1/mcp/tokens` | 签发 MCP 令牌（明文只返回一次） |
+| DELETE | `/api/v1/mcp/tokens/:id` | 吊销 MCP 令牌 |
 | GET | `/api/v1/assets` | 资产列表（筛选、搜索、分页） |
 | POST | `/api/v1/assets/upload` | 上传（multipart，字段名 `files`，最多 20 个） |
 | POST | `/api/v1/assets/import-url` | 从外部 URL 导入（拒绝内网地址） |
@@ -204,7 +251,33 @@ npm run dev:server   # 后端热重启 :8000
 >
 > 普通租户的凭证会**忽略**这个头——它不能用来越权。
 >
-> `GET /api/v1/tenants` 只有平台管理员能读，它列出全部租户（id / 名称 / slug），前端的头部租户选择器就是从它取数据的。这个接口**不**受 `X-Tenant` 影响：它正是用来*选*租户的。
+> `GET /api/v1/tenants` 只有平台管理员能读，它列出全部租户（id / 名称 / slug / 资产数 / 账号数），前端的头部租户选择器就是从它取数据的。这个接口**不**受 `X-Tenant` 影响：它正是用来*选*租户的。
+
+### MCP（每个账户的 AI 接入）
+
+每个账户都能在「账号菜单 → MCP 接入」签发自己的 MCP 令牌。它是 AI 客户端（Claude Desktop、Claude Code、Cursor 等）访问这个实例的凭证：
+
+```bash
+curl -X POST http://localhost:8000/mcp \
+  -H "Authorization: Bearer dam_mcp_xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+令牌代表签发它的账户：它继承账户的租户与角色，**能做的事不会超过账户能做的事**。
+
+| 角色 | 令牌能拿到的工具 |
+| --- | --- |
+| `viewer` | 读：`list_assets`、`get_asset`、`list_categories`、`list_tags`、`get_library_stats` |
+| `editor` | 读 + 写：再加 `upload_asset`、`update_asset` |
+| `admin` / `superadmin` | 读 + 写 + 删：再加 `delete_asset` |
+
+平台管理员的令牌默认覆盖所有租户，用 `X-Tenant` 收窄到某一个——和它在界面里做的事是同一条规则。
+
+明文令牌只在签发时出现一次，之后库里只剩哈希；丢了就重建一个，旧的吊销掉。
+
+> 两个 `/mcp` 不是一个东西：协议端点在 **`/mcp`**（AI 客户端配置里的那个 URL），签发令牌的界面在 **`/mcp-access`**。服务端把 `/mcp` 整段交给了 MCP 传输层，页面不能待在那个路径上——刷新就会变成 405。契约护栏（`tests/lib/spa-routes.js`）会拦住这种撞车。
 
 ### 公开投递 API（API Key 鉴权）
 
@@ -344,12 +417,12 @@ WEBHOOK_ALLOW_PRIVATE_TARGETS=0   # 设为 1 才允许 Webhook 投递到内网�
 ## 🧪 测试
 
 ```bash
-npm test              # 契约护栏 + 后端 8 个 suite
-npm run test:contract # 静态路由核对 + 运行时集成（33 项）
+npm test              # 契约护栏 + 后端 9 个 suite
+npm run test:contract # 静态路由核对 + 运行时集成（40 项）
 npm run test:backend  # 后端 suite
 ```
 
-契约护栏会把后端 43 条路由与前端 61 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程。
+契约护栏会把后端 56 条路由与前端 72 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程——包括租户门与平台门这两扇门，以及平台层自己的统计、账号目录与审计。
 护栏需要 **Node.js ≥ 22.15**。
 
 ## 🔒 安全建议
@@ -371,7 +444,7 @@ npm run test:backend  # 后端 suite
 - [ ] 对象存储后端（S3 / MinIO / 阿里 OSS）
 - [ ] 图片 AI 标注（自动打标签）
 - [ ] 公开访问短链（带签名 + 过期）
-- [ ] 多租户支持
+- [x] 多租户支持（租户管理、租户级权限、MCP 接入）
 
 ## 📄 License
 
