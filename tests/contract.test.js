@@ -90,6 +90,10 @@ import {
   findFrontendLinkFixtureProblems,
 } from './lib/frontend-link-fixtures.js';
 import { findSpecProblems, readSpec, specOperations } from './lib/openapi-contract.js';
+import {
+  SOURCE_SCAN_CASES,
+  findSourceScanFixtureProblems,
+} from './lib/source-scan-fixtures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -130,6 +134,22 @@ function checkBaseUrl(violations) {
  * @returns {{callSites: number, backendRoutes: number, dynamic: number, forwarded: number}}
  */
 function runStaticLint() {
+  // Every scanner in this guard reads the masked copy of the source. A mask
+  // that stops too early does not report a problem — it reports *less*, and
+  // a check that looks at half a file looks exactly like a file with nothing
+  // in it. The fixtures pin the mask's behaviour in both directions.
+  const scanFixtureProblems = findSourceScanFixtureProblems();
+  assert.deepEqual(
+    scanFixtureProblems,
+    [],
+    `the source scanner mis-read a fixture:\n` +
+      scanFixtureProblems.map((v) => `  - ${v}`).join('\n'),
+  );
+  console.log(
+    `source masking OK — comments, strings and regular expressions are blanked ` +
+      `out correctly (${SOURCE_SCAN_CASES.length} fixtures)`,
+  );
+
   const { routes, problems, mounts, uiRoutes } = parseBackendRoutes({
     serverFile: BACKEND_SRC,
     routesDir: BACKEND_ROUTES,

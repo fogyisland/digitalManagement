@@ -19,7 +19,104 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Replace every comment body and every string body with spaces.
+ * The keywords after which a `/` starts a regular expression rather than a
+ * division.
+ *
+ * `return /x/` is a regular expression; `a / b` is a division. The two look
+ * the same to a scanner that only sees the slash, and reading the wrong one
+ * means skipping the wrong span of the file.
+ */
+const REGEX_AFTER_KEYWORD = new Set([
+  'return',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'new',
+  'delete',
+  'void',
+  'case',
+  'do',
+  'else',
+  'yield',
+  'await',
+]);
+
+/**
+ * Can a regular expression start at this `/`?
+ *
+ * The answer is decided by what comes before it: after an identifier, a
+ * number, a closing bracket or a closing parenthesis, a slash divides. After
+ * an operator, an opening bracket, a comma or a keyword that expects a value,
+ * it starts a regular expression.
+ *
+ * @param {string} source
+ * @param {number} index the index of the `/`
+ * @returns {boolean}
+ */
+function regexCanStartAt(source, index) {
+  let i = index - 1;
+  while (i >= 0 && /\s/.test(source[i])) i -= 1;
+  if (i < 0) return true;
+  const ch = source[i];
+  if (/[A-Za-z0-9_$]/.test(ch)) {
+    // An identifier: a regular expression only follows one of the keywords
+    // that expect a value. `return` is one, `total` is not.
+    let start = i;
+    while (start >= 0 && /[A-Za-z0-9_$]/.test(source[start])) start -= 1;
+    const word = source.slice(start + 1, i + 1);
+    return REGEX_AFTER_KEYWORD.has(word);
+  }
+  // `)` and `]` and `}` end a value, so a slash after them divides.
+  return !')]}'.includes(ch);
+}
+
+/**
+ * Return the index just past the regular expression that starts at `start`.
+ *
+ * The body may hold escapes and character classes, and the closing slash may
+ * not be the one that looks like it closes — `/[/]/` is one literal, not two.
+ *
+ * @param {string} source
+ * @param {number} start index of the opening `/`
+ * @returns {number} index just past the literal, or -1 when there is none
+ */
+export function skipRegex(source, start) {
+  let i = start + 1;
+  let inClass = false;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '\\') {
+      i += 2;
+      continue;
+    }
+    // A regular expression cannot span lines — if it did, the slash was a
+    // division after all.
+    if (ch === '\n') return -1;
+    if (inClass) {
+      if (ch === ']') inClass = false;
+      i += 1;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '/') {
+      i += 1;
+      // The flags.
+      while (i < source.length && /[a-z]/.test(source[i])) i += 1;
+      return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Replace every comment body, every string body and every regular expression
+ * body with spaces.
  *
  * Newlines inside a masked region are preserved so line numbers computed on
  * the masked copy still match the original file.
@@ -60,6 +157,22 @@ export function maskSource(source) {
       out += '  ';
       i += 2;
       continue;
+    }
+    if (ch === '/' && regexCanStartAt(source, i)) {
+      // A regular expression is masked like a string, and for the same
+      // reason: its body may hold a quote (`/["\\]/`), and a quote the
+      // scanner reads as the start of a string makes it swallow the rest of
+      // the file. Every route registered after such a literal stopped being
+      // seen — the checks reported less than they looked at, which is worse
+      // than reporting nothing.
+      const end = skipRegex(source, i);
+      if (end !== -1) {
+        out += '/';
+        for (let k = i + 1; k < end - 1; k += 1) out += source[k] === '\n' ? '\n' : ' ';
+        out += source[end - 1];
+        i = end;
+        continue;
+      }
     }
     if (ch === "'" || ch === '"' || ch === '`') {
       const end = skipQuoted(source, i);
