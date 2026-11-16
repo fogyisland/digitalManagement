@@ -41,11 +41,13 @@ const { hasConfiguration, resolveInitToken } = require('./lib/init');
 const { reloadConfiguration } = require('./lib/reload');
 const { createUploader, uploadErrorHandler, reapExpiredUploadSessions } = require('./lib/upload');
 const { createRequestLogger, pruneRequestLogs } = require('./lib/request-log');
+const { allowedOrigins, refreshSettings } = require('./lib/platform-settings');
 const { asyncHandler } = require('./lib/http');
 const { replayPendingManifestWrites, writeManifestIndex } = require('./lib/manifest');
 
 const createAuthRouter = require('./routes/auth');
 const createAuditRouter = require('./routes/audit');
+const createSettingsRouter = require('./routes/settings');
 const createUsersRouter = require('./routes/users');
 const createTenantsRouter = require('./routes/tenants');
 const createPlatformRouter = require('./routes/platform');
@@ -121,6 +123,10 @@ const ready = (async () => {
   await ensureDatabase(config);
   await initSchema(db);
   seededAdmin = (await seedDatabase(db, config.storageDir)).admin;
+  // The platform's own settings: the address this instance is reached at and
+  // the origins allowed to call it. The CORS check reads them from memory, so
+  // they have to be in memory before the first request arrives.
+  await refreshSettings(db);
   // The manifest index is written on every boot, not only when the process
   // is started as the entry point: the backend is also embedded (the test
   // suite boots this module directly), and a missing index makes
@@ -175,11 +181,24 @@ const app = express();
 // The application serves its own frontend from its own port, so a browser
 // never needs a cross-origin call to it. The allow-list is therefore empty
 // by default: a deployment that *is* called from another origin has to say
-// so (`CORS_ORIGINS`), because an open policy hands every origin on the
-// internet the same access to the API.
-if (config.corsOrigins.length > 0) {
-  app.use(cors({ origin: config.corsOrigins, credentials: false }));
-}
+// so, because an open policy hands every origin on the internet the same
+// access to the API.
+//
+// The list is a platform setting rather than an environment variable, so it
+// is read from the database and can change while the instance runs. The check
+// runs on every request, so it reads the last known value from memory rather
+// than asking the database each time.
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // A request without an Origin header is not a browser asking from
+      // another site — a curl, a server-to-server call, the same origin.
+      if (!origin) return callback(null, true);
+      return callback(null, allowedOrigins().includes(origin));
+    },
+    credentials: false,
+  }),
+);
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -229,6 +248,9 @@ app.use(
       // The wizard brought the schema with it, so the request log has a table
       // to write into from here on.
       requestLogReady = true;
+      // The wizard may have written the platform settings as well, so the
+      // address and the cross-origin list are read again.
+      await refreshSettings(db);
       // The wizard kept a connection of its own while it configured the
       // instance; the application now has its own pool on the same schema,
       // so the wizard's is one too many.
@@ -245,6 +267,9 @@ app.use(
   // admin API because it is the tenant's own record of what its people
   // changed — the platform layer has its own, one layer up.
   createAuditRouter({ db }),
+  // The address this instance is reached at. Everybody may read it — the
+  // interface shows it — but only the platform administrator may change it.
+  createSettingsRouter({ db }),
   createUsersRouter({ db }),
   // The tenant registry. Only a platform administrator may read it — it is
   // the list they pick from when they choose which tenant to act in, and

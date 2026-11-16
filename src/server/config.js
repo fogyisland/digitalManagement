@@ -90,25 +90,16 @@ function ttlToSeconds(ttl) {
  *   refreshTokenTtl: string,
  *   accessTokenTtlSeconds: number,
  *   refreshTokenTtlSeconds: number,
- *   appBaseUrl: string,
  *   seedSampleAssets: boolean,
  *   usesDefaultSecret: boolean,
  *   requestLogEnabled: boolean,
- *   requestLogRetentionDays: number,
- *   corsOrigins: string[]
+ *   requestLogRetentionDays: number
  * }}
  */
 function getConfig() {
   const accessTokenTtl = process.env.ACCESS_TOKEN_TTL || DEFAULT_ACCESS_TOKEN_TTL;
   const refreshTokenTtl = process.env.REFRESH_TOKEN_TTL || DEFAULT_REFRESH_TOKEN_TTL;
   const jwtSecret = process.env.JWT_SECRET || DEV_PLACEHOLDER_SECRET;
-  // The origins that may call this instance from a browser. The application
-  // serves its own frontend from its own port, so the default is "nobody
-  // else" — a cross-origin deployment has to say so explicitly.
-  const corsOrigins = String(process.env.CORS_ORIGINS || '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
   return {
     port: parseInt(process.env.PORT || '8000', 10),
     host: process.env.HOST || '0.0.0.0',
@@ -147,8 +138,6 @@ function getConfig() {
     refreshTokenTtl,
     accessTokenTtlSeconds: ttlToSeconds(accessTokenTtl),
     refreshTokenTtlSeconds: ttlToSeconds(refreshTokenTtl),
-    appBaseUrl: process.env.APP_BASE_URL || '',
-    corsOrigins,
   };
 }
 

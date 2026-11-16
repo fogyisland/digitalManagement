@@ -410,6 +410,32 @@ export interface PlatformTrafficReport {
   routes: PlatformTrafficRoute[]
 }
 
+/**
+ * 实例自己的设置。
+ *
+ * `access_domain` 是这个实例对外的地址 —— 服务端生成的绝对链接、界面上的
+ * 「API 基础地址」都从它来。`cors_origins` 是允许跨域调用这个实例的来源；
+ * 访问域名本身永远在允许之列，因为界面就是从那里来的。
+ */
+export interface PlatformSettings {
+  /** 对外地址，例如 `https://dam.example.com`。留空表示按请求推导。 */
+  access_domain: string
+  /** 允许跨域调用的来源。 */
+  cors_origins: string[]
+  /** 最后一次修改时间。 */
+  updated_at: string | null
+}
+
+/**
+ * 每个登录账号都能读到的那部分实例设置。
+ *
+ * 只有对外地址：跨域白名单是平台管理员的事，而且它说的是「谁可以调用这个
+ * 实例」，不是「这个实例在哪里」。
+ */
+export interface InstanceSettings {
+  access_domain: string
+}
+
 /* --------------------------------------------------------------------------
    MCP — 每个账户的 AI 接入凭证
    -------------------------------------------------------------------------- */

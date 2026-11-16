@@ -6,6 +6,7 @@ import type {
   PlatformAuditListResponse,
   PlatformRequest,
   PlatformRequestListResponse,
+  PlatformSettings,
   PlatformStats,
   PlatformTrafficReport,
 } from '@/types'
@@ -84,4 +85,16 @@ export const platformApi = {
         ? { tenant_id: params.tenantId, hours: params.hours, buckets: params.buckets }
         : undefined,
     ),
+
+  /** `GET /platform/settings` — the instance's own settings. */
+  settings: () => apiGet<PlatformSettings>('/platform/settings'),
+
+  /**
+   * `PUT /platform/settings` — change them.
+   *
+   * The address and the cross-origin list take effect as soon as this returns;
+   * neither needs a restart.
+   */
+  saveSettings: (change: { access_domain?: string; cors_origins?: string[] }) =>
+    apiPut<PlatformSettings>('/platform/settings', change),
 }

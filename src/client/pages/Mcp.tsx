@@ -27,6 +27,7 @@ import {
 } from 'antd';
 import { CopyOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { mcpApi } from '@/api/mcp';
+import { settingsApi } from '@/api/settings';
 import { useAuthStore } from '@/stores/authStore';
 import type { McpScope, McpToken } from '@/types';
 import { FormModal, PageHeader, Panel, Pill, StateBlock } from '@/components/ui';
@@ -70,6 +71,10 @@ export default function Mcp(): JSX.Element {
   const [error, setError] = useState<Error | undefined>();
   const [createOpen, setCreateOpen] = useState(false);
   const [issued, setIssued] = useState<{ token: string; name: string } | null>(null);
+  // The address the instance answers at. The snippet an MCP client is given
+  // has to work wherever it is pasted, so it uses the platform's own access
+  // domain rather than the address this browser happened to arrive at.
+  const [accessDomain, setAccessDomain] = useState('');
   const [createForm] = Form.useForm<CreateTokenValues>();
 
   const allowed = useMemo<McpScope[]>(
@@ -95,6 +100,24 @@ export default function Mcp(): JSX.Element {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    // The instance's own address, so the snippet below points at where the
+    // instance lives rather than at where this browser is.
+    let cancelled = false;
+    void settingsApi
+      .get()
+      .then((settings) => {
+        if (!cancelled) setAccessDomain(settings.access_domain);
+      })
+      .catch(() => {
+        // A failure here costs nothing: the snippet falls back to the address
+        // the browser arrived at, which is right for a client on this machine.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const onCreate = async (values: CreateTokenValues): Promise<void> => {
     const created = await mcpApi.create({ name: values.name, scopes: values.scopes });
     setCreateOpen(false);
@@ -113,8 +136,10 @@ export default function Mcp(): JSX.Element {
   /**
    * The client configuration an MCP client needs.
    *
-   * The URL is the instance the browser is talking to, so the snippet works
-   * without being edited.
+   * The URL is the address the instance answers at — the platform's own access
+   * domain when one is set, and the browser's address otherwise — so the
+   * snippet works without being edited, and it keeps working after it is
+   * pasted into a client that is not this browser.
    *
    * `/mcp` is the protocol's own endpoint — the path an MCP client is
    * configured with. It is not this page's path: the page is at `/mcp-access`,
@@ -122,7 +147,8 @@ export default function Mcp(): JSX.Element {
    */
   const config = useMemo(() => {
     if (!issued) return '';
-    const url = `${window.location.origin}/mcp`;
+    const base = accessDomain || window.location.origin;
+    const url = `${base.replace(/\/+$/, '')}/mcp`;
     return JSON.stringify(
       {
         mcpServers: {
@@ -135,7 +161,7 @@ export default function Mcp(): JSX.Element {
       null,
       2,
     );
-  }, [issued]);
+  }, [issued, accessDomain]);
 
   const copy = async (text: string, what: string): Promise<void> => {
     try {

@@ -11,6 +11,7 @@
  */
 
 const { signedStorageUrl } = require('./storage-url');
+const { absoluteUrl, currentSettings } = require('./platform-settings');
 
 /**
  * Build a browser-reachable URL for a file stored under STORAGE_DIR.
@@ -21,6 +22,10 @@ const { signedStorageUrl } = require('./storage-url');
  * all — an image request cannot carry an `Authorization` header — and it is
  * also what stops the URL from working for another tenant's file.
  *
+ * It is absolute when the platform says what address this instance answers
+ * at: a link handed to an MCP client or copied into another system has to
+ * work there, not only in the browser that asked for it.
+ *
  * @param {string|null|undefined} relativePath e.g. "thumbnails/abc.webp"
  * @param {string|null|undefined} tenantId the tenant that owns the file
  * @returns {string|null}
@@ -29,7 +34,7 @@ function storageUrl(relativePath, tenantId) {
   if (!relativePath) return null;
   const normalized = String(relativePath).split(/[\\/]+/).filter(Boolean).join('/');
   if (!normalized) return null;
-  return signedStorageUrl(normalized, tenantId);
+  return absoluteUrl(signedStorageUrl(normalized, tenantId), currentSettings());
 }
 
 /**

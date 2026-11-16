@@ -310,7 +310,7 @@ export async function importFrontendModule(srcDir, relativePath) {
  * @param {string} method
  * @param {string} urlPath
  * @param {{headers?: Record<string, string>, body?: unknown}} [options]
- * @returns {Promise<{status: number, body: any}>}
+ * @returns {Promise<{status: number, body: any, headers: Record<string, string>}>}
  */
 export async function rawRequest(origin, method, urlPath, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -334,7 +334,13 @@ export async function rawRequest(origin, method, urlPath, options = {}) {
       parsed = text;
     }
   }
-  return { status: response.status, body: parsed };
+  // The headers travel with the answer: the cross-origin check has to look at
+  // `Access-Control-Allow-Origin`, and the status alone says nothing about it.
+  return {
+    status: response.status,
+    body: parsed,
+    headers: Object.fromEntries(response.headers.entries()),
+  };
 }
 
 /**
@@ -414,7 +420,7 @@ export const TINY_PNG = Buffer.from([
  * @returns {Promise<Record<string, any>>}
  */
 export async function loadFrontendApis(srcDir) {
-  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform, audit] =
+  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform, audit, settings] =
     await Promise.all([
       importFrontendModule(srcDir, 'api/client.ts'),
       importFrontendModule(srcDir, 'api/auth.ts'),
@@ -429,6 +435,7 @@ export async function loadFrontendApis(srcDir) {
       importFrontendModule(srcDir, 'api/mcp.ts'),
       importFrontendModule(srcDir, 'api/platform.ts'),
       importFrontendModule(srcDir, 'api/audit.ts'),
+      importFrontendModule(srcDir, 'api/settings.ts'),
     ]);
 
   return {
@@ -447,6 +454,8 @@ export async function loadFrontendApis(srcDir) {
     platformApi: platform.platformApi,
     // The tenant's own trail — what its people changed.
     auditApi: audit.auditApi,
+    // The instance's own settings — the address it answers at.
+    settingsApi: settings.settingsApi,
     // The tenant context store — the piece the UI picks a tenant through.
     tenantStore: tenantStore.useTenantStore,
     // The import / job helpers live outside the `assetsApi` object — they are

@@ -268,9 +268,10 @@ function createAssetsRouter({ db, uploader }) {
       return res.status(404).json({ code: 'NOT_FOUND', message: 'Asset not found', request_id: nanoid() });
     }
     const extension = path.extname(asset.original_name || '') || '';
-    const baseUrl = getConfig().appBaseUrl;
     // The file is served through the signed URL route, so the link carries
-    // the signature that proves the server issued it for this asset.
+    // the signature that proves the server issued it for this asset. The URL
+    // is absolute when the platform says what address this instance answers
+    // at, so the link works outside the browser that asked for it.
     const signedUrl = storageUrl(
       path.posix.join('originals', `${asset.id}${extension}`),
       asset.tenant_id,
@@ -287,7 +288,7 @@ function createAssetsRouter({ db, uploader }) {
       metadata: asset.metadata_json ? safeParse(asset.metadata_json) : null,
       original_path: `originals/${asset.id}${extension}`,
       thumbnail_path: asset.thumbnail_path || null,
-      public_url: signedUrl ? `${baseUrl}${signedUrl}` : null,
+      public_url: signedUrl,
       created_at: asset.created_at,
     });
   }));

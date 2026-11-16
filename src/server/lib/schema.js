@@ -86,8 +86,31 @@ const TENANTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS tenants (
  * building the tables twice would cost a table rebuild per table on every
  * fresh install.
  */
+/**
+ * The platform's own settings.
+ *
+ * One row, one purpose: the address this instance is reached at and the
+ * origins that are allowed to call it. It belongs to the platform layer and
+ * to no tenant — the `tenants` table is the one that says what a tenant is,
+ * and this table says what the *instance* is.
+ *
+ * The settings live in the database rather than in the environment because
+ * they are settings an operator changes while the instance is running: an
+ * address that needs a restart to change is an address nobody changes.
+ */
+const PLATFORM_SETTINGS_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS platform_settings (
+  id ${ID} NOT NULL PRIMARY KEY,
+  access_domain VARCHAR(255) NOT NULL DEFAULT '',
+  cors_origins TEXT,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  updated_by ${ID}
+) ENGINE=InnoDB ${CHARSET}`;
+
 const BASE_SCHEMA_SQL = [
   TENANTS_TABLE_SQL,
+
+  PLATFORM_SETTINGS_TABLE_SQL,
 
   `CREATE TABLE IF NOT EXISTS users (
   id ${ID} NOT NULL PRIMARY KEY,

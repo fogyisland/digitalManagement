@@ -6,13 +6,15 @@
  * sends the wrong path, the wrong field name or the wrong verb, the check
  * fails here — not in the browser.
  *
- * The checks live in seven files, one per area of the system:
+ * The checks live in eight files, one per area of the system:
  *
  *   - `runtime-checks-identity.js`     — login, tokens, list envelopes, catalogue
  *   - `runtime-checks-tenants.js`      — the tenant registry, the two doors
  *   - `runtime-checks-platform.js`     — the layer above the tenants
  *   - `runtime-checks-assets.js`       — the asset lifecycle, including the
  *                                        three deletion states
+ *   - `runtime-checks-settings.js`     — the address the instance answers at,
+ *                                        and who may call it
  *   - `runtime-checks-integrations.js` — API keys, delivery, chunked upload,
  *                                        import-by-URL, ComfyUI, webhooks
  *   - `runtime-checks-init.js`         — the first-boot wizard
@@ -23,6 +25,9 @@
  * `ctx.state` is that shared scratch space. The order is not arbitrary —
  * the session checks come last because they end the session, and the
  * webhook check comes after every check that produces an asset event.
+ *
+ * The settings checks sit after the asset checks because one of them looks at
+ * the links to a file, and there has to be a file to look at.
  *
  * Negative cases go through `rawRequest` rather than the axios instance: a
  * rejected axios call triggers the client's 401 handler, which clears the
@@ -35,6 +40,7 @@ import { initChecks } from './runtime-checks-init.js';
 import { integrationChecks } from './runtime-checks-integrations.js';
 import { platformChecks } from './runtime-checks-platform.js';
 import { sessionChecks } from './runtime-checks-session.js';
+import { settingsChecks } from './runtime-checks-settings.js';
 import { tenantChecks } from './runtime-checks-tenants.js';
 
 /**
@@ -81,6 +87,7 @@ export const runtimeChecks = [
   ...tenantChecks,
   ...platformChecks,
   ...assetChecks,
+  ...settingsChecks,
   ...integrationChecks,
   ...initChecks,
   ...sessionChecks,

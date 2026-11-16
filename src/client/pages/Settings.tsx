@@ -14,6 +14,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { App, Button, Form, Input, Space, Typography } from 'antd';
 import { KeyOutlined, LockOutlined, ApiOutlined } from '@ant-design/icons';
 import { authApi } from '@/api/auth';
+import { settingsApi } from '@/api/settings';
 import { useAuthStore } from '@/stores/authStore';
 import { useTenantStore } from '@/stores/tenantStore';
 import { PageHeader, Panel, Pill } from '@/components/ui';
@@ -87,6 +88,10 @@ export default function Settings(): JSX.Element {
   const loadTenants = useTenantStore((s) => s.loadTenants);
   const [pwForm] = Form.useForm<PasswordFormValues>();
   const [loading, setLoading] = useState(false);
+  // The address the instance answers at. The platform administrator sets it;
+  // everybody else reads it, because the links shown here have to work where
+  // they are pasted, not only in the browser that asked for them.
+  const [accessDomain, setAccessDomain] = useState('');
 
   // A platform administrator belongs to no tenant, so the page shows the one
   // they are currently acting in — the name if the registry has been read,
@@ -98,6 +103,26 @@ export default function Settings(): JSX.Element {
     if (!isSuperadmin) return;
     void loadTenants();
   }, [isSuperadmin, loadTenants]);
+
+  useEffect(() => {
+    // The address is a setting like any other: it is read from the server, not
+    // taken from the browser's location, because the browser may have arrived
+    // here through an address that is not the one the instance calls itself.
+    let cancelled = false;
+    void settingsApi
+      .get()
+      .then((settings) => {
+        if (!cancelled) setAccessDomain(settings.access_domain);
+      })
+      .catch(() => {
+        // A failure here is not worth a message: the page still shows the
+        // address the browser arrived at, which is the truth about this
+        // session even if it is not the instance's own address.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onChangePassword = async (): Promise<void> => {
     let values: PasswordFormValues;
@@ -119,7 +144,9 @@ export default function Settings(): JSX.Element {
     }
   };
 
-  const baseUrl = window.location.origin;
+  // The instance's own address when one is set, and the address the browser
+  // arrived at otherwise.
+  const baseUrl = accessDomain || window.location.origin;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.space[5] }}>
@@ -238,6 +265,9 @@ export default function Settings(): JSX.Element {
           <Field label="系统名称">数字资产管理系统</Field>
           <Field label="版本" mono>
             v1.0.0
+          </Field>
+          <Field label="访问域名" mono>
+            {accessDomain || '未设置（按请求推导）'}
           </Field>
           <Field label="API 基础地址">
             <span style={MONO_CODE_STYLE}>{baseUrl}/api</span>

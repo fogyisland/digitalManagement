@@ -30,10 +30,13 @@ const SUBJECT_USERNAME = 'contract-platform-subject';
 /**
  * Sign in as the platform administrator and hand the session back afterwards.
  *
+ * Exported because the settings checks run later, in their own file, and need
+ * the same two doors.
+ *
  * @param {object} ctx
  * @returns {Promise<void>}
  */
-async function asPlatformAdministrator(ctx) {
+export async function asPlatformAdministrator(ctx) {
   const login = await ctx.authApi.platformLogin(SUPERADMIN_USERNAME, SUPERADMIN_PASSWORD);
   ctx.client.setToken(login.access_token);
   ctx.client.setRefreshToken(login.refresh_token);
@@ -46,7 +49,7 @@ async function asPlatformAdministrator(ctx) {
  * @param {object} ctx
  * @returns {Promise<void>}
  */
-async function asSeededAdministrator(ctx) {
+export async function asSeededAdministrator(ctx) {
   const back = await ctx.authApi.login(ADMIN_USERNAME, ADMIN_PASSWORD);
   ctx.client.setToken(back.access_token);
   ctx.client.setRefreshToken(back.refresh_token);

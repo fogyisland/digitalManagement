@@ -16,6 +16,7 @@ import {
   DashboardOutlined,
   ExportOutlined,
   FileTextOutlined,
+  GlobalOutlined,
   LineChartOutlined,
   LogoutOutlined,
   TeamOutlined,
@@ -30,6 +31,7 @@ import Overview from './platform/Overview';
 import Accounts from './platform/Accounts';
 import Audit from './platform/Audit';
 import Requests from './platform/Requests';
+import Settings from './platform/Settings';
 
 const { Text } = Typography;
 
@@ -177,6 +179,16 @@ export default function Platform(): JSX.Element {
               key: 'mcp',
               label: 'MCP 令牌',
               children: <Mcp />,
+            },
+            {
+              key: 'settings',
+              label: (
+                <span>
+                  <GlobalOutlined style={{ marginRight: 6 }} />
+                  设置
+                </span>
+              ),
+              children: <Settings />,
             },
           ]}
         />
