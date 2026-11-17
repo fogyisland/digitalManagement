@@ -1,0 +1,164 @@
+# =============================================================================
+# 数字资产管理系统 (DAM) — Nginx 反向代理配置样例
+#
+# 这份文件是《用 Nginx 部署》指南的可直接改用版本。改三处：
+#   1. server_name        你的域名
+#   2. ssl_certificate    你的证书路径
+#   3. client_max_body_size  按你的上传上限调
+#
+# 应用只占**一个端口**，所以**不需要**为 /api、/storage、/mcp 分别写 location：
+# 一条 location / 就够。下面给了两种模式，用其中一种，把另一种整段注释掉。
+#
+# 改完先验证再重载：
+#   nginx -t && nginx -s reload
+#
+# 完整说明见同目录的 docs/DEPLOY-NGINX.md
+# =============================================================================
+
+
+# =============================================================================
+# 模式 A（推荐）：全部转给应用
+#
+# 应用自己发静态文件、自己发 API、自己管缓存策略。Nginx 只做 TLS 与转发。
+# 好处是缓存规则只有一份（应用里那份），不会出现两边不一致。
+# =============================================================================
+
+# HTTP 只做一件事：把明文请求引到 HTTPS。
+server {
+    listen 80;
+    server_name dam.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    # nginx ≥ 1.25.1 用这一行；更老的版本写 `listen 443 ssl http2;`
+    http2 on;
+    server_name dam.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/dam.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dam.example.com/privkey.pem;
+
+    # 整个请求体的上限。必须 ≥ 应用的两道上限（默认 2048 MB），
+    # 否则 Nginx 会先答 413，而应用连发生了什么都不知道。
+    client_max_body_size 2100m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+
+        # 真实 IP 与协议。审计日志、调用日志、ingest 记录都靠这几行，
+        # 缺了它们，nginx 后面的一切都记成 127.0.0.1 / http。
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # 上传：请求体直接流向应用，不在 Nginx 再落一份盘；
+        # 大文件上传与缩略图生成都可能超过默认的 60 秒。
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+
+        # MCP（/mcp）是无会话的 streamable HTTP。关掉缓冲更稳，
+        # 普通请求不受影响。
+        proxy_buffering off;
+    }
+}
+
+
+# =============================================================================
+# 模式 B：Nginx 自己发前端构建产物，其余转给应用
+#
+# 只有在你想让 Nginx 直接读盘时才用。**三条规则必须和应用完全一致**，
+# 少一条就会把应用刚修好的问题原样带回来：
+#
+#   1. 外壳（index.html）永不缓存 —— 它点名哈希 chunk，缓存它，
+#      浏览器就会拿着上一个构建的外壳去要已经删掉的 chunk。
+#   2. 带哈希的 chunk 长期缓存 —— 名字随内容变，缓存多久都安全。
+#   3. 兜底规则与应用一致 —— 「像文件的路径不是路由」。
+#
+# 排除项 api / storage / mcp / docs / redoc 是应用在兜底之前就自己认领的路径。
+# 少排除一个，Nginx 就会把它当成页面路径答成 index.html，接口文档与 MCP 接入
+# 会一起坏掉。(?:/|$) 是边界：/mcp 认领 /mcp 与 /mcp/…，但不认领 /mcp-access
+# （那是应用自己的页面路由）。
+#
+# 目录假设是 /srv/dam/dist —— 改成你的实际路径。
+# =============================================================================
+#
+# server {
+#     listen 80;
+#     server_name dam.example.com;
+#     return 301 https://$host$request_uri;
+# }
+#
+# server {
+#     listen 443 ssl;
+#     http2 on;
+#     server_name dam.example.com;
+#
+#     ssl_certificate     /etc/letsencrypt/live/dam.example.com/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/dam.example.com/privkey.pem;
+#
+#     client_max_body_size 2100m;
+#
+#     root /srv/dam/dist;
+#     index index.html;
+#
+#     # --- 1. 外壳永不缓存 ---------------------------------------------------
+#     location = /index.html {
+#         add_header Cache-Control "no-cache";
+#     }
+#
+#     # --- 2. 带哈希的 chunk 长期缓存 -----------------------------------------
+#     location /assets/ {
+#         add_header Cache-Control "public, max-age=31536000, immutable";
+#         try_files $uri =404;
+#     }
+#
+#     # --- 3. 兜底规则必须和应用一致 ------------------------------------------
+#     location ~ ^/(?!api(?:/|$)|storage(?:/|$)|mcp(?:/|$)|docs(?:/|$)|redoc(?:/|$))(?!.*\.[a-zA-Z0-9]+$) {
+#         try_files $uri /index.html;
+#     }
+#
+#     # --- 其余全部转给应用 ---------------------------------------------------
+#     # /api/*（管理 API、投递 API、健康检查）、/storage/*（签名文件）、
+#     # /mcp、/docs、/redoc、/openapi.json 都必须走应用。
+#     #
+#     # /storage/ 绝不能由 Nginx 直接从磁盘读：那是一条签名路由，
+#     # 签名与租户绑定，直接读盘等于把所有人的原图公开。
+#     location / {
+#         proxy_pass http://127.0.0.1:8000;
+#         proxy_http_version 1.1;
+#         proxy_set_header Host              $host;
+#         proxy_set_header X-Real-IP         $remote_addr;
+#         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#         proxy_set_header X-Forwarded-Host  $host;
+#         proxy_request_buffering off;
+#         proxy_read_timeout 300s;
+#         proxy_send_timeout 300s;
+#         proxy_buffering off;
+#     }
+# }
+
+
+# =============================================================================
+# 三件必须一起做的事 —— 少一件，部署就是半成品
+#
+# 1. 应用那边的 TRUST_PROXY
+#        在 .env 里加：TRUST_PROXY=loopback
+#        不开的话，审计日志、调用日志、平台审计里每条记录的 IP 都是
+#        127.0.0.1 —— 一条指不出人的审计链。
+#
+# 2. 平台控制台 → 设置 → 访问域名
+#        填 https://dam.example.com（带 https）。
+#        应用的签名文件链接是绝对地址，前端的 <img src> 直接用它，
+#        填错就是一片裂图。
+#
+# 3. 8000 端口不要对外
+#        只让 Nginx 能访问它：
+#          ufw deny 8000/tcp        # 或 iptables / firewalld 对应规则
+#        直连端口又开了 TRUST_PROXY 的话，任何人都能在审计记录里写成别人。
+# =============================================================================

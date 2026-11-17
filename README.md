@@ -191,6 +191,26 @@ docker compose up -d --build
 2. 应用的 `.env` 里设 `TRUST_PROXY=loopback`（否则审计日志里的 IP 全是 `127.0.0.1`）；
 3. 平台控制台「设置」里的**访问域名**填成对外的 `https://` 地址（签名文件链接按它生成）。
 
+### 方式五：发布包（上传到裸服务器）
+
+要部署到一台只有 Node.js 与 MySQL 的机器上，不带 Docker：
+
+```bash
+npm run release          # 构建前端，并把可发布内容整理到 up/
+npm run release:verify   # 真的把 up/ 启动一遍，逐项验证
+```
+
+`up/` 就是**要上传到服务器的全部内容**：前端构建产物、服务端运行时、依赖清单、配置模板、可写目录骨架、建库 SQL、Nginx 配置样例和部署说明。
+
+```bash
+scp -r up/* deploy@server:/srv/dam/
+ssh deploy@server 'cd /srv/dam && npm ci --omit=dev && ./start.sh'
+```
+
+包里**故意不带** `node_modules`（`sharp` 与 `bcryptjs` 带原生二进制，必须在目标机上编译）和 `.env`（里面是密钥）。完整的部署步骤、systemd 单元、上线自检清单和备份方案在 `up/DEPLOY.md`。
+
+打包器会**拒绝用陈旧的前端构建产物出包** —— `dist/` 比源码旧就报错，而不是打一个看起来完整、其实发的是上一版代码的包。
+
 ### 开发模式（可选）
 
 前端改动需要热更新时，用 Vite 的 dev server，它把 `/api` 代理到 8000：
@@ -451,11 +471,17 @@ DigitalManagement/
 ├── tsconfig.json             # 前端类型
 ├── Dockerfile                # 多阶段构建：前端构建 + 后端运行
 ├── docker-compose.yml        # 单容器部署
+├── scripts/
+│   ├── build-release.mjs     # 打包器：把可发布内容整理到 up/
+│   ├── create-database.sql   # 建库与建账号
+│   └── release/              # 发布包里的运维文件与验证脚本
 ├── start.bat / start.sh      # 一键启动脚本
 └── package.json              # 前后端共用的唯一依赖清单
 ```
 
 > 前后端在**同一个 `package.json`** 里，共用一份 `node_modules`：服务端依赖与前端依赖装在一起，没有第二个清单要维护。
+
+> `up/` 是发布包的输出目录，**不入版本库**。用 `npm run release` 重新生成。
 
 ## ⚙️ 关键配置（.env）
 

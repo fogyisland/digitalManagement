@@ -59,6 +59,11 @@ storage/ui-probe*/
 .fix-*.js
 .tmp-inspect/
 
+# The release bundle (scripts/build-release.mjs writes it). It is a build
+# output — it holds a copy of dist/ and of the runtime — so it is not tracked.
+# Rebuild it with: node scripts/build-release.mjs
+up/
+
 # Virtual environments (not used by this project, kept out of the repo)
 venv/
 .venv/

@@ -16,7 +16,9 @@
     "tenant:create": "node src/server/scripts/tenant.js",
     "test": "npm run test:contract && npm run test:backend",
     "test:contract": "node tests/contract.test.js",
-    "test:backend": "node tests/backend/run.js"
+    "test:backend": "node tests/backend/run.js",
+    "release": "node scripts/build-release.mjs",
+    "release:verify": "node scripts/release/verify-release.mjs"
   },
   "dependencies": {
     "@ant-design/charts": "^2.2.4",
