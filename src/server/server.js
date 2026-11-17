@@ -334,8 +334,23 @@ app.use('/storage', createStorageRouter({ db }));
 // --- Static: frontend build (if exists) -------------------------------------
 const FRONTEND_DIST = path.join(config.rootDir, 'dist');
 if (fs.existsSync(FRONTEND_DIST)) {
-  app.use(express.static(FRONTEND_DIST, { maxAge: '1h' }));
-  app.get(/^(?!\/api|\/storage).*/, (_req, res) => {
+  app.use(express.static(FRONTEND_DIST, {
+    maxAge: '1h',
+    setHeaders(res, filePath) {
+      // The shell names the hashed chunks. A cached copy of it points at files
+      // the next build deleted, and the application then breaks with "Failed
+      // to fetch dynamically imported module" — so the shell is never cached.
+      // The chunks themselves may be cached: their name changes when they do.
+      if (path.basename(filePath) === 'index.html') {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }));
+  // The fallback answers the application's own routes. A path that looks like
+  // a file is not a route: answering it with the shell would turn a missing
+  // chunk into a 200 carrying HTML, and the browser would report a failed
+  // dynamic import instead of an honest 404.
+  app.get(/^(?!\/api|\/storage)(?!.*\.[a-zA-Z0-9]+$).*/, (_req, res) => {
     res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
   });
   console.log('[static] serving frontend from', FRONTEND_DIST);

@@ -44,6 +44,12 @@
  * and the `file` vs `files` multipart mismatch — both of which are silent
  * at compile time and fatal at runtime.
  *
+ * The instance serves the pages from the same port, so the way it delivers
+ * the front end is part of the contract too: the shell must not be cached
+ * (it names the hashed chunks), the chunks must be, and a chunk that is gone
+ * must answer 404 rather than a page of HTML. Those checks need the built
+ * front end and step aside — loudly — on a tree that has never been built.
+ *
  * The user's live `backend/data/dam.db` is never touched: the server is
  * spawned with `DB_PATH` and `STORAGE_DIR` pointing at a fresh temp dir.
  */
@@ -68,6 +74,7 @@ import {
   waitForHealth,
 } from './lib/runtime.js';
 import { runRuntimeChecks } from './lib/runtime-checks.js';
+import { runStaticHostingChecks } from './lib/runtime-checks-static.js';
 import { loadInitSteps } from './lib/runtime-checks-init.js';
 import { describeExemptions, findUnscopedQueries } from './lib/tenant-lint.js';
 import { findComposedClauseProblems } from './lib/tenant-clause-fixtures.js';
@@ -491,6 +498,20 @@ async function runRuntimeIntegration() {
     };
     const passed = await runRuntimeChecks(context);
     console.log(`runtime integration OK — ${passed.length} checks passed`);
+
+    // The instance also serves the pages, from the very same port. Those
+    // checks need the built front end, so they step aside on a tree that has
+    // never been built — and they say so rather than passing quietly.
+    const hosting = await runStaticHostingChecks({
+      origin: server.origin,
+      distDir: path.join(REPO_ROOT, 'dist'),
+    });
+    if (hosting.skipped) {
+      console.log(`static hosting SKIPPED — ${hosting.reason}`);
+    } else {
+      console.log(`static hosting OK — ${hosting.passed.length} checks passed`);
+    }
+
     return passed.length;
   } catch (error) {
     console.error('--- backend log ---');
