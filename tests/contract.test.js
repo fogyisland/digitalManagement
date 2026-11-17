@@ -82,6 +82,8 @@ import { findSpaRouteCollisions, parseSpaRoutes } from './lib/spa-routes.js';
 import { SPA_ROUTE_CASES, findSpaRouteFixtureProblems } from './lib/spa-route-fixtures.js';
 import { findHintTriggerProblems } from './lib/hint-trigger.js';
 import { HINT_TRIGGER_CASES, findHintTriggerFixtureProblems } from './lib/hint-trigger-fixtures.js';
+import { findErrorSurfaceProblems } from './lib/error-surface.js';
+import { ERROR_SURFACE_CASES, findErrorSurfaceFixtureProblems } from './lib/error-surface-fixtures.js';
 import {
   MINIMUM_LINKS,
   findDeadLinkProblems,
@@ -363,6 +365,31 @@ function runStaticLint() {
   console.log(
     'hint trigger OK — a disabled button still has something that can explain it ' +
       `(${HINT_TRIGGER_CASES.length} fixtures)`,
+  );
+
+  // The backend speaks English; the front end speaks Chinese — and the
+  // translation happens in exactly one place, `describeError`. A page that
+  // shows the error without going through it puts the raw sentence back in
+  // front of the reader. The rule reads the syntax tree and checks that the
+  // caught error only ever reaches the reader through a translator; the
+  // fixtures pin it in both directions.
+  const errorSurfaceFixtureProblems = findErrorSurfaceFixtureProblems();
+  assert.deepEqual(
+    errorSurfaceFixtureProblems,
+    [],
+    `the error-surface rule mis-read a fixture:\n` +
+      errorSurfaceFixtureProblems.map((v) => `  - ${v}`).join('\n'),
+  );
+  const errorSurfaceProblems = findErrorSurfaceProblems({ srcDir: SRC_DIR, repoRoot: REPO_ROOT });
+  assert.deepEqual(
+    errorSurfaceProblems,
+    [],
+    `error-surface lint failed (an error may only reach the reader through ` +
+      `describeError()):\n${errorSurfaceProblems.map((v) => `  - ${v}`).join('\n')}`,
+  );
+  console.log(
+    'error surface OK — every backend error reaches the reader in Chinese ' +
+      `(${ERROR_SURFACE_CASES.length} fixtures)`,
   );
 
   if (skippedLinks.length > 0) {
