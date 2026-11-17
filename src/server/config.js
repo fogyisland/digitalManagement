@@ -71,6 +71,37 @@ function ttlToSeconds(ttl) {
 }
 
 /**
+ * Read the `TRUST_PROXY` setting.
+ *
+ * Behind a reverse proxy the socket address is the proxy's own address, so
+ * every audit row, every request-log row and every ingest record would say
+ * `127.0.0.1` — an audit trail that cannot name who did what. Trusting the
+ * `X-Forwarded-For` header fixes that, and it is also a way to lie about it:
+ * whoever can set the header names somebody else. So it is off by default, and
+ * the operator has to say which peers may be believed.
+ *
+ *   `off` (the default) — trust nobody; the socket address is the address.
+ *   `loopback` — believe the header when the peer is on the loopback
+ *                 interface. This is the usual deployment: the proxy runs on
+ *                 the same host, so only a loopback peer can set the header.
+ *   `true` — believe anybody who can reach the port. Only safe when the port
+ *            is not reachable from outside the machine.
+ *   a number — believe that many hops.
+ *
+ * @param {string | undefined} raw the configured value, if any
+ * @returns {boolean | string | number} what Express should believe
+ */
+function parseTrustProxy(raw) {
+  const value = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
+  if (value === '' || value === 'off' || value === 'false' || value === '0') return false;
+  if (value === 'loopback' || value === 'linklocal' || value === 'uniquelocal') return value;
+  if (value === 'true' || value === 'on' || value === '1') return true;
+  const hops = Number.parseInt(value, 10);
+  if (Number.isFinite(hops) && hops > 0) return hops;
+  return false;
+}
+
+/**
  * Build the effective configuration from the current environment.
  *
  * @returns {{
@@ -134,6 +165,7 @@ function getConfig() {
     // turn it off.
     requestLogEnabled: process.env.REQUEST_LOG_ENABLED !== '0',
     requestLogRetentionDays: parseInt(process.env.REQUEST_LOG_RETENTION_DAYS || '30', 10),
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     accessTokenTtl,
     refreshTokenTtl,
     accessTokenTtlSeconds: ttlToSeconds(accessTokenTtl),
@@ -141,4 +173,4 @@ function getConfig() {
   };
 }
 
-module.exports = { getConfig, ttlToSeconds, DEV_PLACEHOLDER_SECRET };
+module.exports = { getConfig, ttlToSeconds, parseTrustProxy, DEV_PLACEHOLDER_SECRET };

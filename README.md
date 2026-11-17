@@ -179,6 +179,18 @@ docker compose up -d --build
 单个容器跑完整系统（前端 + API + MySQL + 文件存储），应用同样只暴露 8000 端口。
 数据库与文件分别落在 `mysql_data` / `dam_storage` 两个 volume 里。
 
+### 方式四：Nginx / Caddy 反向代理
+
+生产环境通常要在前面放一层反向代理来终止 TLS。**这个应用只占一个端口**，所以代理只需要一个 upstream。
+
+完整的配置、缓存规则、上传体积、真实 IP 与排查清单见 **[`docs/DEPLOY-NGINX.md`](docs/DEPLOY-NGINX.md)**。
+
+三件必须做的事：
+
+1. 代理要转发 `X-Forwarded-For` 与 `X-Forwarded-Proto`；
+2. 应用的 `.env` 里设 `TRUST_PROXY=loopback`（否则审计日志里的 IP 全是 `127.0.0.1`）；
+3. 平台控制台「设置」里的**访问域名**填成对外的 `https://` 地址（签名文件链接按它生成）。
+
 ### 开发模式（可选）
 
 前端改动需要热更新时，用 Vite 的 dev server，它把 `/api` 代理到 8000：
@@ -346,7 +358,9 @@ curl -X POST http://localhost:8000/mcp \
 
 `POST /api/ingest/v1/nodes/register` 的响应里带 `platform_url`：平台自己的访问地址（控制台「设置」里填的那个）。节点拿它覆盖自己手里的地址，就不用在节点里填正式网址了。
 
-仓库里带着一套现成的 ComfyUI 节点包，在 [`comfyui-node/`](comfyui-node/)：两个节点——**DAM 接入**（问清楚平台在哪儿并登记自己）和 **DAM 推送**（把图片和工作流一起推过去），输出接输入即可。它的 README 写了安装与配置。
+仓库里带着一套现成的 ComfyUI 节点包，在 [`comfyui-node/`](comfyui-node/)：两个节点——**DAM 接入**（问清楚平台在哪儿并登记自己）和 **DAM 推送**（把图片和工作流一起推过去），输出接输入即可。
+
+安装、配置（环境变量 / 配置文件 / 节点输入框）、租户归属、工作流示例、节点记住的三样东西、以及它实际发出的那几个请求，都写在 [`comfyui-node/README.md`](comfyui-node/README.md) 里。节点只用 Python 标准库，不碰 ComfyUI 的环境。
 
 ### 调用示例（curl）
 
@@ -429,7 +443,9 @@ DigitalManagement/
 ├── storage/                  # 上传文件（不入库）
 ├── public/                   # 静态资源
 ├── docs/
-│   └── ARCHITECTURE.md
+│   ├── ARCHITECTURE.md       # 架构设计
+│   └── DEPLOY-NGINX.md       # 用 Nginx / Caddy 部署（反向代理）
+├── comfyui-node/             # ComfyUI 自定义节点（见其 README）
 ├── index.html                # 前端入口
 ├── vite.config.ts            # 前端构建
 ├── tsconfig.json             # 前端类型
@@ -466,6 +482,7 @@ REQUEST_LOG_RETENTION_DAYS=30     # 请求日志保留多少天；过期的行�
 STORAGE_URL_TTL_SECONDS=3600     # 签名文件链接的有效期（前端 <img src> 用）
 INIT_TOKEN=                      # 向导令牌；留空则每次启动生成并打印到控制台
 WEBHOOK_ALLOW_PRIVATE_TARGETS=0   # 设为 1 才允许 Webhook 投递到内网地址（默认拒绝）
+TRUST_PROXY=off                   # 挂在反向代理后面时设为 loopback，让审计日志记下真实 IP
 ```
 
 > **访问域名与跨域白名单不在 `.env` 里。** 它们以前是 `APP_BASE_URL` / `CORS_ORIGINS` 两个环境变量，改一次要重启一次；现在是平台控制台的「设置」页签里的两个字段，**保存即生效**。访问域名是这个实例对外的地址（服务端生成的绝对链接、界面上的「API 基础地址」、MCP 客户端要填的地址都从它来）；跨域白名单是允许从别的来源用浏览器调用这个实例的页面，访问域名本身永远在允许之列。
@@ -480,11 +497,11 @@ WEBHOOK_ALLOW_PRIVATE_TARGETS=0   # 设为 1 才允许 Webhook 投递到内网�
 
 ```bash
 npm test              # 契约护栏 + 后端 9 个 suite
-npm run test:contract # 静态路由核对 + 运行时集成（40 项）
+npm run test:contract # 静态核对 + 运行时集成 + 静态托管（78 项）
 npm run test:backend  # 后端 suite
 ```
 
-契约护栏会把后端 56 条路由与前端 72 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程——包括租户门与平台门这两扇门，以及平台层自己的统计、账号目录与审计。
+契约护栏会把后端 64 条路由与前端 81 个调用点逐一核对，任何一个对不上都直接失败；运行期在临时数据库上启动真实后端，用前端自己的 API 模块跑一遍完整流程——包括租户门与平台门这两扇门，以及平台层自己的统计、账号目录与审计。静态托管那一组问的是**运行中的实例**：外壳有没有被缓存、消失的 chunk 是不是诚实地答 404。
 护栏需要 **Node.js ≥ 22.15**。
 
 ## 🔒 安全建议
@@ -492,7 +509,7 @@ npm run test:backend  # 后端 suite
 1. **修改默认密码**：首次登录后立即修改
 2. **修改 JWT_SECRET**：生产环境必须使用 32+ 字符随机字符串
 3. **按系统申请 API Key**：在「集成」页为每个外部系统单独申请，用完即撤；向导不再发放默认 Key
-4. **启用 HTTPS**：通过 Nginx/Caddy 反向代理
+4. **启用 HTTPS**：通过 Nginx/Caddy 反向代理，配置见 [`docs/DEPLOY-NGINX.md`](docs/DEPLOY-NGINX.md)；代理后面记得设 `TRUST_PROXY=loopback`，否则审计日志里的 IP 全是 `127.0.0.1`
 5. **定期备份**：MySQL 数据库 + `storage/`
 6. **限制存储目录**：通过文件系统权限限制 `storage/` 仅服务进程可写
 7. **URL 导入已内置 SSRF 防护**：内网与回环地址会被拒绝

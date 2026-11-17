@@ -180,6 +180,15 @@ const ready = (async () => {
 
 // --- App --------------------------------------------------------------------
 const app = express();
+
+// Behind a reverse proxy the socket address is the proxy's own, so every
+// audit row, every request-log row and every ingest record would name
+// `127.0.0.1` instead of the person who did the thing. Whether the server may
+// believe `X-Forwarded-For` is the operator's decision — believing it wrongly
+// lets whoever can reach the port name somebody else — so it is a setting,
+// and it is off unless it is turned on.
+app.set('trust proxy', config.trustProxy);
+
 // The application serves its own frontend from its own port, so a browser
 // never needs a cross-origin call to it. The allow-list is therefore empty
 // by default: a deployment that *is* called from another origin has to say

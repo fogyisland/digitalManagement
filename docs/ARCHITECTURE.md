@@ -143,13 +143,17 @@ http://localhost:8000/api/health             → 健康检查
 http://localhost:8000/storage/*              → 原图 / 缩略图
 ```
 
-SPA 深链接（`/assets/123`）由一个排除 `/api` 与 `/storage` 的兜底路由回落到 `index.html`，因此直接刷新任意页面都不会 404。
+SPA 深链接（`/library/123`）由一个排除 `/api` 与 `/storage` 的兜底路由回落到 `index.html`，因此直接刷新任意页面都不会 404。
+
+但**像文件一样的路径不回落**：`/assets/index-abc.js` 是构建出来的 chunk，不是路由；下一次构建把它删掉之后，这条路径必须诚实地答 404，而不是答一页 HTML —— 后者会让浏览器报「动态导入失败」，把一件过期页面的事说成网络故障。外壳（`index.html`）永远不缓存：它正是**点名那些 chunk 的那个文件**，缓存它等于让浏览器拿着上一个构建的名单去要文件。
 
 优势：
 - 无 CORS 跨域问题（前端与 API 同源）
 - 部署极简：单进程 + 一个 MySQL 实例
 - 反向代理友好（一个 upstream）
 - 静态资源可挂 CDN：把 `/assets/` 指到 CDN 即可
+
+放在 Nginx / Caddy 后面时的完整配置（缓存规则、上传体积、真实 IP、排查清单）见 [`DEPLOY-NGINX.md`](DEPLOY-NGINX.md)。
 
 ## 安全设计
 
