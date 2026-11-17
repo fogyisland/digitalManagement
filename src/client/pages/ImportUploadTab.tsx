@@ -44,7 +44,8 @@ import {
   uploadAssetOne,
   type UploadAssetMeta,
 } from '@/api/assets';
-import { Panel } from '@/components/ui';
+import { Hint, Panel } from '@/components/ui';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/errors';
 import { formatBytes } from '@/utils/format';
@@ -95,6 +96,8 @@ function pickFromDataTransfer(dt: DataTransfer | null): File[] {
 export default function ImportUploadTab(): JSX.Element {
   const navigate = useNavigate();
   const { message } = App.useApp();
+  // 平台管理员没选租户时，资产没有落点——后端会拒（`TENANT_REQUIRED`）。
+  const { canWrite, hint } = useTenantWrite();
   const [form] = Form.useForm<FormValues>();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [picked, setPicked] = useState<PickedFile | null>(null);
@@ -289,19 +292,21 @@ export default function ImportUploadTab(): JSX.Element {
         )}
 
         <Space>
-          <Button
-            type="primary"
-            htmlType="submit"
-            // The metadata form lives in the right-hand column; the HTML5
-            // `form` attribute links the button to it so pressing Enter in
-            // a metadata field submits the upload.
-            form={META_FORM_ID}
-            icon={<CloudUploadOutlined />}
-            loading={submitting}
-            disabled={!picked}
-          >
-            上传并提交
-          </Button>
+          <Hint title={canWrite ? null : hint}>
+            <Button
+              type="primary"
+              htmlType="submit"
+              // The metadata form lives in the right-hand column; the HTML5
+              // `form` attribute links the button to it so pressing Enter in
+              // a metadata field submits the upload.
+              form={META_FORM_ID}
+              icon={<CloudUploadOutlined />}
+              loading={submitting}
+              disabled={!picked || !canWrite}
+            >
+              上传并提交
+            </Button>
+          </Hint>
           <Button onClick={onReset} disabled={submitting}>
             清空
           </Button>

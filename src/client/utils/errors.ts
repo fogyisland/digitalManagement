@@ -32,9 +32,29 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * 后端给出的错误码，和它们该被读成什么。
+ *
+ * 后端说英语，前端说中文。有些错误码是前端要**分支**的——选中的租户没了
+ * 就该把选择丢掉，平台管理员没选租户就不该写入——翻译成一句话反而把分支
+ * 的理由抹掉了。所以这些码各自带一句中文：`describeError` 先看码，再看那句
+ * 英文。
+ *
+ * 放在这里而不是每个页面里，是因为这句话该**全站一个说法**：同一个拒绝，
+ * 在分类页和资产库页读到两套措辞，人会以为是两回事。
+ */
+const CODE_MESSAGES: Record<string, string> = {
+  TENANT_REQUIRED:
+    '写入前要先选中一个租户：平台管理员的写入必须落到某一个租户，请在左上角的租户选择器里选一个。',
+  NO_SUCH_TENANT: '选中的租户已经不存在了，请在左上角重新选择一个。',
+  TENANT_SUSPENDED: '这个租户已被停用，写入被拒绝。',
+};
+
+/**
  * Pull a human-readable message out of whatever the transport threw.
  *
  * Lookup order (first non-empty wins):
+ *   0. `response.data.code`          — a refusal the backend named; it has its
+ *                                     own wording (see `CODE_MESSAGES`)
  *   1. `response.data.detail`        — FastAPI / our own error middleware
  *   2. `response.data.message`       — our own error middleware
  *   3. `response.data.response.message` — nested shape used by some handlers
@@ -53,6 +73,12 @@ export function describeError(e: unknown, fallback: string): string {
   const data = asRecord(response?.data);
 
   if (data) {
+    // A named refusal carries its own wording. The code is what the caller
+    // branches on; the sentence is what a person reads.
+    const code = typeof data.code === 'string' ? data.code : '';
+    const coded = code ? CODE_MESSAGES[code] : undefined;
+    if (coded) return coded;
+
     const nested = asRecord(data.response);
     const candidates = [data.detail, data.message, nested?.message];
     for (const candidate of candidates) {

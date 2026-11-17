@@ -80,6 +80,8 @@ import {
 } from './lib/init-token-storage-fixtures.js';
 import { findSpaRouteCollisions, parseSpaRoutes } from './lib/spa-routes.js';
 import { SPA_ROUTE_CASES, findSpaRouteFixtureProblems } from './lib/spa-route-fixtures.js';
+import { findHintTriggerProblems } from './lib/hint-trigger.js';
+import { HINT_TRIGGER_CASES, findHintTriggerFixtureProblems } from './lib/hint-trigger-fixtures.js';
 import {
   MINIMUM_LINKS,
   findDeadLinkProblems,
@@ -335,6 +337,34 @@ function runStaticLint() {
     `internal-link lint OK — ${links.length} link(s), all of them lead somewhere ` +
       `(${FRONTEND_LINK_CASES.length} fixtures)`,
   );
+
+  // A button that is greyed out and cannot say why is a dead end: the reader
+  // sees a disabled control and no reason. The browser gives a disabled form
+  // control no mouse events, so a tooltip attached to the control itself
+  // disappears exactly when it is needed. The rule renders the shared
+  // primitive and looks at where antd actually attaches the tooltip — the
+  // fixtures pin it in both directions.
+  const hintFixtureProblems = findHintTriggerFixtureProblems();
+  assert.deepEqual(
+    hintFixtureProblems,
+    [],
+    `the hint-trigger rule mis-read a fixture:\n` +
+      hintFixtureProblems.map((v) => `  - ${v}`).join('\n'),
+  );
+  const hintProblems = findHintTriggerProblems({
+    repoRoot: REPO_ROOT,
+    hintFile: path.join(SRC_DIR, 'components', 'ui', 'Hint.tsx'),
+  });
+  assert.deepEqual(
+    hintProblems,
+    [],
+    `hint-trigger lint failed:\n${hintProblems.map((v) => `  - ${v}`).join('\n')}`,
+  );
+  console.log(
+    'hint trigger OK — a disabled button still has something that can explain it ' +
+      `(${HINT_TRIGGER_CASES.length} fixtures)`,
+  );
+
   if (skippedLinks.length > 0) {
     console.log(
       `${skippedLinks.length} link(s) are not internal literals and are NOT statically checked:`,

@@ -39,8 +39,10 @@ import {
 } from '@ant-design/icons';
 import { API_KEY_SCOPES, API_KEY_SCOPE_LABELS, apiKeysApi } from '@/api/apikeys';
 import ApiKeyRow from '@/components/integrations/ApiKeyRow';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
 import {
   FormModal,
+  Hint,
   Panel,
   StateBlock,
   type StateBlockStatus,
@@ -84,6 +86,9 @@ interface IntegrationsApiKeysProps {
 export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JSX.Element {
   const { apiKeys, status, error, onReload, createOpen, onCreateRequest, onCreateClose } = props;
   const { message } = App.useApp();
+
+  // 平台管理员没选租户时，密钥没有落点——后端会拒（`TENANT_REQUIRED`）。
+  const { canWrite, hint } = useTenantWrite();
 
   const [createdPayload, setCreatedPayload] = useState<ApiKeyCreated | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
@@ -331,14 +336,17 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
             >
               API Key
             </Title>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={onCreateRequest}
-              aria-label="新建 API Key"
-            >
-              新建 API Key
-            </Button>
+            <Hint title={hint}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!canWrite}
+                onClick={onCreateRequest}
+                aria-label="新建 API Key"
+              >
+                新建 API Key
+              </Button>
+            </Hint>
           </div>
 
           {status === 'loading' && <StateBlock status="loading" rows={3} />}
@@ -359,14 +367,17 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
               title="还没有 API Key"
               description="创建一个 API Key，让外部系统可以访问资产。"
               action={
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={onCreateRequest}
-                  aria-label="新建 API Key"
-                >
-                  新建 API Key
-                </Button>
+                <Hint title={hint}>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    disabled={!canWrite}
+                    onClick={onCreateRequest}
+                    aria-label="新建 API Key"
+                  >
+                    新建 API Key
+                  </Button>
+                </Hint>
               }
             />
           )}
@@ -379,6 +390,8 @@ export default function IntegrationsApiKeys(props: IntegrationsApiKeysProps): JS
                   apiKey={k}
                   toggling={togglingId === k.id}
                   revoking={revokingId === k.id}
+                  canWrite={canWrite}
+                  hint={hint}
                   onEdit={openEdit}
                   onCopy={(text, label) => void onCopy(text, label)}
                   onToggleActive={(key, next) => void onToggleActive(key, next)}

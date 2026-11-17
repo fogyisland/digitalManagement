@@ -26,9 +26,9 @@ import { useNavigate } from 'react-router-dom';
 import { usersApi } from '@/api/users';
 import { useAuthStore } from '@/stores/authStore';
 import { useTenantStore } from '@/stores/tenantStore';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
 import type { PageResponse, User, UserRole, UserStatus } from '@/types';
-import { PageHeader, Panel, Pill, StateBlock } from '@/components/ui';
-import { FormModal } from '@/components/ui';
+import { FormModal, Hint, PageHeader, Panel, Pill, StateBlock } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
 import { formatDate } from '@/utils/format';
 import { toError } from '@/utils/errors';
@@ -91,6 +91,9 @@ export default function Users(): JSX.Element {
    * 取一次，否则表格里还是上一个租户的人。
    */
   const tenantId = useTenantStore((s) => s.tenantId);
+
+  // 平台管理员没选租户时，新建用户没有落点——后端会拒（`TENANT_REQUIRED`）。
+  const { canWrite, hint } = useTenantWrite();
 
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
@@ -218,13 +221,16 @@ export default function Users(): JSX.Element {
               }}
               style={{ width: 240 }}
             />
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => setCreateOpen(true)}
-            >
-              新建用户
-            </Button>
+            <Hint title={hint}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!canWrite}
+                onClick={() => setCreateOpen(true)}
+              >
+                新建用户
+              </Button>
+            </Hint>
           </Space>
         }
       />
@@ -325,35 +331,54 @@ export default function Users(): JSX.Element {
                 width: 160,
                 render: (_: unknown, u: User) => (
                   <Space size={4}>
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={<EditOutlined />}
-                      aria-label={`编辑 ${u.username}`}
-                      onClick={() => onEdit(u)}
-                    />
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={<KeyOutlined />}
-                      onClick={() => setResetOpen(u)}
-                      aria-label={`重置 ${u.username} 的密码`}
-                    />
-                    <Popconfirm
-                      title="确认删除？"
-                      okText="删除"
-                      cancelText="取消"
-                      onConfirm={() => void onDelete(u.id)}
-                    >
+                    <Hint title={canWrite ? '编辑' : hint}>
                       <Button
                         size="small"
                         type="text"
-                        danger
-                        icon={<DeleteOutlined />}
-                        disabled={u.is_superuser}
-                        aria-label={`删除 ${u.username}`}
+                        icon={<EditOutlined />}
+                        disabled={!canWrite}
+                        aria-label={`编辑 ${u.username}`}
+                        onClick={() => onEdit(u)}
                       />
-                    </Popconfirm>
+                    </Hint>
+                    <Hint title={canWrite ? '重置密码' : hint}>
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<KeyOutlined />}
+                        disabled={!canWrite}
+                        onClick={() => setResetOpen(u)}
+                        aria-label={`重置 ${u.username} 的密码`}
+                      />
+                    </Hint>
+                    {/* 删除按钮住在 Popconfirm 里面，而 Popconfirm 要一个 DOM
+                        节点挂载——所以提示包的是外面那层 span，而不是插在两者
+                        中间。 */}
+                    <Hint
+                      title={
+                        canWrite
+                          ? u.is_superuser
+                            ? '平台管理员不能被删除'
+                            : '删除'
+                          : hint
+                      }
+                    >
+                      <Popconfirm
+                        title="确认删除？"
+                        okText="删除"
+                        cancelText="取消"
+                        onConfirm={() => void onDelete(u.id)}
+                      >
+                        <Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          disabled={!canWrite || u.is_superuser}
+                          aria-label={`删除 ${u.username}`}
+                        />
+                      </Popconfirm>
+                    </Hint>
                   </Space>
                 ),
               },

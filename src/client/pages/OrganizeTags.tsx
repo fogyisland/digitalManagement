@@ -24,11 +24,10 @@ import {
   Form,
   Input,
   Popconfirm,
-  Tooltip,
 } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { tagsApi } from '@/api/tags';
-import { FormModal, Pill, StateBlock, resolveDataStatus } from '@/components/ui';
+import { FormModal, Hint, Pill, StateBlock, resolveDataStatus } from '@/components/ui';
 import type { Tag } from '@/types';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/errors';
@@ -132,10 +131,14 @@ interface OrganizeTagsProps {
   loading: boolean;
   error?: Error;
   onReload: () => Promise<void>;
+  /** 现在能不能写——平台管理员没选租户时不能写。 */
+  canWrite: boolean;
+  /** 不能写的时候，怎么才能写。 */
+  hint: string | null;
 }
 
 export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
-  const { tags, loading, error, onReload } = props;
+  const { tags, loading, error, onReload, canWrite, hint } = props;
   const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState<boolean>(false);
   const [editing, setEditing] = useState<Tag | null>(null);
@@ -197,9 +200,16 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
           title="暂无标签"
           description="标签用于给资产打标记。"
           action={
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新增标签
-            </Button>
+            <Hint title={hint}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!canWrite}
+                onClick={openCreate}
+              >
+                新增标签
+              </Button>
+            </Hint>
           }
         />
       )}
@@ -237,32 +247,39 @@ export default function OrganizeTags(props: OrganizeTagsProps): JSX.Element {
                   <span title="使用次数" style={{ marginLeft: 'auto' }}>
                     <Pill value={tag.usage_count} tone="accent" />
                   </span>
-                  <Tooltip title="编辑">
+                  <Hint title={canWrite ? '编辑' : hint}>
                     <Button
                       size="small"
                       type="text"
                       icon={<EditOutlined />}
+                      disabled={!canWrite}
                       onClick={() => openEdit(tag)}
                       aria-label={`编辑标签 ${tag.name}`}
                     />
-                  </Tooltip>
-                  <Popconfirm
-                    title="确认删除该标签？"
-                    description="资产本身保留，仅解除标签绑定。"
-                    okText="删除"
-                    cancelText="取消"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={() => void onDelete(tag)}
-                  >
-                    <Button
-                      size="small"
-                      type="text"
-                      danger
-                      loading={deletingId === tag.id}
-                      icon={<DeleteOutlined />}
-                      aria-label={`删除标签 ${tag.name}`}
-                    />
-                  </Popconfirm>
+                  </Hint>
+                  {/* 删除按钮住在 Popconfirm 里面，而 Popconfirm 要一个 DOM
+                      节点挂载——所以提示包的是外面那层 span，而不是插在两者
+                      中间。 */}
+                  <Hint title={canWrite ? null : hint}>
+                    <Popconfirm
+                      title="确认删除该标签？"
+                      description="资产本身保留，仅解除标签绑定。"
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => void onDelete(tag)}
+                    >
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        disabled={!canWrite}
+                        loading={deletingId === tag.id}
+                        icon={<DeleteOutlined />}
+                        aria-label={`删除标签 ${tag.name}`}
+                      />
+                    </Popconfirm>
+                  </Hint>
                 </div>
                 <Pill value={tag.slug} tone="neutral" mono />
               </div>

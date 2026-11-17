@@ -21,7 +21,8 @@ import {
 import { LinkOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { importUrlByUrl } from '@/api/assets';
-import { Panel } from '@/components/ui';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
+import { Hint, Panel } from '@/components/ui';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/errors';
 
@@ -42,6 +43,8 @@ interface FormValues {
 export default function ImportUrlTab(): JSX.Element {
   const navigate = useNavigate();
   const { message } = App.useApp();
+  // 平台管理员没选租户时，资产没有落点——后端会拒（`TENANT_REQUIRED`）。
+  const { canWrite, hint } = useTenantWrite();
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState<boolean>(false);
 
@@ -111,9 +114,16 @@ export default function ImportUrlTab(): JSX.Element {
           {/* Not wrapped in a `Form.Item` with a blank label — a screen
               reader announced an empty label for this button group. */}
           <Space>
-            <Button type="primary" htmlType="submit" loading={submitting}>
-              抓取并导入
-            </Button>
+            <Hint title={canWrite ? null : hint}>
+              <Button
+                type="primary"
+                htmlType="submit"
+                loading={submitting}
+                disabled={!canWrite}
+              >
+                抓取并导入
+              </Button>
+            </Hint>
             <Button
               onClick={() => form.resetFields()}
               disabled={submitting}

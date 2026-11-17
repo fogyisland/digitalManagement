@@ -41,8 +41,10 @@ import {
 } from '@ant-design/icons';
 import { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS, webhooksApi } from '@/api/webhooks';
 import WebhookRow from '@/components/integrations/WebhookRow';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
 import {
   FormModal,
+  Hint,
   Panel,
   StateBlock,
   type StateBlockStatus,
@@ -94,6 +96,9 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
     onCreateClose,
   } = props;
   const { message } = App.useApp();
+
+  // 平台管理员没选租户时，Webhook 没有落点——后端会拒（`TENANT_REQUIRED`）。
+  const { canWrite, hint } = useTenantWrite();
 
   const [createdPayload, setCreatedPayload] = useState<WebhookCreated | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
@@ -366,14 +371,17 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
             >
               Webhook
             </Title>
-            <Button
-              type="primary"
-              icon={<LinkOutlined />}
-              onClick={onCreateRequest}
-              aria-label="新建 Webhook"
-            >
-              新建 Webhook
-            </Button>
+            <Hint title={hint}>
+              <Button
+                type="primary"
+                icon={<LinkOutlined />}
+                disabled={!canWrite}
+                onClick={onCreateRequest}
+                aria-label="新建 Webhook"
+              >
+                新建 Webhook
+              </Button>
+            </Hint>
           </div>
 
           {status === 'loading' && <StateBlock status="loading" rows={3} />}
@@ -394,14 +402,17 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
               title="还没有 Webhook 端点"
               description="新建一个端点，资产变更时即可推送事件。"
               action={
-                <Button
-                  type="primary"
-                  icon={<LinkOutlined />}
-                  onClick={onCreateRequest}
-                  aria-label="新建 Webhook"
-                >
-                  新建 Webhook
-                </Button>
+                <Hint title={hint}>
+                  <Button
+                    type="primary"
+                    icon={<LinkOutlined />}
+                    disabled={!canWrite}
+                    onClick={onCreateRequest}
+                    aria-label="新建 Webhook"
+                  >
+                    新建 Webhook
+                  </Button>
+                </Hint>
               }
             />
           )}
@@ -414,6 +425,8 @@ export default function IntegrationsWebhooks(props: IntegrationsWebhooksProps): 
                   endpoint={ep}
                   toggling={togglingId === ep.id}
                   removing={removingId === ep.id}
+                  canWrite={canWrite}
+                  hint={hint}
                   onEdit={openEdit}
                   onToggleActive={(endpoint, next) => void onToggleActive(endpoint, next)}
                   onRemove={(endpoint) => void onRemove(endpoint)}

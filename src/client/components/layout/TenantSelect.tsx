@@ -79,9 +79,33 @@ export default function TenantSelect(): JSX.Element {
     );
   }
 
+  /**
+   * 平台模式下，把「写入前要先选租户」摆在明处。
+   *
+   * 这句话以前只是一句 tooltip：要指准那个小箭头才看得见，而看不见的
+   * 规则等于没有规则——平台管理员在「全部租户」下点新建，撞上的是一句
+   * 英文的拒绝，而不是一条告诉他该怎么做的说明。规则就写在选择器底下，
+   * 因为改它的地方也在这里。
+   */
+  const platformWide = selected === ALL_TENANTS;
+
   return (
-    <Tooltip title="不选租户时看到的是整个平台；写入前要先选中一个租户">
-      <div>{select}</div>
-    </Tooltip>
+    <div>
+      <Tooltip title="不选租户时看到的是整个平台；写入前要先选中一个租户">
+        <div>{select}</div>
+      </Tooltip>
+      {platformWide ? (
+        <div
+          style={{
+            marginTop: tokens.space[1],
+            fontSize: tokens.fontSize.xs,
+            lineHeight: 1.5,
+            color: tokens.color.textMuted,
+          }}
+        >
+          写入前需先选租户
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -16,7 +16,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { Button, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useApi } from '@/api/hooks';
-import { PageHeader, Panel, resolveDataStatus } from '@/components/ui';
+import { Hint, PageHeader, Panel, resolveDataStatus } from '@/components/ui';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
 import type { Category, Tag } from '@/types';
 import { tokens } from '@/theme/tokens';
 import CategoryModal from './CategoryModal';
@@ -36,6 +37,10 @@ interface CategoryModalState {
 export default function Organize(): JSX.Element {
   const categoriesState = useApi<Category[]>('/categories');
   const tagsState = useApi<Tag[]>('/tags');
+
+  // 平台管理员没选租户时，写入没有落点——后端会拒（`TENANT_REQUIRED`）。
+  // 与其把一个注定失败的按钮摆在那儿，不如把它按住，并说清楚要怎么做。
+  const { canWrite, hint } = useTenantWrite();
 
   const categories = categoriesState.data;
   const tags = tagsState.data;
@@ -101,14 +106,17 @@ export default function Organize(): JSX.Element {
           </>
         }
         extra={
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => openCreate(null)}
-            aria-label="新增根分类"
-          >
-            新增根分类
-          </Button>
+          <Hint title={hint}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              disabled={!canWrite}
+              onClick={() => openCreate(null)}
+              aria-label="新增根分类"
+            >
+              新增根分类
+            </Button>
+          </Hint>
         }
       />
 
@@ -132,6 +140,8 @@ export default function Organize(): JSX.Element {
             onReload={reloadCategories}
             onCreate={openCreate}
             onEdit={openEdit}
+            canWrite={canWrite}
+            hint={hint}
           />
         </Panel>
 
@@ -145,6 +155,8 @@ export default function Organize(): JSX.Element {
             loading={tagsState.loading}
             error={tagsState.error}
             onReload={reloadTags}
+            canWrite={canWrite}
+            hint={hint}
           />
         </Panel>
       </div>

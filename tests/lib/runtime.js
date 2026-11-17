@@ -420,7 +420,26 @@ export const TINY_PNG = Buffer.from([
  * @returns {Promise<Record<string, any>>}
  */
 export async function loadFrontendApis(srcDir) {
-  const [client, auth, assets, users, tags, categories, apikeys, webhooks, tenants, tenantStore, mcp, platform, audit, settings, comfyNodes, format] =
+  const [
+    client,
+    auth,
+    assets,
+    users,
+    tags,
+    categories,
+    apikeys,
+    webhooks,
+    tenants,
+    tenantStore,
+    mcp,
+    platform,
+    audit,
+    settings,
+    comfyNodes,
+    format,
+    errors,
+    tenantWrite,
+  ] =
     await Promise.all([
       importFrontendModule(srcDir, 'api/client.ts'),
       importFrontendModule(srcDir, 'api/auth.ts'),
@@ -438,6 +457,8 @@ export async function loadFrontendApis(srcDir) {
       importFrontendModule(srcDir, 'api/settings.ts'),
       importFrontendModule(srcDir, 'api/comfyNodes.ts'),
       importFrontendModule(srcDir, 'utils/format.ts'),
+      importFrontendModule(srcDir, 'utils/errors.ts'),
+      importFrontendModule(srcDir, 'hooks/useTenantWrite.ts'),
     ]);
 
   return {
@@ -463,6 +484,12 @@ export async function loadFrontendApis(srcDir) {
     // The one place the interface turns a timestamp into something a person
     // reads — the time helpers the whole front end shares.
     formatUtils: format,
+    // The one place the interface turns a failure into something a person
+    // reads — including the refusals the backend named.
+    errorUtils: errors,
+    // The rule for "can this be written right now", and the judgment behind
+    // it as a plain function.
+    tenantWrite: tenantWrite.tenantWriteState,
     // The tenant context store — the piece the UI picks a tenant through.
     tenantStore: tenantStore.useTenantStore,
     // The import / job helpers live outside the `assetsApi` object — they are

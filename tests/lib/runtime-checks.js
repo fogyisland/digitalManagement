@@ -6,11 +6,13 @@
  * sends the wrong path, the wrong field name or the wrong verb, the check
  * fails here — not in the browser.
  *
- * The checks live in nine files, one per area of the system:
+ * The checks live in ten files, one per area of the system:
  *
  *   - `runtime-checks-identity.js`     — login, tokens, list envelopes, catalogue
  *   - `runtime-checks-tenants.js`      — the tenant registry, the two doors
  *   - `runtime-checks-platform.js`     — the layer above the tenants
+ *   - `runtime-checks-tenant.js`       — writing has to land in a tenant, and
+ *                                        the interface has to say so
  *   - `runtime-checks-assets.js`       — the asset lifecycle, including the
  *                                        three deletion states
  *   - `runtime-checks-settings.js`     — the address the instance answers at,
@@ -47,6 +49,7 @@ import { platformChecks } from './runtime-checks-platform.js';
 import { sessionChecks } from './runtime-checks-session.js';
 import { settingsChecks } from './runtime-checks-settings.js';
 import { tenantChecks } from './runtime-checks-tenants.js';
+import { tenantWriteChecks } from './runtime-checks-tenant.js';
 import { timeChecks } from './runtime-checks-time.js';
 
 /**
@@ -88,12 +91,17 @@ import { timeChecks } from './runtime-checks-time.js';
  * The platform checks follow the tenant ones for the same reason, and for one
  * more: the platform administrator they sign in as is the account the tenant
  * checks created.
+ *
+ * The tenant-write checks sit right after the platform ones: they need that
+ * platform administrator, and they end by handing the session back to the
+ * seeded administrator, the way every group of checks does.
  */
 export const runtimeChecks = [
   ...timeChecks,
   ...identityChecks,
   ...tenantChecks,
   ...platformChecks,
+  ...tenantWriteChecks,
   ...assetChecks,
   ...settingsChecks,
   ...integrationChecks,

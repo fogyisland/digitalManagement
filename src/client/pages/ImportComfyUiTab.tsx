@@ -32,7 +32,8 @@ import {
   lookupComfyUiJob,
   registerAssetByComfyJob,
 } from '@/api/assets';
-import { Panel } from '@/components/ui';
+import { Hint, Panel } from '@/components/ui';
+import { useTenantWrite } from '@/hooks/useTenantWrite';
 import { tokens } from '@/theme/tokens';
 import { describeError } from '@/utils/errors';
 import type { Asset } from '@/types';
@@ -56,6 +57,11 @@ export default function ImportComfyUiTab(): JSX.Element {
   const { message } = App.useApp();
   const [form] = Form.useForm<FormValues>();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+
+  // 登记是一次写入，必须落到某一个租户；但这个按钮的「反查」那一步是读，
+  // 在「全部租户」下照样能用。所以这里不按住按钮，只把这句话摆在旁边——
+  // 按住按钮会连反查一起害死。
+  const { canWrite, hint } = useTenantWrite();
 
   const busy = phase.kind === 'checking' || phase.kind === 'registering';
 
@@ -132,14 +138,16 @@ export default function ImportComfyUiTab(): JSX.Element {
           {/* Not wrapped in a `Form.Item` with a blank label — a screen
               reader announced an empty label for this button group. */}
           <Space>
-            <Button
-              type="primary"
-              htmlType="submit"
-              icon={<RightCircleOutlined />}
-              loading={busy}
-            >
-              反查并登记
-            </Button>
+            <Hint title={canWrite ? null : `${hint}（反查仍然可用）`}>
+              <Button
+                type="primary"
+                htmlType="submit"
+                icon={<RightCircleOutlined />}
+                loading={busy}
+              >
+                反查并登记
+              </Button>
+            </Hint>
             <Button
               onClick={() => {
                 form.resetFields();
