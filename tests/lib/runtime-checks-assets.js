@@ -22,6 +22,28 @@ import { expectStatus, TINY_PNG } from './runtime.js';
  * @typedef {import('./runtime-checks.js').RuntimeCheck} RuntimeCheck
  */
 
+/**
+ * The same picture with its pixels scrambled.
+ *
+ * The header is left intact, so the decoder can still read the size and the
+ * failure lands where a real broken file fails: in the decode, not in the
+ * inspection. That is the case worth covering — the file is worth keeping,
+ * but the picture cannot be made.
+ *
+ * @param {Buffer} png
+ * @returns {Buffer}
+ */
+function withScrambledPixels(png) {
+  const broken = Buffer.from(png);
+  const type = broken.indexOf('IDAT', 0, 'ascii');
+  assert.ok(type > 0, 'the picture must carry an image chunk');
+  const length = broken.readUInt32BE(type - 4);
+  for (let offset = type + 4; offset < type + 4 + length; offset += 1) {
+    broken[offset] = 0x5a;
+  }
+  return broken;
+}
+
 /** @type {RuntimeCheck[]} */
 export const assetChecks = [
   {
@@ -44,6 +66,54 @@ export const assetChecks = [
       assert.deepEqual(asset.tag_names, ['contract-tag']);
       assert.ok(String(asset.thumbnail_url).startsWith('/storage/'), 'the thumbnail must be reachable');
       ctx.state.asset = asset;
+    },
+  },
+
+  {
+    name: 'the upload really produced a thumbnail',
+    async run(ctx) {
+      // A thumbnail that could not be written must not leave a link behind
+      // that opens nothing. The upload says the file is an image and hands
+      // out a picture; the interface puts that picture in an `<img>`, and the
+      // reader sees a broken image — and blames the asset for a picture the
+      // interface made.
+      const asset = ctx.state.asset;
+      const response = await fetch(`${ctx.origin}${asset.thumbnail_url}`);
+      assert.equal(response.status, 200, 'the thumbnail must be there, not merely named');
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.equal(
+        bytes.subarray(0, 4).toString('ascii'),
+        'RIFF',
+        'the thumbnail must be the webp the pipeline writes',
+      );
+    },
+  },
+
+  {
+    name: 'an image that cannot be thumbnailed is kept, and no thumbnail is promised',
+    async run(ctx) {
+      const file = new File([withScrambledPixels(TINY_PNG)], 'unreadable.png', {
+        type: 'image/png',
+      });
+      const uploaded = await ctx.assetsApi.upload(file, { title: 'unreadable' });
+      const asset = uploaded.items[0];
+
+      assert.equal(asset.status, 'ready', 'a picture that cannot be thumbnailed is still worth keeping');
+      assert.equal(
+        asset.thumbnail_url,
+        null,
+        'there is no thumbnail, so there must be no link to one',
+      );
+      assert.equal(
+        asset.preview_url,
+        asset.original_url,
+        'the preview falls back to the original — something is better than nothing',
+      );
+
+      const response = await fetch(`${ctx.origin}${asset.original_url}`);
+      assert.equal(response.status, 200, 'the file itself must still open');
+
+      await ctx.assetsApi.remove(asset.id, true);
     },
   },
 

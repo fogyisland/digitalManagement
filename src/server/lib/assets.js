@@ -232,11 +232,16 @@ async function processUpload({ db, storageDir, file, ownerId, source, extra, ten
       width = meta.width ?? null;
       height = meta.height ?? null;
       const thumbName = `${id}.webp`;
-      thumbnailPath = path.join('thumbnails', thumbName);
+      const thumbRelative = path.join('thumbnails', thumbName);
       await sharp(pixels)
         .resize(400, 400, { fit: 'cover' })
         .webp({ quality: 80 })
-        .toFile(path.join(storageDir, thumbnailPath));
+        .toFile(path.join(storageDir, thumbRelative));
+      // The path is recorded only once the file is really there. A thumbnail
+      // that could not be written must not leave a link behind that opens
+      // nothing: the interface would show a broken image, and the reader
+      // would blame the asset instead of the picture it could not make.
+      thumbnailPath = thumbRelative;
     }
   } catch (e) {
     console.warn('[thumb] failed (non-fatal):', e.message);
